@@ -402,8 +402,6 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 
 **staging 管理员密码交接**：验收后已将 staging 管理员密码重置为默认 `admin`，首次登录强制改密。请尽快登录 staging 后台改为强密码。
 
-
-
 ## 九、第七轮：统一邮箱输入框、修复交付邮箱映射及 Staging 实际验收（2026-10-16，已部署并通过验收）
 
 **代码提交**：`e450b0a`（功能分支 `feat/admin-overhaul-security`；仅修改功能分支，未合并 PR #1，未部署生产）
@@ -475,3 +473,41 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 | E. 是否可以开放真实客户销售 | BLOCKED | 真实链上收款未验证 |
 | F. 是否可以启用真实链上收款 | BLOCKED | 真实链上测试未执行 |
 | G. 是否可以启用 ProdSeller 自动采购与履约 | BLOCKED | 真实 ProdSeller 行为未验证，门禁保持关闭 |
+
+## 第八轮：全站 emoji 替换为简约线条图标（2026-10-16）
+
+### 改动（提交 `4caf793`）
+
+- 新增 `ICONS` 图标集（14 个 24×24 线条 SVG：shop/search/moon/sun/box/cart/book/clipboard/chart/receipt/card/link/settings/warn，stroke currentColor，`.ic` 统一截图蓝 `#5b7bff`）+ `ic()` 辅助。
+- 替换全部彩色 emoji：顶部导航、主题切换、搜索框、商品图（3 处渲染）、详情页、付款/说明/须知标题、2 处警告框、后台 7 个标签页。
+- `image_emoji` 由 emoji 字符改为图标 key（`'box'`）；`ic()` 对旧库里的 `🤖`/`📦` 自动回退为 box 图标，兼容已有数据；`worker.js` 3 处默认值同步为 `'box'`。
+- 保留箭头/关闭 ✕/菜单 ☰ 等纯文本符号（非 emoji），不做范围外改动。
+- 下单、付款、履约、上游逻辑零改动。
+
+### 测试
+
+- 本地：静态 + Release Readiness 90/90 + 浏览器 64/64。
+- CI（push 38921527595）：四项全绿。
+- 本地浏览器测试注意事项：需先 `wrangler d1 execute --local --file=schema.sql` 播种子数据，否则 `product/1` 不存在；本地 D1 残留待付款订单会导致联系方式冲突，删 `.wrangler/state` 后重跑通过。
+
+### Staging 实际验收（真实执行）
+
+- 部署方式：`cf_wrangler.py deploy --env staging`（`wrangler.toml` 的 `[env.staging]` 配置齐全，Worker 名/D1 绑定/cron 均指向 staging，与第六、七轮的 Script Upload API 等效；部署前删 `.wrangler` 防缓存陷阱）。
+- 部署后版本 `d48f9d30`，Worker 修改时间 `2026-10-16T15:11:11Z`；生产 Worker `aisou-lite` 修改时间仍为 `2026-10-16T04:03:50Z`，未动。
+- Staging 首页实测：含 17 处 `svg class="ic"`、0 个 emoji；`/api/config` 正常（`site_name=智选`、`cny_rate=7.2`）。
+- 部署只换代码未动 D1，`poll_enabled=0`、`prodseller_enabled=0` 保持。
+- 本轮未在 staging 新建测试订单：改动为纯 UI，下单链路零改动，本地浏览器 64/64 已覆盖完整下单流程；不在 staging 留多余待付款订单。
+
+### 决策矩阵（本轮真实证据）
+
+| 项 | 判定 | 依据 |
+| --- | --- | --- |
+| A. staging 是否已实际部署并可访问 | PASS | Worker 已部署（`15:11:11Z`）、新代码已生效（17 处 SVG、0 emoji） |
+| B. staging 是否通过部署后验收 | PASS | 首页图标渲染正常 + 配置接口正常 + 本地完整流程 64/64 |
+| C. PR 是否具备提交人工审查的条件 | PASS | 提交 `4caf793` CI 全绿；仅代表可进入人工审查，不代表自动合并 |
+| D. 是否已经获得生产部署批准 | BLOCKED | 未获得生产部署批准，本轮不部署生产 |
+| E. 是否可以开放真实客户销售 | BLOCKED | 真实链上收款未验证 |
+| F. 是否可以启用真实链上收款 | BLOCKED | 真实链上测试未执行 |
+| G. 是否可以启用 ProdSeller 自动采购与履约 | BLOCKED | 真实 ProdSeller 行为未验证，门禁保持关闭 |
+
+
