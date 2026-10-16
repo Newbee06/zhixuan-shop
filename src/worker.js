@@ -18,6 +18,9 @@ var LOOKUP_RATE_WINDOW_MS = 10 * 60 * 1000;
 var PRODSELLER_DEFAULT_BASE = 'https://prodseller.com/v1';
 var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 function validEmail(s){ return EMAIL_RE.test(String(s||'').trim()); }
+// 第七轮：旧默认联系方式字段 { key:'contact', label:'联系方式（邮箱/TG）', required:true } 已废弃。
+// 前台不再渲染、后端不再强制必填。仅按 key + label 精确匹配，避免误删管理员自定义字段。
+function isLegacyContactField(f){ return !!f && f.key === 'contact' && f.label === '联系方式（邮箱/TG）'; }
 function getFetch(env){ return (env && env.__fetch) ? env.__fetch : fetch; }
 function getProdSellerBase(env, settings){ return (env && env.PRODSELLER_BASE_URL) || (settings && settings.prodseller_base_url) || PRODSELLER_DEFAULT_BASE; }
 function getEffectivePrice(prod){ var sp = Number(prod && prod.sell_price); if (isFinite(sp) && sp > 0) return sp; return Number(prod ? prod.price_usdt : 0) || 0; }
@@ -1617,6 +1620,7 @@ async function handleApi(req, env, url, ctx) {
     var cust = body.customer_fields || {};
     if (typeof cust !== 'object') return err('客户字段无效');
     for (var i = 0; i < fields.length; i++) {
+      if (isLegacyContactField(fields[i])) continue; // 第七轮：旧默认联系方式字段已废弃，不再因它必填而拒单
       if (fields[i].required && !String(cust[fields[i].key] || '').trim()) return err('请填写：' + fields[i].label);
     }
     // 三种邮箱校验：contact_email（所有订单）/ delivery_email（邮件发货类）/ activation_email（激活类）
@@ -1624,6 +1628,19 @@ async function handleApi(req, env, url, ctx) {
     var deliveryEmail = String(cust.delivery_email || '').trim();
     var activationEmail = String(cust.activation_email || '').trim();
     var activationConfirm = String(cust.activation_email_confirm || '').trim();
+    // 第七轮兼容回退：需要邮件交付且 delivery_email 为空时，若 contact 为有效邮箱则回填 delivery_email。
+    // 仅接受有效邮箱格式，Telegram 用户名等非邮箱文本不回填；仅对需要邮件交付的商品生效。
+    var _dmForFallback = prod.delivery_method || 'both';
+    var _needsEmailDelivery = (_dmForFallback === 'email' || _dmForFallback === 'both') && prod.source === 'self' && (prod.stock_type === 'card' || prod.category === 'account');
+    if (_needsEmailDelivery && !deliveryEmail) {
+      var _fallbackEmail = '';
+      if (validEmail(contactEmail)) _fallbackEmail = contactEmail;
+      else if (validEmail(String(body.contact || '').trim())) _fallbackEmail = String(body.contact || '').trim();
+      if (_fallbackEmail) { deliveryEmail = _fallbackEmail; cust.delivery_email = _fallbackEmail; }
+    }
+    // 统一持久化：contact_email / delivery_email 以规范化（trim 后）值落库，避免主表与 customer_fields 不一致。
+    if (contactEmail) cust.contact_email = contactEmail;
+    if (deliveryEmail) cust.delivery_email = deliveryEmail;
     if (Number(prod.requires_email_activation) === 1) {
       if (!activationEmail || !validEmail(activationEmail)) return err('请填写正确的激活邮箱 activation_email（这是要开通的邮箱，填错无法开通）');
       if (activationConfirm && activationConfirm !== activationEmail) return err('两次激活邮箱不一致，请重新确认');

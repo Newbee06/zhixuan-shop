@@ -413,5 +413,107 @@ db.prepare('DELETE FROM order_rate').run();
   check('15. second BinanceUID same-amount order succeeds (no 500)', ordV9.json && ordV9.json.ok === true, ordV9.txt.slice(0, 300));
 }
 
+// ===== 16. 第七轮：统一邮箱输入框 + 交付邮箱映射 + 旧联系方式字段兼容 =====
+// 历史商品 form_fields 含旧默认联系方式字段 { key:'contact', label:'联系方式（邮箱/TG）', required:true }；
+// 前台不再渲染它，后端不再因它必填而拒单；唯一邮箱框映射 contact / contact_email / delivery_email。
+db.prepare('DELETE FROM order_rate').run();
+{
+  const legacyFF = [{ key: 'contact', label: '联系方式（邮箱/TG）', required: true, placeholder: '' }, { key: 'custom_note', label: '备注（自定义）', required: false, placeholder: '' }];
+  r = await call('POST', '/api/admin/products', { slug: 'r7-legacy', title: 'R7 历史商品', category: 'card', price_usdt: 10, sell_price: 10, source: 'self', delivery_method: 'both', stock_type: 'card', form_fields: legacyFF }, cookie);
+  check('16. create legacy-form_fields card product', r.json && r.json.ok === true, JSON.stringify(r.json));
+  const legacyProd = q("SELECT * FROM products WHERE slug='r7-legacy'");
+  check('16. legacy form_fields preserved in DB (not deleted)', legacyProd && /联系方式/.test(legacyProd.form_fields || ''), String(legacyProd && legacyProd.form_fields));
+  r = await call('POST', '/api/admin/cards/import', { product_id: legacyProd.id, codes: 'R7-KEY-1\nR7-KEY-2\nR7-KEY-3\nR7-KEY-4\nR7-KEY-5' }, cookie);
+  check('16. import cards for legacy product', r.json && r.json.added === 5, JSON.stringify(r.json));
+  async function orderLegacy(cf, contact) {
+    const cid = await newCaptcha();
+    return call('POST', '/api/orders', { product_id: legacyProd.id, quantity: 1, customer_fields: cf, contact, pay_method: 'Binance', pay_chain: 'TRC20', captcha_id: cid, captcha_code: 'AB12' });
+  }
+  function persisted(no) { const row = q('SELECT * FROM orders WHERE order_no=?', no); let cf = {}; try { cf = JSON.parse(row.customer_fields || '{}'); } catch {} return { row, cf }; }
+  // 16a. 旧客户端：只传顶层 contact，不传 delivery_email → 兼容回填后下单成功
+  r = await orderLegacy({}, 'r7-old@test.example');
+  check('16a. old client contact-only order succeeds (fallback)', r.json && r.json.ok === true, JSON.stringify(r.json).slice(0, 300));
+  if (r.json && r.json.ok) {
+    const { row, cf } = persisted(r.json.order.order_no);
+    check('16a. persisted contact = email', row.contact === 'r7-old@test.example', row.contact);
+    check('16a. persisted customer_fields.delivery_email backfilled', cf.delivery_email === 'r7-old@test.example', JSON.stringify(cf));
+    check('16a. persisted customer_fields.contact_email backfilled', cf.contact_email === 'r7-old@test.example', JSON.stringify(cf));
+  }
+  // 16b. 历史旧字段：cust.contact 为空（旧表单未填）+ 顶层 contact 为邮箱 → 不再因旧字段必填而拒单
+  r = await orderLegacy({ contact: '' }, 'r7-legacy-empty@test.example');
+  check('16b. empty legacy cust.contact does not block order', r.json && r.json.ok === true, JSON.stringify(r.json).slice(0, 300));
+  // 16c. TG 用户名（非邮箱）不得绕过交付邮箱校验
+  r = await orderLegacy({}, 'my_tg_username');
+  check('16c. TG username contact rejected for email-delivery product', r.json && !r.json.ok && /delivery_email/.test(r.json.error || ''), JSON.stringify(r.json).slice(0, 300));
+  // 16d. 新客户端：contact + contact_email + delivery_email 完整映射 + 自定义字段保留
+  r = await orderLegacy({ contact_email: 'r7-new@test.example', delivery_email: 'r7-new@test.example', custom_note: 'hello-r7' }, 'r7-new@test.example');
+  check('16d. new client full mapping order succeeds', r.json && r.json.ok === true, JSON.stringify(r.json).slice(0, 300));
+  if (r.json && r.json.ok) {
+    const { row, cf } = persisted(r.json.order.order_no);
+    check('16d. persisted three email fields consistent', row.contact === 'r7-new@test.example' && cf.contact_email === 'r7-new@test.example' && cf.delivery_email === 'r7-new@test.example', JSON.stringify({ contact: row.contact, cf }));
+    check('16d. admin custom field preserved (not deleted)', cf.custom_note === 'hello-r7', JSON.stringify(cf));
+  }
+  // 16e. 首尾空格规范化
+  r = await orderLegacy({}, '  r7-space@test.example  ');
+  check('16e. whitespace-padded email normalized', r.json && r.json.ok === true, JSON.stringify(r.json).slice(0, 300));
+  if (r.json && r.json.ok) {
+    const { row, cf } = persisted(r.json.order.order_no);
+    check('16e. persisted contact trimmed', row.contact === 'r7-space@test.example', row.contact);
+    check('16e. persisted customer_fields emails trimmed', cf.delivery_email === 'r7-space@test.example' && cf.contact_email === 'r7-space@test.example', JSON.stringify(cf));
+  }
+  // 16f. 显式传无效 delivery_email 仍被拒绝（兼容回退不覆盖显式值）
+  r = await orderLegacy({ delivery_email: 'not-an-email', contact_email: 'r7-bad@test.example' }, 'r7-bad@test.example');
+  check('16f. explicit invalid delivery_email still rejected', r.json && !r.json.ok && /delivery_email/.test(r.json.error || ''), JSON.stringify(r.json).slice(0, 300));
+  // 16g. orderMailTo 从已持久化订单读取正确收件人（提取真实函数，非复制逻辑）
+  const mMailTo = workerSrc.match(/function orderMailTo[\s\S]*?\n\}/);
+  const orderMailToFn = new Function('return (' + (mMailTo ? mMailTo[0] : 'function(){}') + ')')();
+  const refOrder = q("SELECT * FROM orders WHERE contact='r7-old@test.example'");
+  let refCf = {}; try { refCf = JSON.parse(refOrder.customer_fields || '{}'); } catch {}
+  check('16g. orderMailTo delivery reads persisted delivery_email', orderMailToFn(refOrder, refCf, 'delivery') === 'r7-old@test.example', orderMailToFn(refOrder, refCf, 'delivery'));
+  check('16g. orderMailTo confirm reads persisted contact_email', orderMailToFn(refOrder, refCf, 'confirm') === 'r7-old@test.example', orderMailToFn(refOrder, refCf, 'confirm'));
+  // 16h. 人工发货商品不因缺少 delivery_email 被拦截
+  r = await call('POST', '/api/admin/products', { slug: 'r7-manual', title: 'R7 人工商品', category: 'recharge', price_usdt: 5, sell_price: 5, source: 'self', delivery_method: 'both', stock_type: 'manual', form_fields: [] }, cookie);
+  check('16h. create manual product', r.json && r.json.ok === true, JSON.stringify(r.json));
+  const manualProd = q("SELECT * FROM products WHERE slug='r7-manual'");
+  const cidH = await newCaptcha();
+  r = await call('POST', '/api/orders', { product_id: manualProd.id, quantity: 1, customer_fields: {}, contact: 'r7-manual@test.example', pay_method: 'Binance', pay_chain: 'TRC20', captcha_id: cidH, captcha_code: 'AB12' });
+  check('16h. manual product without delivery_email succeeds', r.json && r.json.ok === true, JSON.stringify(r.json).slice(0, 300));
+  if (r.json && r.json.ok) {
+    const { cf } = persisted(r.json.order.order_no);
+    check('16h. manual order contact_email persisted, delivery_email not forced', cf.contact_email === 'r7-manual@test.example' && !cf.delivery_email, JSON.stringify(cf));
+  }
+  // 16i. 激活类商品仍保留独立激活邮箱验证（缺激活邮箱 / 两次不一致 / 正确通过）
+  r = await call('POST', '/api/admin/products', { slug: 'r7-act', title: 'R7 激活商品', category: 'card', price_usdt: 10, sell_price: 10, source: 'self', delivery_method: 'both', stock_type: 'card', requires_email_activation: 1, form_fields: [] }, cookie);
+  check('16i. create activation product', r.json && r.json.ok === true, JSON.stringify(r.json));
+  const actProd = q("SELECT * FROM products WHERE slug='r7-act'");
+  r = await call('POST', '/api/admin/cards/import', { product_id: actProd.id, codes: 'R7-ACT-1' }, cookie);
+  check('16i. import card for activation product', r.json && r.json.added === 1, JSON.stringify(r.json));
+  async function orderAct(cf, contact) {
+    const cid = await newCaptcha();
+    return call('POST', '/api/orders', { product_id: actProd.id, quantity: 1, customer_fields: cf, contact, pay_method: 'Binance', pay_chain: 'TRC20', captcha_id: cid, captcha_code: 'AB12' });
+  }
+  r = await orderAct({ contact_email: 'r7-act@test.example', delivery_email: 'r7-act@test.example' }, 'r7-act@test.example');
+  check('16i. activation product without activation_email rejected', r.json && !r.json.ok && /activation_email/.test(r.json.error || ''), JSON.stringify(r.json).slice(0, 300));
+  r = await orderAct({ contact_email: 'r7-act2@test.example', delivery_email: 'r7-act2@test.example', activation_email: 'act-a@test.example', activation_email_confirm: 'act-b@test.example' }, 'r7-act2@test.example');
+  check('16i. activation email mismatch rejected', r.json && !r.json.ok && /不一致/.test(r.json.error || ''), JSON.stringify(r.json).slice(0, 300));
+  r = await orderAct({ contact_email: 'r7-act3@test.example', delivery_email: 'r7-act3@test.example', activation_email: 'act-c@test.example', activation_email_confirm: 'act-c@test.example' }, 'r7-act3@test.example');
+  check('16i. activation product with valid activation_email succeeds', r.json && r.json.ok === true, JSON.stringify(r.json).slice(0, 300));
+  if (r.json && r.json.ok) {
+    const { cf } = persisted(r.json.order.order_no);
+    check('16i. activation_email kept separate from contact/delivery', cf.activation_email === 'act-c@test.example' && cf.delivery_email === 'r7-act3@test.example' && cf.contact_email === 'r7-act3@test.example', JSON.stringify(cf));
+  }
+  // 16j. 旧邮箱查单仍 410；订单号 + 查单凭证查询继续工作
+  const r410 = await callRaw('GET', '/api/orders?contact=r7-old@test.example');
+  check('16j. GET /api/orders?contact= still 410', r410.status === 410, r410.txt.slice(0, 200));
+  // 16k. 前端静态补充：旧默认字段不再自动加入；唯一邮箱框映射存在；旧字段渲染被过滤
+  check('16k. frontend no longer auto-adds legacy contact field', !/body\.form_fields = \[\{ key: 'contact'/.test(html), 'legacy default still present');
+  check('16k. frontend maps unified email to contact_email + delivery_email', /cust\.contact_email = emailValue/.test(html) && /cust\.delivery_email = emailValue/.test(html), 'mapping missing');
+  check('16k. frontend filters legacy field when rendering', /isLegacyContactField\(f\)\) continue/.test(html), 'render filter missing');
+  check('16k. frontend validates unified email before submit', /if \(!validEmail\(emailValue\)\)/.test(html), 'frontend email validation missing');
+  // 旧标签只允许出现在匹配谓词/注释里，不得出现在任何渲染代码中（不是隐藏，而是根本不渲染）。
+  const legacyLabelLines = html.split('\n').filter((l) => l.includes('联系方式（邮箱/TG）'));
+  check('16k. legacy label only in matcher predicate (not rendered/hidden)', legacyLabelLines.length >= 1 && legacyLabelLines.every((l) => /isLegacyContactField|旧默认|已废弃/.test(l)), JSON.stringify(legacyLabelLines));
+}
+
 console.log('\nRELEASE READINESS TEST DONE pass=' + pass + ' fail=' + fail);
 if (fail) process.exit(1);

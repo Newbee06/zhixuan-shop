@@ -286,6 +286,10 @@ function toggleTheme(){ var next = currentTheme() === 'dark' ? 'light' : 'dark';
 renderThemeBtn();
 function el(id){ return document.getElementById(id); }
 function escH(s){ var t = String(s == null ? '' : s); return t.split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;').split('"').join('&quot;'); }
+// 第七轮：旧默认联系方式字段已废弃（与后端 isLegacyContactField 同一判定：key + label 精确匹配）。
+// 前台不再渲染该字段；邮箱格式校验与后端 validEmail 同一规则。
+function isLegacyContactField(f){ return !!f && f.key === 'contact' && f.label === '联系方式（邮箱/TG）'; }
+function validEmail(s){ return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(s || '').trim()); }
 // 统一 API：网络失败 / 非 JSON / 未授权 / 超时 / 业务错误一律转成 {ok:false, error}，调用方不用再 try/catch JSON 解析。
 async function api(p, m, b){
   var ctrl = null, timer = null;
@@ -445,7 +449,7 @@ async function renderProduct(id){
   window._payChain = 'X Layer';
   var payOpts = '<button type="button" class="pill pay-opt on" data-pm="OKX" data-pc="X Layer" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="2.5" y="13" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="13" width="8.5" height="8.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>USDT · X Layer</button><button type="button" class="pill pay-opt" data-pm="Binance" data-pc="BEP20" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.6 22.4 12 12 22.4 1.6 12Z" fill="#F0B90B"/><path d="M12 7.2 16.8 12 12 16.8 7.2 12Z" fill="#fff"/></svg>USDT · BEP20</button>';
   var fh = '';
-  for (var i = 0; i < p.form_fields.length; i++){ var f = p.form_fields[i]; fh += '<label>' + escH(f.label) + (f.required ? ' *' : '') + '</label><input data-k="' + escH(f.key) + '" placeholder="' + escH(f.placeholder || '') + '">'; }
+  for (var i = 0; i < p.form_fields.length; i++){ var f = p.form_fields[i]; if (isLegacyContactField(f)) continue; fh += '<label>' + escH(f.label) + (f.required ? ' *' : '') + '</label><input data-k="' + escH(f.key) + '" placeholder="' + escH(f.placeholder || '') + '">'; }
   var inSt = Number(p.in_stock == null ? 1 : p.in_stock);
   var badgeMain = inSt === 0 ? '<span class="badge" style="background:rgba(255,69,58,.14);color:var(--red)">缺货 · 补货中</span>' : '<span class="badge green">自动发货</span>';
   var actHint = p.requires_email_activation ? '<div class="warn-box" style="margin-top:12px">⚠️ 激活类商品：激活邮箱是要开通会员的邮箱，必须填对，填错无法开通。</div>' : '';
@@ -468,7 +472,7 @@ async function renderProduct(id){
   if (p.requires_email_activation) {
     html += '<label>激活邮箱（要开通会员的邮箱，必须填对） *</label><input id="activation_email" type="email" placeholder="要开通会员的邮箱"><label>再次确认激活邮箱 *</label><input id="activation_email_confirm" type="email" placeholder="再输一次激活邮箱"><label><input type="checkbox" id="activation_confirm" style="width:auto"> 我已确认：这是要开通的邮箱，填错无法开通</label>';
   }
-  html += '<label>邮箱地址</label><input id="contact" placeholder="用于查询订单">';
+  html += '<label>邮箱地址 *</label><input id="contact" type="email" placeholder="如 your@email.com"><div class="muted" style="margin-top:4px">用于订单联系；需要邮件交付的商品，也会使用该邮箱接收卡密或账号。</div>';
   html += '<label>购买数量</label><div class="qty-row"><button class="qty-btn" onclick="changeQty(-1)">−</button><input id="qty" class="qty-input" type="number" value="1" min="1" max="99" oninput="updateTotal()"><button class="qty-btn" onclick="changeQty(1)">+</button></div>';
   // 人机验证：Turnstile 开启时渲染 Cloudflare Turnstile widget（服务端校验 token，fail-closed）；未开启时用 SVG 验证码。
   if (CFG && CFG.turnstile_enabled && CFG.turnstile_site_key) {
@@ -521,6 +525,14 @@ async function submitOrder(pid){
   }
   var cust = {}; var ins = document.querySelectorAll('[data-k]');
   for (var i = 0; i < ins.length; i++) cust[ins[i].getAttribute('data-k')] = ins[i].value;
+  // 第七轮：唯一通用邮箱输入框（#contact）统一映射：
+  // contact = 邮箱；customer_fields.contact_email = 邮箱；customer_fields.delivery_email = 邮箱。
+  // 前端校验与后端同一规则：为空 / 格式错误均拦截，不提交。
+  var emailValue = (el('contact') ? el('contact').value : '').trim();
+  if (!emailValue){ toast('请填写邮箱地址', 'error'); return; }
+  if (!validEmail(emailValue)){ toast('邮箱格式不正确，请检查邮箱地址', 'error'); return; }
+  cust.contact_email = emailValue;
+  cust.delivery_email = emailValue;
   var p = window._curProduct || {};
   var activationEmail = el('activation_email') ? el('activation_email').value.trim() : '';
   var activationConfirm = el('activation_email_confirm') ? el('activation_email_confirm').value.trim() : '';
@@ -536,7 +548,7 @@ async function submitOrder(pid){
   cust.activation_email = activationEmail; cust.activation_email_confirm = activationConfirm;
   var btn = document.querySelector('[data-pid="' + pid + '"]');
   setBtnLoading(btn, true);
-  var r = await api('/api/orders', 'POST', { product_id: Number(pid), quantity: qty, customer_fields: cust, contact: el('contact').value, pay_method: window._payMethod || (el('payMethod') ? el('payMethod').value : 'Binance'), pay_chain: window._payChain || (el('payChain') ? el('payChain').value : 'X Layer'), captcha_id: window._captchaId || '', captcha_code: capCode, turnstile_token: tsToken });
+  var r = await api('/api/orders', 'POST', { product_id: Number(pid), quantity: qty, customer_fields: cust, contact: emailValue, pay_method: window._payMethod || (el('payMethod') ? el('payMethod').value : 'Binance'), pay_chain: window._payChain || (el('payChain') ? el('payChain').value : 'X Layer'), captcha_id: window._captchaId || '', captcha_code: capCode, turnstile_token: tsToken });
   setBtnLoading(btn, false);
   if (!r.ok){ toast(r.error || '下单失败', 'error'); if ((r.error || '').indexOf('验证码') !== -1) loadCaptcha(); return; }
   // 查单凭证只在创建时返回一次：仅存页面运行时内存变量（window._lastOrder / window._lastQueryToken），
@@ -994,13 +1006,14 @@ async function adminProductForm(id){
       var old = p;
       body.image_emoji = (old && old.image_emoji) || '🤖';
       if (window._productImage && (pfx in window._productImage)) body.image_data = window._productImage[pfx];
-      var ff = [{ key: 'contact', label: '联系方式（邮箱/TG）', required: true, placeholder: '' }];
-      if (old && old.form_fields != null){ if (typeof old.form_fields === 'string'){ try { ff = JSON.parse(old.form_fields); } catch (e) { ff = ff; } } else { ff = old.form_fields; } }
-      body.form_fields = ff;
+      // 第七轮：新建/编辑商品不再自动加入旧默认联系方式字段；编辑历史商品时过滤掉旧字段，不重新加入。
+      var ff = [];
+      if (old && old.form_fields != null){ if (typeof old.form_fields === 'string'){ try { ff = JSON.parse(old.form_fields); } catch (e) { ff = []; } } else { ff = old.form_fields; } }
+      body.form_fields = (Array.isArray(ff) ? ff : []).filter(function(f){ return !isLegacyContactField(f); });
       var r = await api('/api/admin/products/' + id, 'PUT', body);
       if (!r.ok){ toast(r.error, 'error'); return false; }
     } else {
-      body.form_fields = [{ key: 'contact', label: '联系方式（邮箱/TG）', required: true, placeholder: '' }];
+      body.form_fields = []; // 第七轮：新商品不再自动加入旧默认联系方式字段
       if (window._productImage && (pfx in window._productImage)) body.image_data = window._productImage[pfx];
       var r2 = await api('/api/admin/products', 'POST', body);
       if (!r2.ok){ toast(r2.error, 'error'); return false; }

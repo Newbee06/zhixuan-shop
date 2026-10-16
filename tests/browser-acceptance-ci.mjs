@@ -293,6 +293,77 @@ await page.waitForTimeout(800);
 check('F-01: malicious delivery_content did NOT trigger alert via onclick', xssDialogs.length === 0, 'dialogs=' + JSON.stringify(xssDialogs));
 check('F-01: order detail shows delivery content', (await page.evaluate(() => (document.getElementById('drawerPanel') || {}).innerHTML || '')).includes('XSS-TEST'));
 
+// ===== 6c. 第七轮：历史旧 form_fields 商品 + 统一邮箱框 + 真实按钮下单 =====
+// 历史商品 form_fields 含旧 { key:'contact', label:'联系方式（邮箱/TG）', required:true }；
+// 页面不得再渲染它；只保留一个通用邮箱框；点“立即购买”真实提交，捕获请求载荷验证三字段映射。
+const legacySetup = await page.evaluate(async () => {
+  const ff = [{ key: 'contact', label: '联系方式（邮箱/TG）', required: true, placeholder: '' }, { key: 'custom_note', label: '备注（自定义）', required: false, placeholder: '' }];
+  const pr = await fetch('/api/admin/products', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Admin-API': '1' }, body: JSON.stringify({ title: 'CI验收旧字段卡密商品', category: 'card', stock_type: 'card', sell_price: 2, source: 'self', delivery_method: 'both', form_fields: ff }) }).then((r) => r.json());
+  const list = await fetch('/api/admin/products?q=' + encodeURIComponent('CI验收旧字段卡密商品')).then((r) => r.json());
+  const pid = list.products[0].id;
+  const imp = await fetch('/api/admin/cards/import', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Admin-API': '1' }, body: JSON.stringify({ product_id: pid, codes: 'CI-LEGACY-KEY-1' }) }).then((r) => r.json());
+  return { pid, created: !!(pr && pr.ok), imported: imp.added };
+});
+check('7th setup: legacy-form_fields card product created + card imported', legacySetup.created && legacySetup.imported === 1, JSON.stringify(legacySetup));
+// 先挂上请求捕获，再进页面、再点按钮，避免错过真实下单请求。
+const legacyOrderReqPromise = page.waitForRequest((req) => req.url().includes('/api/orders') && req.method() === 'POST', { timeout: 60000 });
+const legacyOrderResPromise = page.waitForResponse((res) => res.url().includes('/api/orders') && res.request().method() === 'POST', { timeout: 60000 });
+await page.goto(BASE + '/#/product/' + legacySetup.pid, { waitUntil: 'networkidle' });
+await page.waitForSelector('#captchaCode', { timeout: 15000 });
+await page.waitForTimeout(300);
+// 6b 结束时订单详情抽屉仍开着（抽屉在页面壳里，不随 #app 重渲染消失），会遮住商品页按钮；先 Escape 关闭。
+await page.keyboard.press('Escape');
+await page.waitForTimeout(400);
+check('7th drawer closed before clicking buy', await page.evaluate(() => !document.getElementById('drawerPanel')));
+const legacyPageHtml = await page.content();
+// 注意：page.content() 含 <script> 源码（匹配谓词本身带旧标签字符串），须查可见文本 innerText 才准确。
+check('7th page: no legacy contact field rendered',
+  !(await page.evaluate(() => document.body.innerText.includes('联系方式（邮箱/TG）'))));
+check('7th page: no [data-k=contact] input in DOM',
+  await page.evaluate(() => document.querySelectorAll('input[data-k="contact"]').length === 0));
+check('7th page: single unified email input #contact',
+  await page.evaluate(() => !!document.getElementById('contact')));
+check('7th page: unified email label + helper text',
+  legacyPageHtml.includes('邮箱地址') && legacyPageHtml.includes('用于订单联系；需要邮件交付的商品，也会使用该邮箱接收卡密或账号。'));
+check('7th page: admin custom field preserved (custom_note rendered)',
+  await page.evaluate(() => document.querySelectorAll('input[data-k="custom_note"]').length === 1));
+const legacyCap = await page.evaluate(async () => {
+  const r = await fetch('/api/captcha'); const j = await r.json();
+  const doc = new DOMParser().parseFromString(j.svg, 'image/svg+xml');
+  const code = Array.from(doc.querySelectorAll('text')).map((t) => t.textContent).join('');
+  window._captchaId = j.captcha_id;
+  return { id: j.captcha_id, code };
+});
+check('7th captcha parsed', legacyCap.code.length === 4, JSON.stringify(legacyCap));
+await page.fill('#contact', 'browser-ci-legacy@test.example');
+await page.fill('#captchaCode', legacyCap.code);
+await page.click('button:has-text("立即购买")');
+const legacyReq = await legacyOrderReqPromise;
+const legacyPayload = JSON.parse(legacyReq.postData() || '{}');
+check('7th payload: contact = unified email', legacyPayload.contact === 'browser-ci-legacy@test.example', JSON.stringify(legacyPayload).slice(0, 300));
+check('7th payload: customer_fields.contact_email = unified email',
+  legacyPayload.customer_fields && legacyPayload.customer_fields.contact_email === 'browser-ci-legacy@test.example', JSON.stringify(legacyPayload.customer_fields));
+check('7th payload: customer_fields.delivery_email = unified email',
+  legacyPayload.customer_fields && legacyPayload.customer_fields.delivery_email === 'browser-ci-legacy@test.example', JSON.stringify(legacyPayload.customer_fields));
+check('7th payload: no legacy cust.contact key',
+  !(legacyPayload.customer_fields && ('contact' in legacyPayload.customer_fields)), JSON.stringify(legacyPayload.customer_fields));
+const legacyRes = await legacyOrderResPromise;
+const legacyResJson = await legacyRes.json();
+check('7th order: created via real button click (no delivery_email error)', legacyResJson.ok === true, JSON.stringify(legacyResJson).slice(0, 300));
+if (legacyResJson.ok) {
+  await page.waitForFunction(() => location.hash.includes('#/success/'), { timeout: 15000 }).catch(() => {});
+  check('7th success page shown after real submit', page.url().includes('#/success/'), page.url());
+  const legacyPersist = await page.evaluate(async (no) => {
+    const r = await fetch('/api/admin/orders?q=' + encodeURIComponent(no)).then((x) => x.json());
+    const o = (r.orders || [])[0] || {};
+    const cf = (typeof o.customer_fields === 'string') ? (() => { try { return JSON.parse(o.customer_fields); } catch { return {}; } })() : (o.customer_fields || {});
+    return { contact: o.contact, cf };
+  }, legacyResJson.order.order_no);
+  check('7th persisted: contact + delivery_email + contact_email consistent',
+    legacyPersist.contact === 'browser-ci-legacy@test.example' && legacyPersist.cf.delivery_email === 'browser-ci-legacy@test.example' && legacyPersist.cf.contact_email === 'browser-ci-legacy@test.example', JSON.stringify(legacyPersist));
+  check('7th persisted: custom field kept', legacyPersist.cf.custom_note === '' || 'custom_note' in legacyPersist.cf, JSON.stringify(legacyPersist.cf));
+}
+
 // ===== 7. 深色模式 =====
 await page.evaluate(() => { if (window.toggleTheme) window.toggleTheme(); });
 await page.waitForTimeout(500);
