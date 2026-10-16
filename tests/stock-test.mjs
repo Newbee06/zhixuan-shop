@@ -19,7 +19,7 @@ function wrapStmt(sql) {
   };
   return api;
 }
-const env = { DB: { prepare: (sql) => wrapStmt(sql) }, PRODSELLER_API_KEY: 'test-key', RESEND_API_KEY: 'test-resend', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
+const env = { DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', RESEND_API_KEY: 'test-resend', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
 async function mockFetch(url, opts = {}) {
   const u = String(url);
   if (u.includes('api.resend.com')) return new Response(JSON.stringify({ id: 'mock-mail' }), { status: 200 });
@@ -36,7 +36,7 @@ fs.writeFileSync(tmpWorker, code);
 const worker = await import(tmpWorker);
 import { createHash } from 'node:crypto';
 async function call(pathname, method = 'GET', body = null, headers = {}) {
-  const req = new Request('http://localhost' + pathname, { method, headers: { 'content-type': 'application/json', ...headers }, body: body ? JSON.stringify(body) : undefined });
+  const req = new Request('http://localhost' + pathname, { method, headers: { 'content-type': 'application/json', 'X-Admin-API': '1', ...headers }, body: body ? JSON.stringify(body) : undefined });
   const res = await worker.default.fetch(req, env, { waitUntil: () => {} });
   const text = await res.text();
   let j = null; try { j = JSON.parse(text); } catch (e) {}

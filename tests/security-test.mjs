@@ -30,7 +30,7 @@ function wrapStmt(sql) {
   };
   return api;
 }
-const env = { DB: { prepare: (sql) => wrapStmt(sql) }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
+const env = { DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
 async function mockFetch(url, opts = {}) { throw new Error('Unexpected fetch: ' + url); }
 globalThis.fetch = mockFetch;
 env.__fetch = mockFetch;
@@ -42,9 +42,20 @@ const worker = new Function(code + '\nreturn globalThis.__W;')();
 function makeCtx() { const c = { pending: [] }; c.waitUntil = (pr) => { c.pending.push(pr); }; c.drain = async () => { while (c.pending.length) { const batch = c.pending.splice(0); await Promise.all(batch.map((x) => x.catch(() => {}))); } }; return c; }
 async function call(method, p, body, cookie, extraHeaders) {
   const ctx = makeCtx();
-  const headers = { 'content-type': 'application/json', ...(extraHeaders || {}) };
+  // 测试是 API 客户端：默认声明 X-Admin-API: 1（通过 CSRF 的 API 客户端通道）；CSRF 专项用 callRaw 自控请求头。
+  const headers = { 'content-type': 'application/json', 'X-Admin-API': '1', ...(extraHeaders || {}) };
   if (cookie) headers.Cookie = cookie;
   const req = new Request('http://test' + p, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const res = await worker.fetch(req, env, ctx);
+  await ctx.drain();
+  const txt = await res.text();
+  let j = null; try { j = JSON.parse(txt); } catch {}
+  return { status: res.status, json: j, headers: res.headers, text: txt };
+}
+// 不自动加任何声明头：供 CSRF 专项精确控制请求头。
+async function callRaw(method, p, body, headers) {
+  const ctx = makeCtx();
+  const req = new Request('http://test' + p, { method, headers: { 'content-type': 'application/json', ...(headers || {}) }, body: body ? JSON.stringify(body) : undefined });
   const res = await worker.fetch(req, env, ctx);
   await ctx.drain();
   const txt = await res.text();
@@ -181,31 +192,118 @@ r = await call('POST', '/api/admin/orders/' + ordC.id + '/fulfill', { delivery_c
 check('cancelled cannot fulfill', r.json && !r.json.ok, JSON.stringify(r.json));
 
 // ===== 8. 公共查单授权 =====
-// 无凭证 -> 401
+// GET 单订单：仅返回概要（不含交付内容），绝不经 URL 凭证返回敏感数据
 r = await call('GET', '/api/orders/' + ordB.order_no);
+check('GET single order -> summary only (no delivery)', r.json && r.json.ok === true && !r.json.order.delivery_content, JSON.stringify(r.json));
+// POST lookup：无凭证 -> 401
+r = await call('POST', '/api/orders/' + ordB.order_no + '/lookup', { credential: '' });
 check('lookup without token -> 401', r.status === 401);
 // 错误凭证 -> 401
-r = await call('GET', '/api/orders/' + ordB.order_no + '?token=wrongtoken123');
+r = await call('POST', '/api/orders/' + ordB.order_no + '/lookup', { credential: 'wrongtoken123' });
 check('lookup with wrong token -> 401', r.status === 401);
 // 正确凭证 -> 完整详情，含交付内容，不含凭证哈希/查询密码
-r = await call('GET', '/api/orders/' + ordB.order_no + '?token=' + tokenB);
+r = await call('POST', '/api/orders/' + ordB.order_no + '/lookup', { credential: tokenB });
 check('lookup with correct token -> full detail', r.json && r.json.ok === true && r.json.order.delivery_content === 'SEC-CARD-ONLY-1', JSON.stringify(r.json));
 check('lookup response has no query_token_hash', !JSON.stringify(r.json).includes('query_token_hash'));
 check('lookup response has no query_password', !JSON.stringify(r.json).includes('query_password'));
-// 旧查询密码不能用于新订单
-r = await call('GET', '/api/orders/' + ordB.order_no + '?password=' + ordB.query_password);
+// 旧查询密码不能用于新订单（用一个真实的非空六位密码验证，不用空值绕过）
+r = await call('POST', '/api/orders/' + ordB.order_no + '/lookup', { credential: '123456' });
 check('legacy password rejected for new order', r.status === 401);
+// 新订单不再保存可用的明文六位查询密码
+check('new order query_password is empty', ordB.query_password === '', JSON.stringify({ qp: ordB.query_password }));
 // 按邮箱查 -> 只返回概要，无交付内容、无客户隐私字段
 r = await call('GET', '/api/orders?contact=c2@test.example');
 check('email lookup returns summaries only', r.json && r.json.ok === true && r.json.orders.length === 1 && !r.json.orders[0].delivery_content && !r.json.orders[0].customer_fields && !r.json.orders[0].contact, JSON.stringify(r.json));
 // 旧订单兼容：直接插入一个无凭证哈希的旧订单，旧密码只返回概要（无交付内容）
 db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at, delivery_content, fulfilled_at) VALUES ('AISLEGACY001','123456','',?, '{}', 1, 5, 5, 5, '', '2099-01-01 00:00:00', '{}', 'legacy@test.example', 'OKX', 'X Layer', '', 'completed', datetime('now'), 'LEGACY-SECRET-KEY', datetime('now'))").run(pManual);
-r = await call('GET', '/api/orders/AISLEGACY001');
+r = await call('POST', '/api/orders/AISLEGACY001/lookup', { credential: '' });
 check('legacy order without credential -> 401', r.status === 401);
-r = await call('GET', '/api/orders/AISLEGACY001?password=wrong');
+r = await call('POST', '/api/orders/AISLEGACY001/lookup', { credential: 'wrong' });
 check('legacy order wrong password -> 401', r.status === 401);
-r = await call('GET', '/api/orders/AISLEGACY001?password=123456');
+r = await call('POST', '/api/orders/AISLEGACY001/lookup', { credential: '123456' });
 check('legacy order with password -> summary only (no delivery)', r.json && r.json.ok === true && r.json.legacy === true && !r.json.order.delivery_content && !r.json.order.customer_fields, JSON.stringify(r.json));
+// GET 旧订单也不返回交付内容（不经 URL 凭证）
+r = await call('GET', '/api/orders/AISLEGACY001');
+check('GET legacy order -> summary only (no delivery)', r.json && r.json.ok === true && !r.json.order.delivery_content, JSON.stringify(r.json));
+
+// ===== 8b. CSRF：管理端写操作必须有同源证明 =====
+// 无 Origin / 无 Sec-Fetch-Site / 无 X-Admin-API → 403（不再默认放行）
+r = await callRaw('POST', '/api/admin/orders/' + ordB.id + '/cancel', { reason: 'csrf-test' }, { Cookie: cookie });
+check('csrf: no origin no fetch-site no api header -> 403', r.status === 403, JSON.stringify(r.json));
+// 恶意 Origin → 403
+r = await callRaw('POST', '/api/admin/orders/' + ordB.id + '/cancel', { reason: 'csrf-test' }, { Cookie: cookie, Origin: 'https://evil.example' });
+check('csrf: malicious origin -> 403', r.status === 403, JSON.stringify(r.json));
+// 正常同源 Origin → 通过 CSRF（订单已完成，后端状态机拒绝，但不是 403）
+r = await callRaw('POST', '/api/admin/orders/' + ordB.id + '/cancel', { reason: 'csrf-test' }, { Cookie: cookie, Origin: 'http://test' });
+check('csrf: same-origin origin -> not 403', r.status !== 403, JSON.stringify(r.json));
+// Sec-Fetch-Site: same-origin → 通过 CSRF
+r = await callRaw('POST', '/api/admin/orders/' + ordB.id + '/cancel', { reason: 'csrf-test' }, { Cookie: cookie, 'Sec-Fetch-Site': 'same-origin' });
+check('csrf: sec-fetch-site same-origin -> not 403', r.status !== 403, JSON.stringify(r.json));
+// Sec-Fetch-Site: cross-site → 403
+r = await callRaw('POST', '/api/admin/orders/' + ordB.id + '/cancel', { reason: 'csrf-test' }, { Cookie: cookie, 'Sec-Fetch-Site': 'cross-site' });
+check('csrf: sec-fetch-site cross-site -> 403', r.status === 403, JSON.stringify(r.json));
+// X-Admin-API: 1（API 客户端声明）→ 通过 CSRF
+r = await callRaw('POST', '/api/admin/orders/' + ordB.id + '/cancel', { reason: 'csrf-test' }, { Cookie: cookie, 'X-Admin-API': '1' });
+check('csrf: X-Admin-API header -> not 403', r.status !== 403, JSON.stringify(r.json));
+// 改密接口同样受 CSRF 保护
+r = await callRaw('POST', '/api/admin/change-password', { old_password: 'sec-test-pass-123', new_password: 'sec-test-pass-456' }, { Cookie: cookie });
+check('csrf: change-password without proof -> 403', r.status === 403, JSON.stringify(r.json));
+
+// ===== 8c. 已付款订单取消保护 + 异常/退款流程 =====
+// ordB 已完成：取消拒绝（已覆盖）。再建一笔待发货订单（已付款），验证普通取消拒绝。
+r = await orderCall({ product_id: pManual, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'paid1@test.example' } });
+check('paid-flow order created', r.json && r.json.ok === true, JSON.stringify(r.json));
+const ordP = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+r = await call('POST', '/api/admin/orders/' + ordP.id + '/confirm-payment', { reason: '测试已付款' }, cookie);
+check('confirm-payment manual -> pending_fulfill', r.json && r.json.ok === true, JSON.stringify(r.json));
+check('order is pending_fulfill after confirm', q('SELECT status FROM orders WHERE id=?', ordP.id).status === 'pending_fulfill');
+// 普通取消已付款待发货订单 → 409 拒绝
+r = await call('POST', '/api/admin/orders/' + ordP.id + '/cancel', { reason: '试图普通取消已付款订单' }, cookie);
+check('paid pending_fulfill cannot be normally cancelled', r.status === 409 || (r.json && !r.json.ok && /已付款|异常/.test(r.json.error || '')), JSON.stringify(r.json));
+check('order still pending_fulfill after refused cancel', q('SELECT status FROM orders WHERE id=?', ordP.id).status === 'pending_fulfill');
+// 异常处理：标记退款待处理
+r = await call('POST', '/api/admin/orders/' + ordP.id + '/exception', { reason: '上游无法交付，需退款', refund_needed: true }, cookie);
+check('exception -> refund_pending', r.json && r.json.ok === true, JSON.stringify(r.json));
+check('order is refund_pending', q('SELECT status FROM orders WHERE id=?', ordP.id).status === 'refund_pending');
+check('refund_status is pending', q('SELECT refund_status FROM orders WHERE id=?', ordP.id).refund_status === 'pending');
+// 退款待处理订单也不能普通取消
+r = await call('POST', '/api/admin/orders/' + ordP.id + '/cancel', { reason: '试图取消退款待处理' }, cookie);
+check('refund_pending cannot be normally cancelled', r.json && !r.json.ok, JSON.stringify(r.json));
+// 确认已退款：缺退款凭证 → 拒绝
+r = await call('POST', '/api/admin/orders/' + ordP.id + '/refund-confirm', {}, cookie);
+check('refund-confirm without ref rejected', r.json && !r.json.ok, JSON.stringify(r.json));
+// 确认已退款：带凭证 → 订单转为 cancelled，refund_status=refunded
+r = await call('POST', '/api/admin/orders/' + ordP.id + '/refund-confirm', { refund_ref: 'REFUND-TX-TEST-001' }, cookie);
+check('refund-confirm ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+check('order cancelled after refund-confirm', q('SELECT status FROM orders WHERE id=?', ordP.id).status === 'cancelled');
+check('refund_status is refunded', q('SELECT refund_status FROM orders WHERE id=?', ordP.id).refund_status === 'refunded');
+check('refund_ref stored', q('SELECT refund_ref FROM orders WHERE id=?', ordP.id).refund_ref === 'REFUND-TX-TEST-001');
+// 审计含 order_exception + refund_confirm
+r = await call('GET', '/api/admin/audit?order_id=' + ordP.id, null, cookie);
+check('audit has order_exception + refund_confirm', (() => { const acts = (r.json.audit || []).map((a) => a.action); return acts.includes('order_exception') && acts.includes('refund_confirm'); })(), JSON.stringify(r.json));
+// 已取消订单不能再确认退款
+r = await call('POST', '/api/admin/orders/' + ordP.id + '/refund-confirm', { refund_ref: 'X' }, cookie);
+check('cancelled cannot refund-confirm again', r.json && !r.json.ok, JSON.stringify(r.json));
+// 异常（不退款）仅记录原因，状态不变
+r = await orderCall({ product_id: pManual, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'paid2@test.example' } });
+const ordP2 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+await call('POST', '/api/admin/orders/' + ordP2.id + '/confirm-payment', { reason: '测试' }, cookie);
+r = await call('POST', '/api/admin/orders/' + ordP2.id + '/exception', { reason: '临时异常记录', refund_needed: false }, cookie);
+check('exception without refund ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+check('order still pending_fulfill after note-only exception', q('SELECT status FROM orders WHERE id=?', ordP2.id).status === 'pending_fulfill');
+// 退款待处理订单可手动发货（问题解决时），发货后退款状态清空
+r = await call('POST', '/api/admin/orders/' + ordP2.id + '/exception', { reason: '需退款测试', refund_needed: true }, cookie);
+check('exception2 -> refund_pending', r.json && r.json.ok === true);
+r = await call('POST', '/api/admin/orders/' + ordP2.id + '/fulfill', { delivery_content: 'MANUAL-DELIVERY-AFTER-EXCEPTION' }, cookie);
+check('refund_pending can be fulfilled', r.json && r.json.ok === true, JSON.stringify(r.json));
+check('refund_status cleared after fulfill', q('SELECT refund_status FROM orders WHERE id=?', ordP2.id).refund_status === '');
+check('exception_reason cleared after fulfill', q('SELECT exception_reason FROM orders WHERE id=?', ordP2.id).exception_reason === '');
+
+// ===== 8d. 迁移状态端点 =====
+r = await call('GET', '/api/admin/migrate', null, cookie);
+check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 7, JSON.stringify(r.json));
+r = await call('POST', '/api/admin/migrate', {}, cookie);
+check('migrate POST idempotent', r.json && r.json.ok === true && r.json.applied.length === 0, JSON.stringify(r.json));
 
 // ===== 9. 审计日志 =====
 r = await call('GET', '/api/admin/audit', null, cookie);

@@ -239,19 +239,25 @@ npx wrangler deploy
 
 **仍真实存在的限制**（未声称修复）：
 
-- 单管理员、无角色权限、无多账号；无退款/售后工单、分销/分站、优惠券、秒杀。
+- 单管理员、无角色权限、无多账号；无售后工单、分销/分站、优惠券、秒杀。退款为人工流程（异常 → `refund_pending` → 系统外真实退款 → 管理员确认已退款并填凭证），系统不执行真实资金退款。
 - 国内支付（支付宝/微信）与发票未做；邮件通知已移除；TG Bot 自动通知未做（仅客服链接占位）。
-- 上游激活类商品仍依赖 ProdSeller 轮询，`deliveredKey` 出现前不发货；上游 402/409/429/500 由 `pending_upstream` + 后台告警处理，需人工介入。
+- 上游激活类商品仍依赖 ProdSeller 轮询，`deliveredKey` 出现前不发货；上游 402/409/429/500 与网络超时由 `pending_upstream` + 后台告警处理，需人工介入（重试用同一 Idempotency-Key，不重复采购）。
 - 查单凭证只在下单成功页展示一次，刷新/关闭后不再显示；旧订单无凭证，只能按旧查询密码看概要、联系客服核实交付内容。
 - 前台查单、商品列表等公开接口无登录，查单凭证即唯一保护；请勿将订单号+凭证截图外传。
 
-## 数据库迁移（兼容旧库，幂等、非破坏性）
+## 数据库迁移（版本化，兼容旧库，幂等、非破坏性）
 
-新库直接用 `schema.sql` 建表；**旧库无需手动迁移**，Worker 启动时 `ensureSecurityTables()` 自动补：
+新库直接用 `schema.sql` 建表（已含 v1–v7 字段与 `schema_migrations` 初始记录）；**旧库无需手动迁移**，Worker 首次请求时自动按版本顺序执行 `migrations/0001–0007`：
 
-- `products.in_stock`、`orders.query_token_hash`、`cards.reserved_order_id`、`cards.reserved_at` 列（`ALTER TABLE ... ADD COLUMN`，`IF NOT EXISTS` 风格检查，不覆盖已有数据）。
-- `admin_audit`（操作审计）、`login_attempts`（登录失败限流）表。
-- 新增索引：订单状态/过期时间、卡密预留、审计操作/订单。
+- v1：订单轮询字段（`query_token_hash` 等兼容列）。
+- v2：商品上游字段（`in_stock` 等）。
+- v3：上游表（`upstream_orders`、`upstream_cache`）。
+- v4：安全加固（`admin_audit`、`login_attempts`、卡密预留列 `reserved_order_id` / `reserved_at`、索引）。
+- v5：验证码与限流（`captcha_codes`、`order_rate`）。
+- v6：认领 / TXID / 异常 / 查单限流（`orders.claim_token`、`claimed_at`、`exception_reason`、`refund_status`、`refund_ref`，`txid_claims`、`lookup_rate`、`schema_migrations`）。
+- v7：上游轮询租约（`orders.upstream_lock`、`upstream_lock_expires_at`）+ `upstream_orders.order_id` 去重（留最新行）与唯一索引。
+
+机制：每次 API 请求只轻量查 `schema_migrations` 当前版本；版本已最新时**不再执行 PRAGMA / DDL / 历史修复**；版本落后时才按序迁移，每个版本成功后才写入版本记录，失败抛带版本号的明确错误且**不标记成功**。管理员可经 `GET /api/admin/migrate` 查看版本、`POST /api/admin/migrate` 手动触发。
 
 所有迁移不删表、不改列类型、不清空数据。部署后建议先在测试库验证：登录→改密→下单→查单（凭证）→取消释放预留→审计列表，全部通过后再上线。
 
@@ -261,7 +267,7 @@ npx wrangler deploy
 2. 部署后第一次打开后台，用 `admin` 登录会强制改密（至少 8 位）；改密后旧会话全部作废。
 3. 旧订单没有查单凭证：客户用旧查询密码只能看概要，交付内容需联系客服核实；新订单从部署后开始带查单凭证。
 4. 部署前备份生产 D1（`wrangler d1 export` 或 CF 面板快照），以防回滚。
-5. 回滚方案：重新部署 main 分支的旧版 Worker 即可；旧库的 `query_token_hash` / `reserved_*` / `admin_audit` / `login_attempts` 列和表可保留，旧版代码不读取它们，不影响旧版运行。
+5. 回滚方案：重新部署 main 分支的旧版 Worker 即可；旧库的 `query_token_hash` / `reserved_*` / `admin_audit` / `login_attempts` / `claim_token` / `claimed_at` / `exception_reason` / `refund_*` / `txid_claims` / `lookup_rate` / `upstream_lock` / `upstream_lock_expires_at` / `schema_migrations` 列和表可保留，旧版代码不读取它们，不影响旧版运行。
 
 ## 目录
 
@@ -272,5 +278,9 @@ npx wrangler deploy
 - `tests/mock-test.mjs` — mock 全链路测试（ProdSeller / Tronscan / Resend 均为 mock）
 - `tests/stock-test.mjs` — 库存口径专项测试
 - `tests/security-test.mjs` — 安全专项测试（鉴权/订单状态机/查单凭证/卡密预留/审计）
+- `tests/concurrency-test.mjs` — 并发 / 故障恢复 / 迁移专项测试（真并行 + 屏障，验最终 DB 状态）
+- `tests/browser-acceptance.mjs` — 浏览器验收（需 playwright-core + 本机 Chromium + 本地 wrangler dev，见文件头注释）
+- `tests/d1-local-test.sh` — Wrangler D1 本地环境迁移验证（仅 `--local`，不碰生产库）
+- `migrations/` — 版本化迁移 SQL（0001–0007）与说明
 - `translations-zh.json / translations-zh.sql` — 上游商品中文标题/简介翻译（品牌名保留英文，链接/格式原样保留）
 - `README.md` — 本文件

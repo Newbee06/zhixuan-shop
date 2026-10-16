@@ -378,7 +378,7 @@ function paginationHTML(p, totalPages, fnName){
 }
 function fmtTime(s){ return s ? String(s).replace('T', ' ') : ''; }
 function catLabel(c){ if (c === 'recharge') return '代充'; if (c === 'account') return '成品号'; if (c === 'card') return '卡密'; return c; }
-function statusLabel(s){ if (s === 'pending_payment') return '待付款'; if (s === 'pending_fulfill') return '待发货'; if (s === 'pending_activation') return '激活待处理'; if (s === 'pending_upstream') return '待处理'; if (s === 'completed') return '已完成'; if (s === 'cancelled') return '已取消'; return s; }
+function statusLabel(s){ if (s === 'pending_payment') return '待付款'; if (s === 'pending_fulfill') return '待发货'; if (s === 'pending_activation') return '激活待处理'; if (s === 'pending_upstream') return '待处理'; if (s === 'refund_pending') return '退款待处理'; if (s === 'completed') return '已完成'; if (s === 'cancelled') return '已取消'; return s; }
 function fmtCountdown(exp){ if (!exp) return ''; var diff = Math.max(0, new Date(String(exp).replace(' ', 'T') + 'Z').getTime() - Date.now()); var m = Math.floor(diff / 60000); var s = Math.floor((diff % 60000) / 1000); return m + '分' + (s < 10 ? '0' : '') + s + '秒'; }
 function cnyRate(){ var r = CFG && CFG.cny_rate ? Number(CFG.cny_rate) : 7.2; return (isFinite(r) && r > 0) ? r : 7.2; }
 function fmtCNY(usdt){ return '¥' + (Number(usdt || 0) * cnyRate()).toFixed(2); }
@@ -520,14 +520,15 @@ async function submitOrder(pid){
   var r = await api('/api/orders', 'POST', { product_id: Number(pid), quantity: qty, customer_fields: cust, contact: el('contact').value, pay_method: window._payMethod || (el('payMethod') ? el('payMethod').value : 'Binance'), pay_chain: window._payChain || (el('payChain') ? el('payChain').value : 'X Layer'), captcha_id: window._captchaId || '', captcha_code: capCode });
   setBtnLoading(btn, false);
   if (!r.ok){ toast(r.error || '下单失败', 'error'); if ((r.error || '').indexOf('验证码') !== -1) loadCaptcha(); return; }
-  // 查单凭证只在创建时返回一次：成功页展示并提示保存，之后不再重复返回。
-  sessionStorage.setItem('lastOrder', JSON.stringify(r.order));
-  sessionStorage.setItem('lastQueryToken', r.order.query_token || '');
+  // 查单凭证只在创建时返回一次：仅存页面运行时内存变量（window._lastOrder / window._lastQueryToken），
+  // 绝不写入 sessionStorage / localStorage / Cookie / URL。页面完整刷新后内存清空，凭证不再恢复，需用事先保存的凭证查询。
+  window._lastOrder = { order_no: r.order.order_no, total_usdt: r.order.total_usdt, actual_amount: r.order.actual_amount, pay_address: r.order.pay_address, wallet_address: r.order.wallet_address, expires_at: r.order.expires_at, pay_method: r.order.pay_method, pay_chain: r.order.pay_chain };
+  window._lastQueryToken = r.order.query_token || '';
   location.hash = '#/success/' + r.order.order_no;
 }
 async function renderSuccess(no){
-  var raw = sessionStorage.getItem('lastOrder'); var o = raw ? JSON.parse(raw) : null;
-  var token = sessionStorage.getItem('lastQueryToken') || '';
+  var o = window._lastOrder || null;
+  var token = window._lastQueryToken || '';
   var addr = o ? o.wallet_address : ''; var total = o ? o.total_usdt : '';
   var actual = o ? (o.actual_amount != null ? o.actual_amount : total) : '';
   var qr = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(addr || '');
@@ -536,7 +537,7 @@ async function renderSuccess(no){
   if (token) {
     html += '<div class="warn-box" style="margin:10px 0"><b>⚠️ 查单凭证（只展示一次，请立即保存）</b><div class="codebox" id="tokenBox" style="margin-top:8px">' + escH(token) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(document.getElementById(\'tokenBox\').textContent)">复制查单凭证</button><p class="muted" style="margin:8px 0 0">查询订单与交付内容需用“订单号 + 查单凭证”。凭证只展示一次，刷新页面后不再显示，请妥善保存，勿泄露给他人。</p></div>';
   } else {
-    html += '<p class="muted">查询订单：用订单号 + 查单凭证在“查询订单”页查询（凭证在下单成功时只展示一次）。</p>';
+    html += '<p class="muted">查询订单：用订单号 + 查单凭证在“查询订单”页查询（凭证在下单成功时只展示一次，刷新页面后不再恢复，请使用事先保存的凭证）。</p>';
   }
   html += '<p>应付：<b>' + fmtCNY(actual) + '</b> <span class="muted">（实际按 ' + actual + ' USDT 精确金额付款，请一分不差）</span>（' + escH(o ? o.pay_method : '') + ' · ' + escH(o ? o.pay_chain : '') + '）</p>';
   html += '<p>收款地址：</p><div class="codebox" id="addrBox">' + escH(addr) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(document.getElementById(\'addrBox\').textContent)">复制地址</button><div style="margin:12px 0"><img src="' + qr + '" width="180" height="180" alt="收款二维码"></div>';
@@ -567,6 +568,7 @@ function renderQueryOrderDetail(o, legacy){
   else if (!legacy) { h += '<p class="muted">暂无交付内容，付款后等待 1-3 分钟自动发货（已付但未到账请检查金额与地址是否精确一致）</p>'; }
   if (o.status === 'pending_activation'){ h += '<p class=\'muted\'>已付款，正在等待激活返回交付内容，请不要重复下单。</p>'; }
   if (o.status === 'pending_upstream'){ h += '<p class=\'muted\'>暂不可发货，已转人工处理，请联系客服。</p>'; }
+  if (o.status === 'refund_pending'){ h += '<p class=\'muted\'>该订单已标记退款待处理，正在处理退款，请联系客服确认退款进度。</p>'; }
   if (o.status === 'pending_payment'){ h += '<p class=\'muted\'>精确应付：' + fmtCNY(o.actual_amount || o.total_usdt) + '（实际按 ' + (o.actual_amount || o.total_usdt) + ' USDT 付款） · 剩余：' + fmtCountdown(o.expires_at) + ' · 付完不用做任何事，等 1-3 分钟自动发货</p><label>提交 TXID（可选兜底）</label><input id="qtxid-' + escH(o.order_no) + '" placeholder="粘贴交易哈希"><div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" onclick="submitTxid(this.dataset.no)">提交 TXID</button></div>'; }
   return h;
 }
@@ -575,11 +577,8 @@ async function doQuery(){
   var cred = el('qtoken').value.trim();
   if (!no) { toast('请填写订单编号', 'error'); return; }
   if (!cred) { toast('请填写查单凭证（新订单）或旧查询密码（旧订单）', 'error'); return; }
-  // 新订单用 token，旧订单用 password；先按 token 试，401 且凭证像 6 位旧密码时按 password 再试一次。
-  var r = await api('/api/orders/' + encodeURIComponent(no) + '?token=' + encodeURIComponent(cred));
-  if (!r.ok && r._http === 401 && /^\d{6}$/.test(cred)) {
-    r = await api('/api/orders/' + encodeURIComponent(no) + '?password=' + encodeURIComponent(cred));
-  }
+  // 凭证走 POST 请求体，不进 URL（避免浏览器历史 / 服务器日志记录凭证）。
+  var r = await api('/api/orders/' + encodeURIComponent(no) + '/lookup', 'POST', { credential: cred });
   if (!r.ok){ el('qres').innerHTML = '<div class="muted">' + escH(r.error) + '</div>'; return; }
   el('qres').innerHTML = renderQueryOrderDetail(r.order, !!r.legacy);
 }
@@ -630,6 +629,7 @@ function statusPill(s){
   else if (s === 'pending_fulfill') cls = 'blue';
   else if (s === 'pending_activation') cls = 'purple';
   else if (s === 'pending_upstream') cls = 'red';
+  else if (s === 'refund_pending') cls = 'red';
   else if (s === 'completed') cls = 'green';
   return '<span class="spill ' + cls + '">' + escH(statusLabel(s)) + '</span>';
 }
@@ -742,7 +742,7 @@ async function renderAdminOrders(page){
   var r = await api(qs);
   if (!r.ok){ el('adminBody').innerHTML = '<div class="adm-empty">加载失败：' + escH(r.error) + '</div>'; return; }
   var list = r.orders || [];
-  var statuses = [['', '全部状态'], ['pending_payment', '待付款'], ['pending_fulfill', '待发货'], ['pending_activation', '激活待处理'], ['pending_upstream', '上游异常'], ['completed', '已完成'], ['cancelled', '已取消']];
+  var statuses = [['', '全部状态'], ['pending_payment', '待付款'], ['pending_fulfill', '待发货'], ['pending_activation', '激活待处理'], ['pending_upstream', '上游异常'], ['refund_pending', '退款待处理'], ['completed', '已完成'], ['cancelled', '已取消']];
   var selOpts = '';
   for (var si = 0; si < statuses.length; si++) selOpts += '<option value="' + statuses[si][0] + '"' + (f.status === statuses[si][0] ? ' selected' : '') + '>' + statuses[si][1] + '</option>';
   var h = '<div class="admin-page"><div class="admin-page-head"><h2>订单管理</h2><button class="btn ghost small" onclick="adminCleanup()">执行 7 天清理</button></div>';
@@ -781,11 +781,15 @@ async function adminCleanup(){
 }
 function orderActionButtons(o){
   // 按订单状态只显示当前合法动作（后端同样独立校验）。
+  // 已付款订单（pending_fulfill / pending_activation / pending_upstream / refund_pending）绝不显示普通“取消订单”按钮；
+  // 如无法交付，必须走“异常处理”（标记退款待处理 → 系统外真实退款 → 确认已退款），不得直接取消。
   var h = '';
-  if (o.status === 'pending_payment') h += '<button class="btn" data-id="' + o.id + '" onclick="adminConfirm(this.dataset.id)">确认收款</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminCancel(this.dataset.id)">取消订单</button>';
-  else if (o.status === 'pending_fulfill') h += '<button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">发货</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminCancel(this.dataset.id)">取消订单</button>';
-  else if (o.status === 'pending_activation') h += '<button class="btn ghost" data-id="' + o.id + '" onclick="adminUpstreamRetry(' + o.id + ')">重试上游轮询</button> <button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">手动发货（兜底）</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminCancel(this.dataset.id)">取消订单</button>';
-  else if (o.status === 'pending_upstream') h += '<button class="btn ghost" data-id="' + o.id + '" onclick="adminUpstreamRetry(' + o.id + ')">重试上游轮询</button> <button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">手动发货（兜底）</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminCancel(this.dataset.id)">取消订单</button>';
+  if (o.status === 'pending_payment' && o.paid_at) h += '<button class="btn" data-id="' + o.id + '" onclick="adminConfirm(this.dataset.id)">确认收款（恢复处理）</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminException(this.dataset.id)">异常处理</button>';
+  else if (o.status === 'pending_payment') h += '<button class="btn" data-id="' + o.id + '" onclick="adminConfirm(this.dataset.id)">确认收款</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminCancel(this.dataset.id)">取消订单（仅未付款）</button>';
+  else if (o.status === 'pending_fulfill') h += '<button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">发货</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminException(this.dataset.id)">异常处理</button>';
+  else if (o.status === 'pending_activation') h += '<button class="btn ghost" data-id="' + o.id + '" onclick="adminUpstreamRetry(' + o.id + ')">重试上游轮询</button> <button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">手动发货（兜底）</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminException(this.dataset.id)">异常处理</button>';
+  else if (o.status === 'pending_upstream') h += '<button class="btn ghost" data-id="' + o.id + '" onclick="adminUpstreamRetry(' + o.id + ')">重试上游轮询</button> <button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">手动发货（兜底）</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminException(this.dataset.id)">异常处理</button>';
+  else if (o.status === 'refund_pending') h += '<button class="btn danger" data-id="' + o.id + '" onclick="adminRefundConfirm(this.dataset.id)">确认已退款</button> <button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">发货（问题已解决时）</button>';
   else if (o.status === 'completed') h += '<span class="muted">已完成，仅查看</span>';
   else if (o.status === 'cancelled') h += '<span class="muted">已取消，仅查看</span>';
   return h;
@@ -804,6 +808,7 @@ async function adminOrderDetail(id){
   var h = '<div class="drawer-section"><h4>基本信息</h4><div class="drawer-kv"><span class="k">订单号</span><span class="v adm-mono">' + escH(o.order_no) + '</span><span class="k">状态</span><span class="v">' + statusPill(o.status) + '</span><span class="k">商品</span><span class="v">' + escH(snap.title || '') + ' × ' + o.quantity + '</span><span class="k">金额</span><span class="v">' + o.total_usdt + ' USDT（精确应付 ' + (o.actual_amount || o.total_usdt) + ' USDT）</span><span class="k">支付</span><span class="v">' + escH(o.pay_method || '') + ' · ' + escH(o.pay_chain || '') + '</span><span class="k">创建时间</span><span class="v">' + escH(fmtTime(o.created_at)) + '</span><span class="k">付款时间</span><span class="v">' + escH(fmtTime(o.paid_at)) + '</span><span class="k">完成时间</span><span class="v">' + escH(fmtTime(o.fulfilled_at)) + '</span></div></div>';
   h += '<div class="drawer-section"><h4>客户信息</h4><div class="drawer-kv"><span class="k">联系方式</span><span class="v">' + escH(o.contact || '') + '</span><span class="k">客户字段</span><span class="v">' + escH(JSON.stringify(cf)) + '</span></div></div>';
   h += '<div class="drawer-section"><h4>付款信息</h4><div class="drawer-kv"><span class="k">收款地址</span><span class="v adm-mono">' + escH(o.pay_address || o.wallet_address || '') + '</span><span class="k">TXID</span><span class="v adm-mono">' + escH(o.txid || o.tx_hash || '未提交') + '</span><span class="k">备注</span><span class="v">' + escH(o.admin_note || '') + '</span></div></div>';
+  if (o.exception_reason || o.refund_status) h += '<div class="drawer-section"><h4>异常 / 退款</h4><div class="drawer-kv"><span class="k">异常原因</span><span class="v">' + escH(o.exception_reason || '') + '</span><span class="k">退款状态</span><span class="v">' + escH(o.refund_status === 'pending' ? '退款待处理（须在系统外真实退款）' : (o.refund_status === 'refunded' ? '已确认退款' : o.refund_status || '无')) + '</span>' + (o.refund_ref ? '<span class="k">退款凭证</span><span class="v adm-mono">' + escH(o.refund_ref) + '</span>' : '') + '</div><p class="muted">本系统不执行真实退款。“确认已退款”仅表示管理员确认已在系统外完成退款，须填写退款凭证备查。</p></div>';
   h += '<div class="drawer-section"><h4>交付情况</h4>';
   if (o.data_expired) h += '<p class="muted">交付数据已超过 7 天自动清空</p>';
   else if (o.delivery_content) h += '<div class="codebox">' + escH(o.delivery_content) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(' + JSON.stringify(o.delivery_content) + ')">复制交付内容</button>';
@@ -829,11 +834,28 @@ async function adminFulfill(id){
   }});
 }
 async function adminCancel(id){
-  showModal({ title: '取消订单', bodyHTML: '<p>取消后订单不可恢复，卡密预留（如有）将自动释放。确定取消？</p>', confirmText: '确认取消', danger: true, showInput: true, inputLabel: '取消原因（必填，记入审计）', inputPlaceholder: '如：客户要求取消 / 无法交付', onConfirm: async function(reason){
+  showModal({ title: '取消订单', bodyHTML: '<p>仅未付款订单可取消。取消后订单不可恢复，卡密预留（如有）将自动释放。<b>已付款订单不能在此取消</b>，如无法交付请点“异常处理”。</p>', confirmText: '确认取消', danger: true, showInput: true, inputLabel: '取消原因（必填，记入审计）', inputPlaceholder: '如：客户要求取消 / 无法交付', onConfirm: async function(reason){
     if (!reason || !reason.trim()){ toast('请填写取消原因', 'error'); return false; }
     var r = await api('/api/admin/orders/' + id + '/cancel', 'POST', { reason: reason.trim() });
     if (!r.ok){ toast(r.error, 'error'); return false; }
     toast('已取消', 'success'); closeDrawer(); renderAdminOrders(window._orderFilter.page || 1);
+  }});
+}
+async function adminException(id){
+  showModal({ title: '异常处理（已付款订单）', bodyHTML: '<p>该订单已付款，无法直接取消。请选择处理方式：</p><p><label><input type="checkbox" id="exRefund" checked> 需要退款（标记为“退款待处理”，订单暂停，等待系统外真实退款后点“确认已退款”）</label></p><p class="muted">不勾选则仅记录异常原因，订单状态不变（后续可重试 / 手动发货）。<b>本系统不执行真实退款</b>，“记录原因”不等于退款已完成。</p>', confirmText: '确认标记', danger: true, showInput: true, inputLabel: '异常原因（必填，记入审计）', inputPlaceholder: '如：上游已扣款但无法交付，需退款', onConfirm: async function(reason){
+    if (!reason || !reason.trim()){ toast('请填写异常原因', 'error'); return false; }
+    var refundNeeded = !!(el('exRefund') && el('exRefund').checked);
+    var r = await api('/api/admin/orders/' + id + '/exception', 'POST', { reason: reason.trim(), refund_needed: refundNeeded });
+    if (!r.ok){ toast(r.error, 'error'); return false; }
+    toast(r.message || '已标记异常', 'success'); closeDrawer(); renderAdminOrders(window._orderFilter.page || 1);
+  }});
+}
+async function adminRefundConfirm(id){
+  showModal({ title: '确认已退款', bodyHTML: '<p>请确认你已在系统外完成真实退款（转账 / 退币），再点确认。本操作仅记录“管理员确认已在系统外完成退款”这一事实，<b>不执行任何资金操作</b>，订单将转为已取消。</p>', confirmText: '确认已在系统外退款', danger: true, showInput: true, inputLabel: '退款凭证（必填：退款交易哈希 / 转账记录编号，记入审计）', inputPlaceholder: '如：0x… 或银行转账流水号', onConfirm: async function(ref){
+    if (!ref || !ref.trim()){ toast('请填写退款凭证', 'error'); return false; }
+    var r = await api('/api/admin/orders/' + id + '/refund-confirm', 'POST', { refund_ref: ref.trim() });
+    if (!r.ok){ toast(r.error, 'error'); return false; }
+    toast(r.message || '已确认退款', 'success'); closeDrawer(); renderAdminOrders(window._orderFilter.page || 1);
   }});
 }
 // ---- 商品管理 ----

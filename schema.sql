@@ -50,7 +50,18 @@ CREATE TABLE IF NOT EXISTS orders (
   order_no TEXT UNIQUE NOT NULL,
   query_password TEXT NOT NULL,
   -- 查单凭证哈希：新订单下单时生成高强度凭证，只存 SHA-256 哈希，只在创建时返回一次；旧订单为空，走旧密码兼容路径
+  -- 新订单 query_password 写空值（不再生成明文六位查询密码），字段保留兼容旧订单
   query_token_hash TEXT NOT NULL DEFAULT '',
+  -- 订单认领：claim_token（认领者令牌）+ claimed_at（认领时间，租约起点）。认领后处理者崩溃，超租约可被接管恢复。
+  claim_token TEXT NOT NULL DEFAULT '',
+  claimed_at TEXT,
+  -- 异常与退款：exception_reason（异常原因）+ refund_status（''/pending/refunded）+ refund_ref（系统外退款凭证）。
+  exception_reason TEXT NOT NULL DEFAULT '',
+  refund_status TEXT NOT NULL DEFAULT '',
+  refund_ref TEXT NOT NULL DEFAULT '',
+  -- 上游轮询租约：upstream_lock（持有者令牌）+ upstream_lock_expires_at（过期时间，崩溃后超时可接管）。Cron 与管理员重试互斥。
+  upstream_lock TEXT NOT NULL DEFAULT '',
+  upstream_lock_expires_at TEXT,
   product_id INTEGER NOT NULL,
   product_snapshot TEXT NOT NULL DEFAULT '{}',
   quantity INTEGER NOT NULL DEFAULT 1,
@@ -104,7 +115,7 @@ CREATE TABLE IF NOT EXISTS upstream_orders (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY(order_id) REFERENCES orders(id)
 );
-CREATE INDEX IF NOT EXISTS idx_upstream_orders_order ON upstream_orders(order_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_upstream_orders_order_unique ON upstream_orders(order_id);
 CREATE INDEX IF NOT EXISTS idx_upstream_orders_psid ON upstream_orders(prodseller_order_id);
 
 CREATE TABLE IF NOT EXISTS upstream_cache (
@@ -186,3 +197,24 @@ CREATE TABLE IF NOT EXISTS login_attempts (
   blocked_until TEXT NOT NULL DEFAULT '',
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- TXID 原子认领：tx_hash 主键，同一笔链上已验证交易只能被一个订单认领（永久有效，防跨订单重复使用）
+CREATE TABLE IF NOT EXISTS txid_claims (
+  tx_hash TEXT PRIMARY KEY,
+  order_id INTEGER NOT NULL,
+  claimed_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 公开查单限流：按 IP 记查单次数
+CREATE TABLE IF NOT EXISTS lookup_rate (
+  ip TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lookup_rate_ip ON lookup_rate(ip, created_at);
+
+-- 数据库迁移版本：新库由 schema.sql 直接建到最新，预置全部版本；旧库由 Worker 的 runMigrations 按版本递进升级。
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7);

@@ -17,7 +17,7 @@ function wrapStmt(sql) {
   };
   return api;
 }
-const env = { DB: { prepare: (sql) => wrapStmt(sql) }, PRODSELLER_API_KEY: 'test-key', RESEND_API_KEY: 'test-resend', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
+const env = { DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', RESEND_API_KEY: 'test-resend', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
 const sentEmails = [];
 const upstreamCalls = [];
 let getCountPSORD1 = 0;
@@ -64,7 +64,7 @@ const worker = fn();
 function makeCtx() { const c = { pending: [] }; c.waitUntil = (pr) => { c.pending.push(pr); }; c.drain = async () => { while (c.pending.length) { const batch = c.pending.splice(0); await Promise.all(batch.map((x) => x.catch(() => {}))); } }; return c; }
 async function call(method, p, body, cookie) {
   const ctx = makeCtx();
-  const headers = { 'content-type': 'application/json' };
+  const headers = { 'content-type': 'application/json', 'X-Admin-API': '1' };
   if (cookie) headers.Cookie = cookie;
   const req = new Request('http://test' + p, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const res = await worker.fetch(req, env, ctx);
