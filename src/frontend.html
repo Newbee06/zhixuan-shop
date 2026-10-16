@@ -196,6 +196,77 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
 @media(max-width:640px){.field-grid{grid-template-columns:1fr}}
 .empty{background:var(--card);border:1px dashed rgba(127,127,127,.35);border-radius:18px;padding:22px;text-align:center;color:var(--sub);font-size:14px;margin:14px 0}
 .btn.danger{background:rgba(255,69,58,.12);color:var(--red)}
+/* ===== 管理后台 SaaS 风格（信息密度优先，克制玻璃感） ===== */
+.admin-page{max-width:1200px;margin:0 auto}
+.admin-page-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:4px 0 14px}
+.admin-page-head h2{font-size:20px;font-weight:800;margin:0}
+.admin-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.admin-toolbar input,.admin-toolbar select{width:auto;min-width:0;flex:1 1 140px;padding:9px 11px;font-size:14px;border-radius:10px}
+.admin-toolbar select{flex:0 1 160px}
+.admin-toolbar .btn{padding:9px 16px;font-size:14px}
+.adm-card{background:var(--card2);border:1px solid rgba(127,127,127,.18);border-radius:14px;padding:14px 16px;margin:0 0 12px}
+.adm-card h3{font-size:15px;margin:0 0 10px}
+.adm-stat-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:14px}
+@media(max-width:860px){.adm-stat-grid{grid-template-columns:repeat(2,1fr)}}
+.adm-stat{background:var(--card2);border:1px solid rgba(127,127,127,.18);border-radius:14px;padding:12px 14px;cursor:pointer}
+.adm-stat:hover{border-color:var(--accent)}
+.adm-stat .lbl{font-size:12px;color:var(--sub)}
+.adm-stat .num{font-size:24px;font-weight:800;margin-top:2px}
+.adm-stat.warn .num{color:var(--orange)}
+.adm-stat.bad .num{color:var(--red)}
+.adm-stat.good .num{color:var(--green)}
+.adm-table-wrap{overflow-x:auto;border:1px solid rgba(127,127,127,.18);border-radius:14px;background:var(--card2)}
+.adm-table{width:100%;border-collapse:collapse;font-size:13px;min-width:720px}
+.adm-table th,.adm-table td{padding:10px 12px;border-bottom:1px solid rgba(127,127,127,.14);text-align:left;vertical-align:top;word-break:break-word}
+.adm-table th{font-size:12px;color:var(--sub);font-weight:600;background:rgba(127,127,127,.06);white-space:nowrap}
+.adm-table tr:last-child td{border-bottom:0}
+.adm-table .mono{font-family:ui-monospace,monospace;font-size:12px}
+.adm-mono{font-family:ui-monospace,monospace;font-size:12px;word-break:break-all}
+@media(max-width:640px){
+  .adm-table{min-width:0}
+  .adm-table thead{display:none}
+  .adm-table,.adm-table tbody,.adm-table tr,.adm-table td{display:block;width:100%}
+  .adm-table tr{border-bottom:1px solid rgba(127,127,127,.14);padding:10px 12px}
+  .adm-table tr:last-child{border-bottom:0}
+  .adm-table td{border:0;padding:3px 0;display:flex;justify-content:space-between;gap:12px;text-align:right}
+  .adm-table td::before{content:attr(data-label);color:var(--sub);text-align:left;flex:0 0 auto;font-size:12px}
+}
+.adm-pagination{display:flex;gap:8px;align-items:center;justify-content:center;margin:14px 0 4px;flex-wrap:wrap}
+.adm-pagination .btn{padding:8px 14px;font-size:13px}
+.adm-pagination .btn:disabled{opacity:.4;cursor:not-allowed}
+.adm-empty{background:var(--card2);border:1px dashed rgba(127,127,127,.35);border-radius:14px;padding:24px;text-align:center;color:var(--sub);font-size:14px;margin:12px 0}
+.adm-field{margin:10px 0}
+.adm-field label{font-size:13px;color:var(--sub);display:block;margin:0 0 5px}
+.adm-field input,.adm-field select,.adm-field textarea{padding:10px 12px;font-size:14px;border-radius:10px}
+.adm-field .hint{font-size:12px;color:var(--sub);margin-top:4px;line-height:1.5}
+.adm-field .err{font-size:12px;color:var(--red);margin-top:4px}
+.adm-field.invalid input,.adm-field.invalid textarea,.adm-field.invalid select{border-color:var(--red)}
+/* Toast / Modal / Drawer */
+.toast-wrap{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:200;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none;width:100%;max-width:420px;padding:0 14px}
+.toast{background:#1c1c1e;color:#fff;border-radius:12px;padding:11px 16px;font-size:14px;box-shadow:0 8px 30px rgba(0,0,0,.25);max-width:100%;word-break:break-word;text-align:center}
+.toast.success{background:#1e7a34}
+.toast.error{background:#c81e1e}
+.toast.warn{background:#8a5a00}
+html[data-theme="light"] .toast{background:#1c1c1e;color:#fff}
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:150;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal{background:var(--card2);border-radius:18px;padding:20px;width:100%;max-width:480px;max-height:85vh;overflow-y:auto;box-shadow:0 16px 60px rgba(0,0,0,.25)}
+.modal h3{font-size:17px;margin:0 0 10px}
+.modal .modal-body{font-size:14px;line-height:1.7;color:var(--text)}
+.modal .modal-body .muted{font-size:13px}
+.modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap}
+.drawer-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:150}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:520px;max-width:92vw;background:var(--card2);z-index:151;overflow-y:auto;padding:20px;box-shadow:-8px 0 40px rgba(0,0,0,.2)}
+.drawer h3{font-size:17px;margin:0 0 12px}
+.drawer .drawer-close{position:absolute;top:14px;right:14px;border:0;background:transparent;font-size:18px;cursor:pointer;color:var(--sub)}
+.drawer-section{margin:14px 0;padding-top:12px;border-top:1px solid rgba(127,127,127,.18)}
+.drawer-section h4{font-size:13px;color:var(--sub);margin:0 0 8px}
+.drawer-kv{display:grid;grid-template-columns:110px 1fr;gap:6px 10px;font-size:13px;line-height:1.6}
+.drawer-kv .k{color:var(--sub)}
+.drawer-kv .v{word-break:break-all}
+.btn.loading{opacity:.6;pointer-events:none}
+.btn.loading::after{content:' …'}
+.skeleton{background:linear-gradient(90deg,rgba(127,127,127,.12),rgba(127,127,127,.22),rgba(127,127,127,.12));background-size:200% 100%;animation:sk 1.2s infinite;border-radius:10px;height:16px}
+@keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}
 
 </style>
 <script>try{var _t=localStorage.getItem('theme');if(_t==='dark'||_t==='light'){document.documentElement.dataset.theme=_t;}}catch(e){}</script>
@@ -215,8 +286,97 @@ function toggleTheme(){ var next = currentTheme() === 'dark' ? 'light' : 'dark';
 renderThemeBtn();
 function el(id){ return document.getElementById(id); }
 function escH(s){ var t = String(s == null ? '' : s); return t.split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;').split('"').join('&quot;'); }
-function api(p, m, b){ return fetch(p, { method: m || 'GET', headers: {'content-type': 'application/json'}, body: b ? JSON.stringify(b) : undefined }).then(function(r){ return r.json(); }); }
-function copyText(t){ if (navigator.clipboard) { navigator.clipboard.writeText(t).then(function(){ alert('已复制'); }); } else { var ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); alert('已复制'); } }
+// 统一 API：网络失败 / 非 JSON / 未授权 / 超时 / 业务错误一律转成 {ok:false, error}，调用方不用再 try/catch JSON 解析。
+async function api(p, m, b){
+  var ctrl = null, timer = null;
+  try {
+    if (typeof AbortController !== 'undefined') { ctrl = new AbortController(); timer = setTimeout(function(){ try { ctrl.abort(); } catch (e) {} }, 30000); }
+    var res = await fetch(p, { method: m || 'GET', headers: {'content-type': 'application/json'}, body: b ? JSON.stringify(b) : undefined, signal: ctrl ? ctrl.signal : undefined });
+    if (timer) clearTimeout(timer);
+    var text = '';
+    try { text = await res.text(); } catch (e) { return { ok: false, error: '网络异常，请检查网络后重试', _http: res.status }; }
+    var j = null;
+    try { j = JSON.parse(text); } catch (e) { return { ok: false, error: '服务器返回异常（非 JSON），状态 ' + res.status, _http: res.status }; }
+    if (res.status === 401) return { ok: false, error: (j && j.error) || '未登录或凭证已过期', _http: 401, _unauth: true };
+    if (!res.ok && j && j.ok === undefined) return { ok: false, error: j.error || ('请求失败，状态 ' + res.status), _http: res.status };
+    return j;
+  } catch (e) {
+    if (timer) clearTimeout(timer);
+    if (e && e.name === 'AbortError') return { ok: false, error: '请求超时，请重试' };
+    return { ok: false, error: '网络异常，请检查网络后重试' };
+  }
+}
+function copyText(t){
+  function done(){ toast('已复制', 'success'); }
+  if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(t).then(done).catch(function(){ fallbackCopy(t); }); return; }
+  fallbackCopy(t);
+  function fallbackCopy(v){ var ta = document.createElement('textarea'); ta.value = v; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); done(); } catch (e) { toast('复制失败，请手动复制', 'error'); } ta.remove(); }
+}
+// ---- Toast / Modal / Drawer（统一交互，替代原生 alert/confirm/prompt） ----
+function toast(msg, type){
+  var wrap = el('toastWrap');
+  if (!wrap) { wrap = document.createElement('div'); wrap.id = 'toastWrap'; wrap.className = 'toast-wrap'; document.body.appendChild(wrap); }
+  var t = document.createElement('div');
+  t.className = 'toast ' + (type || '');
+  t.textContent = msg;
+  wrap.appendChild(t);
+  setTimeout(function(){ try { t.remove(); } catch (e) {} }, type === 'error' ? 4200 : 2800);
+}
+function showModal(opts){
+  // opts: {title, bodyHTML, confirmText, cancelText, danger, onConfirm, onCancel, showInput, inputLabel, inputPlaceholder, inputValue}
+  closeModal();
+  var bd = document.createElement('div');
+  bd.className = 'modal-backdrop'; bd.id = 'modalBackdrop';
+  bd.addEventListener('click', function(e){ if (e.target === bd) { if (opts.onCancel) opts.onCancel(); closeModal(); } });
+  var inputHtml = '';
+  if (opts.showInput) inputHtml = '<div class="adm-field"><label>' + escH(opts.inputLabel || '说明') + '</label><textarea id="modalInput" rows="2" placeholder="' + escH(opts.inputPlaceholder || '') + '">' + escH(opts.inputValue || '') + '</textarea></div>';
+  bd.innerHTML = '<div class="modal"><h3>' + escH(opts.title || '确认') + '</h3><div class="modal-body">' + (opts.bodyHTML || '') + '</div>' + inputHtml + '<div class="modal-actions"><button class="btn ghost" id="modalCancel">' + escH(opts.cancelText || '取消') + '</button><button class="btn' + (opts.danger ? ' danger' : '') + '" id="modalConfirm">' + escH(opts.confirmText || '确认') + '</button></div></div>';
+  document.body.appendChild(bd);
+  var confirmBtn = document.getElementById('modalConfirm');
+  el('modalCancel').addEventListener('click', function(){ if (opts.onCancel) opts.onCancel(); closeModal(); });
+  confirmBtn.addEventListener('click', function(){
+    if (confirmBtn.classList.contains('loading')) return;
+    var inputVal = opts.showInput ? (el('modalInput') ? el('modalInput').value : '') : '';
+    if (opts.onConfirm) {
+      confirmBtn.classList.add('loading');
+      var ret = opts.onConfirm(inputVal, function(){ confirmBtn.classList.remove('loading'); });
+      // onConfirm 返回 false 时不关闭（用于校验失败）；返回 Promise 时等它完成
+      if (ret && typeof ret.then === 'function') { ret.then(function(r){ if (r !== false) closeModal(); }).catch(function(){ confirmBtn.classList.remove('loading'); }); }
+      else if (ret !== false) closeModal();
+      else confirmBtn.classList.remove('loading');
+    } else closeModal();
+  });
+  return bd;
+}
+function closeModal(){ var b = el('modalBackdrop'); if (b) b.remove(); }
+function showDrawer(title, bodyHTML){
+  closeDrawer();
+  var bd = document.createElement('div');
+  bd.className = 'drawer-backdrop'; bd.id = 'drawerBackdrop';
+  bd.addEventListener('click', closeDrawer);
+  var dr = document.createElement('div');
+  dr.className = 'drawer'; dr.id = 'drawerPanel';
+  dr.innerHTML = '<button class="drawer-close" onclick="closeDrawer()">✕</button><h3>' + escH(title || '') + '</h3>' + (bodyHTML || '');
+  document.body.appendChild(bd);
+  document.body.appendChild(dr);
+  return dr;
+}
+function closeDrawer(){ var b = el('drawerBackdrop'); if (b) b.remove(); var d = el('drawerPanel'); if (d) d.remove(); }
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') { closeModal(); closeDrawer(); } });
+function setBtnLoading(btn, loading){
+  if (!btn) return;
+  if (loading) { btn.classList.add('loading'); btn.disabled = true; }
+  else { btn.classList.remove('loading'); btn.disabled = false; }
+}
+function paginationHTML(p, totalPages, fnName){
+  if (!totalPages || totalPages <= 1) return '';
+  var h = '<div class="adm-pagination">';
+  h += '<button class="btn ghost" ' + (p <= 1 ? 'disabled' : '') + ' onclick="' + fnName + '(' + (p - 1) + ')">上一页</button>';
+  h += '<span class="muted">第 ' + p + ' / ' + totalPages + ' 页</span>';
+  h += '<button class="btn ghost" ' + (p >= totalPages ? 'disabled' : '') + ' onclick="' + fnName + '(' + (p + 1) + ')">下一页</button>';
+  return h + '</div>';
+}
+function fmtTime(s){ return s ? String(s).replace('T', ' ') : ''; }
 function catLabel(c){ if (c === 'recharge') return '代充'; if (c === 'account') return '成品号'; if (c === 'card') return '卡密'; return c; }
 function statusLabel(s){ if (s === 'pending_payment') return '待付款'; if (s === 'pending_fulfill') return '待发货'; if (s === 'pending_activation') return '激活待处理'; if (s === 'pending_upstream') return '待处理'; if (s === 'completed') return '已完成'; if (s === 'cancelled') return '已取消'; return s; }
 function fmtCountdown(exp){ if (!exp) return ''; var diff = Math.max(0, new Date(String(exp).replace(' ', 'T') + 'Z').getTime() - Date.now()); var m = Math.floor(diff / 60000); var s = Math.floor((diff % 60000) / 1000); return m + '分' + (s < 10 ? '0' : '') + s + '秒'; }
@@ -339,31 +499,46 @@ async function loadCaptcha(){
 async function submitOrder(pid){
   var qty = parseInt(el('qty').value || '1', 10);
   var capCode = el('captchaCode') ? el('captchaCode').value.trim() : '';
-  if (!capCode){ alert('请填写图形验证码'); loadCaptcha(); return; }
+  if (!capCode){ toast('请填写图形验证码', 'error'); loadCaptcha(); return; }
   var cust = {}; var ins = document.querySelectorAll('[data-k]');
   for (var i = 0; i < ins.length; i++) cust[ins[i].getAttribute('data-k')] = ins[i].value;
   var p = window._curProduct || {};
   var activationEmail = el('activation_email') ? el('activation_email').value.trim() : '';
   var activationConfirm = el('activation_email_confirm') ? el('activation_email_confirm').value.trim() : '';
   if (p.requires_email_activation){
-    if (!activationEmail){ alert('请填写激活邮箱'); return; }
-    if (activationEmail !== activationConfirm){ alert('两次激活邮箱不一致'); return; }
-    if (!el('activation_confirm').checked){ alert('请勾选确认激活邮箱无误'); return; }
-    if (!confirm('再次确认：激活邮箱 ' + activationEmail + ' 是要开通会员的邮箱，填错无法开通。确认无误？')) return;
+    if (!activationEmail){ toast('请填写激活邮箱', 'error'); return; }
+    if (activationEmail !== activationConfirm){ toast('两次激活邮箱不一致', 'error'); return; }
+    if (!el('activation_confirm').checked){ toast('请勾选确认激活邮箱无误', 'error'); return; }
+    var confirmed = await new Promise(function(resolve){
+      showModal({ title: '再次确认激活邮箱', bodyHTML: '<p>激活邮箱 <b>' + escH(activationEmail) + '</b> 是要开通会员的邮箱，填错无法开通。确认无误？</p>', confirmText: '确认无误，下单', onConfirm: function(){ resolve(true); }, onCancel: function(){ resolve(false); } });
+    });
+    if (!confirmed) return;
   }
   cust.activation_email = activationEmail; cust.activation_email_confirm = activationConfirm;
+  var btn = document.querySelector('[data-pid="' + pid + '"]');
+  setBtnLoading(btn, true);
   var r = await api('/api/orders', 'POST', { product_id: Number(pid), quantity: qty, customer_fields: cust, contact: el('contact').value, pay_method: window._payMethod || (el('payMethod') ? el('payMethod').value : 'Binance'), pay_chain: window._payChain || (el('payChain') ? el('payChain').value : 'X Layer'), captcha_id: window._captchaId || '', captcha_code: capCode });
-  if (!r.ok){ alert(r.error || '下单失败'); if ((r.error || '').indexOf('验证码') !== -1) loadCaptcha(); return; }
+  setBtnLoading(btn, false);
+  if (!r.ok){ toast(r.error || '下单失败', 'error'); if ((r.error || '').indexOf('验证码') !== -1) loadCaptcha(); return; }
+  // 查单凭证只在创建时返回一次：成功页展示并提示保存，之后不再重复返回。
   sessionStorage.setItem('lastOrder', JSON.stringify(r.order));
+  sessionStorage.setItem('lastQueryToken', r.order.query_token || '');
   location.hash = '#/success/' + r.order.order_no;
 }
 async function renderSuccess(no){
   var raw = sessionStorage.getItem('lastOrder'); var o = raw ? JSON.parse(raw) : null;
+  var token = sessionStorage.getItem('lastQueryToken') || '';
   var addr = o ? o.wallet_address : ''; var total = o ? o.total_usdt : '';
   var actual = o ? (o.actual_amount != null ? o.actual_amount : total) : '';
   var qr = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(addr || '');
   var tut = ''; if (CFG && o) tut = CFG.pay_tutorials[o.pay_method] || '';
-  var html = '<div class="glass"><div class="h2">下单成功</div><p>订单号：<b>' + escH(no) + '</b></p><p class="muted">查询订单：用下单邮箱或订单编号在“查询订单”页查询</p><p>应付：<b>' + fmtCNY(actual) + '</b> <span class="muted">（实际按 ' + actual + ' USDT 精确金额付款，请一分不差）</span>（' + escH(o ? o.pay_method : '') + ' · ' + escH(o ? o.pay_chain : '') + '）</p>';
+  var html = '<div class="glass"><div class="h2">下单成功</div><p>订单号：<b>' + escH(no) + '</b></p>';
+  if (token) {
+    html += '<div class="warn-box" style="margin:10px 0"><b>⚠️ 查单凭证（只展示一次，请立即保存）</b><div class="codebox" id="tokenBox" style="margin-top:8px">' + escH(token) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(document.getElementById(\'tokenBox\').textContent)">复制查单凭证</button><p class="muted" style="margin:8px 0 0">查询订单与交付内容需用“订单号 + 查单凭证”。凭证只展示一次，刷新页面后不再显示，请妥善保存，勿泄露给他人。</p></div>';
+  } else {
+    html += '<p class="muted">查询订单：用订单号 + 查单凭证在“查询订单”页查询（凭证在下单成功时只展示一次）。</p>';
+  }
+  html += '<p>应付：<b>' + fmtCNY(actual) + '</b> <span class="muted">（实际按 ' + actual + ' USDT 精确金额付款，请一分不差）</span>（' + escH(o ? o.pay_method : '') + ' · ' + escH(o ? o.pay_chain : '') + '）</p>';
   html += '<p>收款地址：</p><div class="codebox" id="addrBox">' + escH(addr) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(document.getElementById(\'addrBox\').textContent)">复制地址</button><div style="margin:12px 0"><img src="' + qr + '" width="180" height="180" alt="收款二维码"></div>';
   html += '<p>剩余支付时间：<b id="countdown">' + fmtCountdown(o ? o.expires_at : '') + '</b>（20 分钟锁定，超时订单自动取消）</p>';
   html += '<p class="muted">付完不用做任何事，等 1-3 分钟自动发货。系统按精确金额自动匹配到账，金额差 1 分钱都匹配不上。</p>';
@@ -376,56 +551,78 @@ async function submitTxid(no){
   var txEl = el('txid') || el('qtxid-' + no) || el('qtxid');
   var tx = txEl ? txEl.value : '';
   var r = await api('/api/orders/' + encodeURIComponent(no) + '/pay', 'POST', { txid: tx });
-  if (!r.ok){ alert(r.error); return; }
-  alert(r.message || 'TXID 已提交');
+  if (!r.ok){ toast(r.error, 'error'); return; }
+  toast(r.message || 'TXID 已提交', 'success');
 }
 function renderQuery(){
-  var html = '<div class="glass"><div class="h2">查询订单</div><p class="muted">邮箱地址和订单编号任填其一</p><label>邮箱地址</label><input id="qemail" placeholder="下单时填写的邮箱"><label>订单编号</label><input id="qno" placeholder="AIS…"><div style="margin-top:12px"><button class="btn" onclick="doQuery()">查询</button></div><div id="qres" style="margin-top:14px"></div></div>';
+  var html = '<div class="glass"><div class="h2">查询订单</div><p class="muted">凭“订单号 + 查单凭证”查看订单详情与交付内容。查单凭证在下单成功页只展示一次，请妥善保存。旧订单（无查单凭证）可用旧查询密码查看概要，交付内容请联系客服。</p><label>订单编号</label><input id="qno" placeholder="AIS…"><label>查单凭证（新订单）或旧查询密码（旧订单）</label><input id="qtoken" placeholder="查单凭证 / 旧查询密码" autocomplete="off"><div style="margin-top:12px"><button class="btn" onclick="doQuery()">查询</button></div><div style="margin-top:16px;border-top:1px solid rgba(127,127,127,.18);padding-top:14px"><label>或用下单邮箱查看订单概要（仅显示订单号、商品、状态，不含交付内容）</label><input id="qemail" placeholder="下单时填写的邮箱"><div style="margin-top:10px"><button class="btn ghost" onclick="doQueryByEmail()">按邮箱查看概要</button></div></div><div id="qres" style="margin-top:14px"></div></div>';
   el('app').innerHTML = html;
 }
-function renderQueryOrderDetail(o){
+function renderQueryOrderDetail(o, legacy){
   var snap = o.product_snapshot || {};
   var h = '<p><b>' + escH(snap.title || '') + '</b> · ' + statusLabel(o.status) + ' · ' + fmtPrice(o.total_usdt) + '</p><p class="muted">' + escH(o.pay_method) + ' · ' + escH(o.pay_chain) + ' · TXID：' + escH(o.txid || '未提交') + '</p>';
+  if (legacy) h += '<p class="muted">旧订单：仅显示概要。交付内容请联系客服提供订单号核实后获取。</p>';
   if (o.data_expired) { h += '<p class="muted">交付数据已超过 7 天自动清空</p>'; }
   else if (o.delivery_content) { var delId = 'delBox-' + escH(o.order_no); h += '<p>交付内容：</p><div class="codebox" id="' + delId + '">' + escH(o.delivery_content) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(document.getElementById(\x27' + delId + '\x27).textContent)">复制交付内容</button>'; }
-  else { h += '<p class="muted">暂无交付内容，付款后等待 1-3 分钟自动发货（已付但未到账请检查金额与地址是否精确一致）</p>'; }
+  else if (!legacy) { h += '<p class="muted">暂无交付内容，付款后等待 1-3 分钟自动发货（已付但未到账请检查金额与地址是否精确一致）</p>'; }
   if (o.status === 'pending_activation'){ h += '<p class=\'muted\'>已付款，正在等待激活返回交付内容，请不要重复下单。</p>'; }
   if (o.status === 'pending_upstream'){ h += '<p class=\'muted\'>暂不可发货，已转人工处理，请联系客服。</p>'; }
   if (o.status === 'pending_payment'){ h += '<p class=\'muted\'>精确应付：' + fmtCNY(o.actual_amount || o.total_usdt) + '（实际按 ' + (o.actual_amount || o.total_usdt) + ' USDT 付款） · 剩余：' + fmtCountdown(o.expires_at) + ' · 付完不用做任何事，等 1-3 分钟自动发货</p><label>提交 TXID（可选兜底）</label><input id="qtxid-' + escH(o.order_no) + '" placeholder="粘贴交易哈希"><div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" onclick="submitTxid(this.dataset.no)">提交 TXID</button></div>'; }
   return h;
 }
 async function doQuery(){
-  var email = el('qemail').value.trim();
   var no = el('qno').value.trim();
-  if (no) {
-    var r = await api('/api/orders/' + encodeURIComponent(no));
-    if (!r.ok){ el('qres').innerHTML = '<div class="muted">' + escH(r.error) + '</div>'; return; }
-    el('qres').innerHTML = renderQueryOrderDetail(r.order);
-  } else if (email) {
-    var r2 = await api('/api/orders?contact=' + encodeURIComponent(email));
-    if (!r2.ok){ el('qres').innerHTML = '<div class="muted">' + escH(r2.error) + '</div>'; return; }
-    var list = r2.orders || [];
-    if (!list.length){ el('qres').innerHTML = '<div class="muted">该邮箱下没有订单</div>'; return; }
-    window._queryOrders = list;
-    var h = '<div class="muted">共 ' + list.length + ' 笔订单</div>';
-    for (var i = 0; i < list.length; i++){ var oo = list[i]; var ss = oo.product_snapshot || {}; h += '<div class="glass" style="margin-top:10px"><p><b>' + escH(ss.title || '') + '</b> · ' + statusLabel(oo.status) + ' · ' + fmtPrice(oo.total_usdt) + '</p><p class="muted">' + escH(oo.order_no) + ' · ' + escH(oo.created_at || '') + '</p><div style="margin-top:8px"><button class="btn small" data-no="' + escH(oo.order_no) + '" onclick="showQueryOrder(this.dataset.no)">查看交付内容</button></div><div id="qord-' + escH(oo.order_no) + '" style="margin-top:10px"></div></div>'; }
-    el('qres').innerHTML = h;
-  } else {
-    alert('请填写邮箱地址或订单编号');
+  var cred = el('qtoken').value.trim();
+  if (!no) { toast('请填写订单编号', 'error'); return; }
+  if (!cred) { toast('请填写查单凭证（新订单）或旧查询密码（旧订单）', 'error'); return; }
+  // 新订单用 token，旧订单用 password；先按 token 试，401 且凭证像 6 位旧密码时按 password 再试一次。
+  var r = await api('/api/orders/' + encodeURIComponent(no) + '?token=' + encodeURIComponent(cred));
+  if (!r.ok && r._http === 401 && /^\d{6}$/.test(cred)) {
+    r = await api('/api/orders/' + encodeURIComponent(no) + '?password=' + encodeURIComponent(cred));
   }
+  if (!r.ok){ el('qres').innerHTML = '<div class="muted">' + escH(r.error) + '</div>'; return; }
+  el('qres').innerHTML = renderQueryOrderDetail(r.order, !!r.legacy);
 }
-function showQueryOrder(no){
-  var list = window._queryOrders || [];
-  for (var i = 0; i < list.length; i++){ if (list[i].order_no === no){ var box = document.getElementById('qord-' + no); if (box) box.innerHTML = renderQueryOrderDetail(list[i]); return; } }
+async function doQueryByEmail(){
+  var email = el('qemail').value.trim();
+  if (!email) { toast('请填写下单邮箱', 'error'); return; }
+  var r2 = await api('/api/orders?contact=' + encodeURIComponent(email));
+  if (!r2.ok){ el('qres').innerHTML = '<div class="muted">' + escH(r2.error) + '</div>'; return; }
+  var list = r2.orders || [];
+  if (!list.length){ el('qres').innerHTML = '<div class="muted">该邮箱下没有订单</div>'; return; }
+  window._queryOrders = list;
+  var h = '<div class="muted">共 ' + list.length + ' 笔订单（仅概要）。点“查看详情”后在上方输入该订单的查单凭证查看交付内容。</div>';
+  for (var i = 0; i < list.length; i++){ var oo = list[i]; var ss = oo.product_snapshot || {}; h += '<div class="glass" style="margin-top:10px"><p><b>' + escH(ss.title || '') + '</b> · ' + statusLabel(oo.status) + ' · ' + fmtPrice(oo.total_usdt) + '</p><p class="muted">' + escH(oo.order_no) + ' · ' + escH(oo.created_at || '') + '</p><div style="margin-top:8px"><button class="btn small" data-no="' + escH(oo.order_no) + '" onclick="fillQueryNo(this.dataset.no)">填入订单号查详情</button></div></div>'; }
+  el('qres').innerHTML = h;
 }
+function fillQueryNo(no){
+  var n = el('qno'); if (n) { n.value = no; n.focus(); }
+  window.scrollTo(0, 0);
+  toast('已填入订单号，请在上方输入查单凭证后点查询', 'warn');
+}
+// ===== 管理后台（SaaS 风格：信息密度优先，统一 Toast/Modal/Drawer） =====
 async function renderAdmin(){
   var me = await api('/api/admin/me');
-  if (!me.ok){ var html = '<div class="glass"><div class="h2">后台登录</div><p class="muted">初始密码 admin，首次登录强制改密。</p><label>密码</label><input id="apwd" type="password"><div style="margin-top:12px"><button class="btn" onclick="adminLogin()">登录</button></div></div>'; el('app').innerHTML = html; return; }
-  if (me.must_change_password){ var h2 = '<div class="glass"><div class="h2">首次登录请改密</div><label>旧密码</label><input id="oldpw" type="password"><label>新密码（至少8位）</label><input id="newpw" type="password"><div style="margin-top:12px"><button class="btn" onclick="adminChangePw()">改密并进入后台</button></div></div>'; el('app').innerHTML = h2; return; }
+  if (!me.ok){ var html = '<div class="glass"><div class="h2">后台登录</div><p class="muted">初始密码 admin，首次登录强制改密。</p><label>密码</label><input id="apwd" type="password" onkeydown="if(event.key===\'Enter\')adminLogin()"><div style="margin-top:12px"><button class="btn" id="loginBtn" onclick="adminLogin()">登录</button></div></div>'; el('app').innerHTML = html; return; }
+  if (me.must_change_password){ var h2 = '<div class="glass"><div class="h2">首次登录请改密</div><p class="muted">为保护后台安全，首次登录必须修改初始密码。</p><label>旧密码</label><input id="oldpw" type="password"><label>新密码（至少8位）</label><input id="newpw" type="password"><div style="margin-top:12px"><button class="btn" id="changePwBtn" onclick="adminChangePw()">改密并进入后台</button></div></div>'; el('app').innerHTML = h2; return; }
   renderAdminHome();
 }
-async function adminLogin(){ var r = await api('/api/admin/login', 'POST', { password: el('apwd').value }); if (!r.ok){ alert(r.error); return; } renderAdmin(); }
-async function adminChangePw(){ var r = await api('/api/admin/change-password', 'POST', { old_password: el('oldpw').value, new_password: el('newpw').value }); if (!r.ok){ alert(r.error); return; } alert('改密成功'); renderAdmin(); }
+async function adminLogin(){
+  var btn = el('loginBtn'); setBtnLoading(btn, true);
+  var r = await api('/api/admin/login', 'POST', { password: el('apwd').value });
+  setBtnLoading(btn, false);
+  if (!r.ok){ toast(r.error, 'error'); return; }
+  toast('登录成功', 'success'); renderAdmin();
+}
+async function adminChangePw(){
+  var np = el('newpw').value;
+  if (!np || np.length < 8){ toast('新密码至少 8 位', 'error'); return; }
+  var btn = el('changePwBtn'); setBtnLoading(btn, true);
+  var r = await api('/api/admin/change-password', 'POST', { old_password: el('oldpw').value, new_password: np });
+  setBtnLoading(btn, false);
+  if (!r.ok){ toast(r.error, 'error'); return; }
+  toast('改密成功', 'success'); renderAdmin();
+}
 async function adminLogout(){ await api('/api/admin/logout', 'POST', {}); location.hash = '#/'; location.reload(); }
 function statusPill(s){
   var cls = 'gray';
@@ -437,7 +634,7 @@ function statusPill(s){
   return '<span class="spill ' + cls + '">' + escH(statusLabel(s)) + '</span>';
 }
 function adminNavHTML(){
-  var tabs = [['data','📊 数据'],['orders','🧾 订单'],['products','🛍️ 商品'],['cards','💳 卡密'],['settings','⚙️ 设置'],['upstream','🔗 上游']];
+  var tabs = [['data','📊 数据总览'],['orders','🧾 订单管理'],['products','🛍️ 商品管理'],['cards','💳 卡密库存'],['upstream','🔗 上游管理'],['settings','⚙️ 系统设置'],['audit','📋 操作审计']];
   var h = '<div class="admin-nav">';
   for (var i = 0; i < tabs.length; i++){ h += '<button data-tab="' + tabs[i][0] + '" onclick="adminTab(\'' + tabs[i][0] + '\');adminToggleSide(false)">' + tabs[i][1] + '</button>'; }
   return h + '</div>';
@@ -445,7 +642,7 @@ function adminNavHTML(){
 function adminNavSync(){
   var btns = document.querySelectorAll('.admin-nav button');
   for (var i = 0; i < btns.length; i++){ btns[i].classList.toggle('on', btns[i].dataset.tab === window._adminTab); }
-  var titles = {data:'数据', orders:'订单', products:'商品', cards:'卡密', settings:'设置', upstream:'上游'};
+  var titles = {data:'数据总览', orders:'订单管理', products:'商品管理', cards:'卡密库存', upstream:'上游管理', settings:'系统设置', audit:'操作审计'};
   var t = el('adminTitle'); if (t) t.textContent = titles[window._adminTab] || '管理后台';
 }
 function adminToggleSide(open){
@@ -453,9 +650,270 @@ function adminToggleSide(open){
   if (!lay) return;
   if (open) lay.classList.add('side-open'); else lay.classList.remove('side-open');
 }
-function adminToggleGroup(id){
-  var g = document.getElementById(id);
-  if (g) g.classList.toggle('collapsed');
+async function renderAdminHome(){
+  window._adminTab = window._adminTab || 'data';
+  var html = '<div class="admin-layout"><div class="admin-backdrop" onclick="adminToggleSide(false)"></div>';
+  html += '<aside class="admin-side"><div class="admin-side-head"><b>管理后台</b><button class="admin-side-close" onclick="adminToggleSide(false)">✕</button></div>';
+  html += adminNavHTML();
+  html += '<div class="admin-side-foot"><button class="btn small ghost" onclick="adminLogout()">退出登录</button><a href="#/" class="muted">← 返回商城</a></div></aside>';
+  html += '<div class="admin-main"><div class="admin-topbar"><button class="admin-burger" onclick="adminToggleSide(true)">☰</button><div class="h2" id="adminTitle" style="margin:0">数据总览</div></div>';
+  html += '<div id="adminBody"></div></div></div>';
+  el('app').innerHTML = html; adminTab(window._adminTab);
+}
+async function adminTab(t){
+  window._adminTab = t;
+  adminNavSync();
+  var body = el('adminBody');
+  if (!body) return;
+  body.innerHTML = '<div class="skeleton" style="height:120px"></div>';
+  try {
+    if (t === 'data') await renderAdminData();
+    else if (t === 'orders') await renderAdminOrders(1);
+    else if (t === 'products') await renderAdminProducts(1);
+    else if (t === 'cards') await renderAdminCards(1);
+    else if (t === 'upstream') await renderAdminUpstream();
+    else if (t === 'settings') await renderAdminSettings();
+    else if (t === 'audit') await renderAdminAudit(1);
+  } catch (e) { body.innerHTML = '<div class="adm-empty">加载失败：' + escH(String(e && e.message ? e.message : e)) + '</div>'; }
+}
+// ---- 数据总览：指标 + 可操作工作区 ----
+async function renderAdminData(){
+  var st = await api('/api/admin/stats');
+  if (!st.ok){ el('adminBody').innerHTML = '<div class="adm-empty">加载失败：' + escH(st.error) + '</div>'; return; }
+  var s = st.stats || {};
+  var rev = Number(s.revenue_usdt || 0);
+  var stats = [
+    ['订单总数', s.total_orders || 0, '', "adminTab('orders')"],
+    ['待付款', s.pending_payment || 0, 'warn', "adminGotoOrders('pending_payment')"],
+    ['待发货', s.pending_fulfill || 0, 'warn', "adminGotoOrders('pending_fulfill')"],
+    ['激活待处理', s.pending_activation || 0, 'warn', "adminGotoOrders('pending_activation')"],
+    ['上游异常', s.pending_upstream || 0, 'bad', "adminGotoOrders('pending_upstream')"],
+    ['已完成', s.completed || 0, 'good', "adminGotoOrders('completed')"],
+    ['已完成收入 (USDT)', rev.toFixed(2), 'good', "adminGotoOrders('completed')"],
+    ['在售商品', s.active_products || 0, '', "adminTab('products')"],
+    ['可用卡密', s.card_stock || 0, '', "adminTab('cards')"]
+  ];
+  var h = '<div class="admin-page"><div class="adm-stat-grid">';
+  for (var i = 0; i < stats.length; i++){ h += '<div class="adm-stat ' + stats[i][2] + '" onclick="' + stats[i][3] + '"><div class="lbl">' + stats[i][0] + '</div><div class="num">' + stats[i][1] + '</div></div>'; }
+  h += '</div><p class="muted" style="margin:0 0 14px">收入仅统计已完成订单（待付款 / 待发货金额不计入）。点指标卡可直达对应列表。</p>';
+  // 工作区：待处理订单 + 最近订单 + 上游异常 + 库存不足
+  var pending = await api('/api/admin/orders?status=pending_fulfill&page_size=5');
+  var recent = await api('/api/admin/orders?page_size=5');
+  var alerts = await api('/api/admin/upstream/alerts');
+  var lowStock = await api('/api/admin/products?stock=out&page_size=100');
+  h += '<div class="adm-card"><h3>待处理订单（待发货）</h3>';
+  var pl = (pending && pending.orders) || [];
+  if (!pl.length) h += '<div class="muted">暂无待发货订单</div>';
+  else { h += '<table class="adm-table"><tr><th>订单号</th><th>商品</th><th>金额</th><th>操作</th></tr>'; for (var j = 0; j < pl.length; j++){ var o = pl[j]; var snap = o.product_snapshot || {}; h += '<tr><td data-label="订单号"><span class="adm-mono">' + escH(o.order_no) + '</span></td><td data-label="商品">' + escH(snap.title || '') + ' × ' + o.quantity + '</td><td data-label="金额">' + o.total_usdt + ' USDT</td><td data-label="操作"><button class="btn small" data-id="' + o.id + '" onclick="adminOrderDetail(this.dataset.id)">详情</button></td></tr>'; } h += '</table>'; }
+  h += '<div style="margin-top:10px"><button class="btn small ghost" onclick="adminGotoOrders(\'pending_fulfill\')">查看全部待发货 →</button></div></div>';
+  h += '<div class="adm-card"><h3>最近订单</h3>';
+  var rl = (recent && recent.orders) || [];
+  if (!rl.length) h += '<div class="muted">暂无订单</div>';
+  else { h += '<table class="adm-table"><tr><th>订单号</th><th>商品</th><th>状态</th><th>创建时间</th></tr>'; for (var k = 0; k < rl.length; k++){ var ro = rl[k]; var rsnap = ro.product_snapshot || {}; h += '<tr><td data-label="订单号"><span class="adm-mono">' + escH(ro.order_no) + '</span></td><td data-label="商品">' + escH(rsnap.title || '') + '</td><td data-label="状态">' + statusPill(ro.status) + '</td><td data-label="创建时间">' + escH(fmtTime(ro.created_at)) + '</td></tr>'; } h += '</table>'; }
+  h += '</div>';
+  var al = (alerts && alerts.alerts) || [];
+  h += '<div class="adm-card"><h3>上游异常提醒</h3>';
+  if (!al.length) h += '<div class="muted">暂无上游异常</div>';
+  else { h += '<table class="adm-table"><tr><th>订单号</th><th>原因</th><th>操作</th></tr>'; for (var a = 0; a < al.length; a++){ var ao = al[a]; h += '<tr><td data-label="订单号"><span class="adm-mono">' + escH(ao.order_no) + '</span></td><td data-label="原因">' + escH(ao.admin_note || '') + '</td><td data-label="操作"><button class="btn small" data-id="' + ao.id + '" onclick="adminOrderDetail(this.dataset.id)">详情</button></td></tr>'; } h += '</table>'; }
+  h += '</div>';
+  var ls = (lowStock && lowStock.products) || [];
+  h += '<div class="adm-card"><h3>库存不足提醒</h3>';
+  if (!ls.length) h += '<div class="muted">暂无缺货商品</div>';
+  else { h += '<table class="adm-table"><tr><th>商品</th><th>来源</th><th>库存</th></tr>'; for (var l = 0; l < ls.length; l++){ var lp = ls[l]; h += '<tr><td data-label="商品">' + escH(lp.title) + '</td><td data-label="来源">' + escH(lp.source || 'self') + '</td><td data-label="库存"><span class="spill red">缺货</span></td></tr>'; } h += '</table>'; }
+  h += '</div></div>';
+  el('adminBody').innerHTML = h;
+}
+function adminGotoOrders(status){
+  window._orderFilter = window._orderFilter || {};
+  window._orderFilter.status = status || '';
+  window._orderFilter.q = '';
+  adminTab('orders');
+}
+// ---- 订单管理 ----
+window._orderFilter = { status: '', q: '', date_from: '', date_to: '', page: 1 };
+async function renderAdminOrders(page){
+  var f = window._orderFilter;
+  f.page = page || 1;
+  var qs = '/api/admin/orders?page=' + f.page + '&page_size=20';
+  if (f.status) qs += '&status=' + encodeURIComponent(f.status);
+  if (f.q) qs += '&q=' + encodeURIComponent(f.q);
+  if (f.date_from) qs += '&date_from=' + encodeURIComponent(f.date_from);
+  if (f.date_to) qs += '&date_to=' + encodeURIComponent(f.date_to);
+  var r = await api(qs);
+  if (!r.ok){ el('adminBody').innerHTML = '<div class="adm-empty">加载失败：' + escH(r.error) + '</div>'; return; }
+  var list = r.orders || [];
+  var statuses = [['', '全部状态'], ['pending_payment', '待付款'], ['pending_fulfill', '待发货'], ['pending_activation', '激活待处理'], ['pending_upstream', '上游异常'], ['completed', '已完成'], ['cancelled', '已取消']];
+  var selOpts = '';
+  for (var si = 0; si < statuses.length; si++) selOpts += '<option value="' + statuses[si][0] + '"' + (f.status === statuses[si][0] ? ' selected' : '') + '>' + statuses[si][1] + '</option>';
+  var h = '<div class="admin-page"><div class="admin-page-head"><h2>订单管理</h2><button class="btn ghost small" onclick="adminCleanup()">执行 7 天清理</button></div>';
+  h += '<div class="admin-toolbar"><input id="ordQ" placeholder="搜索订单号 / 联系方式 / TXID" value="' + escH(f.q) + '" onkeydown="if(event.key===\'Enter\')adminOrderSearch()"><select id="ordStatus" onchange="adminOrderSearch()">' + selOpts + '</select><input id="ordFrom" type="date" value="' + escH(f.date_from) + '" onchange="adminOrderSearch()"><input id="ordTo" type="date" value="' + escH(f.date_to) + '" onchange="adminOrderSearch()"><button class="btn" onclick="adminOrderSearch()">搜索</button><button class="btn ghost" onclick="adminOrderReset()">重置</button></div>';
+  h += '<p class="muted">共 ' + (r.total || 0) + ' 笔订单。卡密类：点确认收款即自动发卡；代充：先确认收款，再点发货填交付内容。</p>';
+  if (!list.length) h += '<div class="adm-empty">暂无符合条件的订单</div>';
+  else {
+    h += '<div class="adm-table-wrap"><table class="adm-table"><thead><tr><th>订单号</th><th>商品</th><th>数量</th><th>金额</th><th>支付</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+    for (var i = 0; i < list.length; i++){ var o = list[i]; var snap = o.product_snapshot || {};
+      h += '<tr><td data-label="订单号"><span class="adm-mono">' + escH(o.order_no) + '</span></td><td data-label="商品">' + escH(snap.title || '') + '</td><td data-label="数量">' + o.quantity + '</td><td data-label="金额">' + o.total_usdt + ' USDT</td><td data-label="支付">' + escH(o.pay_method || '') + ' · ' + escH(o.pay_chain || '') + '</td><td data-label="创建时间">' + escH(fmtTime(o.created_at)) + '</td><td data-label="状态">' + statusPill(o.status) + '</td><td data-label="操作"><button class="btn small" data-id="' + o.id + '" onclick="adminOrderDetail(this.dataset.id)">详情</button></td></tr>';
+    }
+    h += '</tbody></table></div>';
+    h += paginationHTML(r.page || 1, r.total_pages || 1, 'renderAdminOrders');
+  }
+  h += '</div>';
+  el('adminBody').innerHTML = h;
+}
+function adminOrderSearch(){
+  var f = window._orderFilter;
+  f.q = el('ordQ') ? el('ordQ').value.trim() : '';
+  f.status = el('ordStatus') ? el('ordStatus').value : '';
+  f.date_from = el('ordFrom') ? el('ordFrom').value : '';
+  f.date_to = el('ordTo') ? el('ordTo').value : '';
+  renderAdminOrders(1);
+}
+function adminOrderReset(){
+  window._orderFilter = { status: '', q: '', date_from: '', date_to: '', page: 1 };
+  renderAdminOrders(1);
+}
+async function adminCleanup(){
+  showModal({ title: '执行 7 天清理', bodyHTML: '<p>将清空超过 7 天的已完成订单的交付数据并标记过期，同时清理过期会话与过期预留。确定执行？</p>', confirmText: '执行清理', onConfirm: async function(){
+    var r = await api('/api/admin/cleanup', 'POST', {});
+    if (!r.ok){ toast(r.error, 'error'); return false; }
+    toast(r.message || '已执行', 'success'); renderAdminOrders(window._orderFilter.page || 1);
+  }});
+}
+function orderActionButtons(o){
+  // 按订单状态只显示当前合法动作（后端同样独立校验）。
+  var h = '';
+  if (o.status === 'pending_payment') h += '<button class="btn" data-id="' + o.id + '" onclick="adminConfirm(this.dataset.id)">确认收款</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminCancel(this.dataset.id)">取消订单</button>';
+  else if (o.status === 'pending_fulfill') h += '<button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">发货</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminCancel(this.dataset.id)">取消订单</button>';
+  else if (o.status === 'pending_activation') h += '<button class="btn ghost" data-id="' + o.id + '" onclick="adminUpstreamRetry(' + o.id + ')">重试上游轮询</button> <button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">手动发货（兜底）</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminCancel(this.dataset.id)">取消订单</button>';
+  else if (o.status === 'pending_upstream') h += '<button class="btn ghost" data-id="' + o.id + '" onclick="adminUpstreamRetry(' + o.id + ')">重试上游轮询</button> <button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">手动发货（兜底）</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminCancel(this.dataset.id)">取消订单</button>';
+  else if (o.status === 'completed') h += '<span class="muted">已完成，仅查看</span>';
+  else if (o.status === 'cancelled') h += '<span class="muted">已取消，仅查看</span>';
+  return h;
+}
+async function adminOrderDetail(id){
+  var resp = await api('/api/admin/orders/' + id);
+  if (!resp.ok){ toast(resp.error || '订单不存在', 'error'); return; }
+  var o = resp.order;
+  var snap = o.product_snapshot || {};
+  var cf = o.customer_fields || {};
+  var au = await api('/api/admin/audit?order_id=' + id + '&page_size=20');
+  var auditHtml = '';
+  var alist = (au && au.audit) || [];
+  if (!alist.length) auditHtml = '<p class="muted">暂无操作记录</p>';
+  else { auditHtml = '<table class="adm-table"><tr><th>时间</th><th>操作</th><th>状态变化</th><th>说明</th></tr>'; for (var ai = 0; ai < alist.length; ai++){ var a = alist[ai]; auditHtml += '<tr><td data-label="时间">' + escH(fmtTime(a.created_at)) + '</td><td data-label="操作">' + escH(a.action) + '</td><td data-label="状态变化">' + escH(a.before_status || '-') + ' → ' + escH(a.after_status || '-') + '</td><td data-label="说明">' + escH(a.note || '') + '</td></tr>'; } auditHtml += '</table>'; }
+  var h = '<div class="drawer-section"><h4>基本信息</h4><div class="drawer-kv"><span class="k">订单号</span><span class="v adm-mono">' + escH(o.order_no) + '</span><span class="k">状态</span><span class="v">' + statusPill(o.status) + '</span><span class="k">商品</span><span class="v">' + escH(snap.title || '') + ' × ' + o.quantity + '</span><span class="k">金额</span><span class="v">' + o.total_usdt + ' USDT（精确应付 ' + (o.actual_amount || o.total_usdt) + ' USDT）</span><span class="k">支付</span><span class="v">' + escH(o.pay_method || '') + ' · ' + escH(o.pay_chain || '') + '</span><span class="k">创建时间</span><span class="v">' + escH(fmtTime(o.created_at)) + '</span><span class="k">付款时间</span><span class="v">' + escH(fmtTime(o.paid_at)) + '</span><span class="k">完成时间</span><span class="v">' + escH(fmtTime(o.fulfilled_at)) + '</span></div></div>';
+  h += '<div class="drawer-section"><h4>客户信息</h4><div class="drawer-kv"><span class="k">联系方式</span><span class="v">' + escH(o.contact || '') + '</span><span class="k">客户字段</span><span class="v">' + escH(JSON.stringify(cf)) + '</span></div></div>';
+  h += '<div class="drawer-section"><h4>付款信息</h4><div class="drawer-kv"><span class="k">收款地址</span><span class="v adm-mono">' + escH(o.pay_address || o.wallet_address || '') + '</span><span class="k">TXID</span><span class="v adm-mono">' + escH(o.txid || o.tx_hash || '未提交') + '</span><span class="k">备注</span><span class="v">' + escH(o.admin_note || '') + '</span></div></div>';
+  h += '<div class="drawer-section"><h4>交付情况</h4>';
+  if (o.data_expired) h += '<p class="muted">交付数据已超过 7 天自动清空</p>';
+  else if (o.delivery_content) h += '<div class="codebox">' + escH(o.delivery_content) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(' + JSON.stringify(o.delivery_content) + ')">复制交付内容</button>';
+  else h += '<p class="muted">暂无交付内容</p>';
+  h += '</div>';
+  h += '<div class="drawer-section"><h4>处理记录</h4>' + auditHtml + '</div>';
+  h += '<div class="drawer-section"><h4>操作</h4><div class="row">' + orderActionButtons(o) + '</div></div>';
+  showDrawer('订单详情', h);
+}
+async function adminConfirm(id){
+  showModal({ title: '确认收款（人工操作）', bodyHTML: '<p>你正在手动确认该订单已收款。确认后系统将按正常流程发货（自营卡密自动发 / 上游走 ProdSeller）。<b>请确保已在收款地址核对到账</b>，误确认无法自动撤销。</p>', confirmText: '确认已收款', showInput: true, inputLabel: '操作原因（必填，记入审计）', inputPlaceholder: '如：币安 UID 站内转账已核对，订单 ID xxx', onConfirm: async function(reason){
+    if (!reason || !reason.trim()){ toast('请填写操作原因', 'error'); return false; }
+    var r = await api('/api/admin/orders/' + id + '/confirm-payment', 'POST', { reason: reason.trim() });
+    if (!r.ok){ toast(r.error, 'error'); return false; }
+    toast(r.message || '已确认', 'success'); closeDrawer(); renderAdminOrders(window._orderFilter.page || 1);
+  }});
+}
+async function adminFulfill(id){
+  showModal({ title: '发货', bodyHTML: '<p>卡密类商品留空将自动从预留卡中发卡（旧订单无预留时抢可用卡）；代充 / 手动交付请填写交付内容。</p>', confirmText: '确认发货', showInput: true, inputLabel: '交付内容（卡密类可留空自动发卡）', inputPlaceholder: '账号 / 密码 / 兑换说明', onConfirm: async function(delivery){
+    var r = await api('/api/admin/orders/' + id + '/fulfill', 'POST', { delivery_content: delivery || '' });
+    if (!r.ok){ toast(r.error, 'error'); return false; }
+    toast('已发货', 'success'); closeDrawer(); renderAdminOrders(window._orderFilter.page || 1);
+  }});
+}
+async function adminCancel(id){
+  showModal({ title: '取消订单', bodyHTML: '<p>取消后订单不可恢复，卡密预留（如有）将自动释放。确定取消？</p>', confirmText: '确认取消', danger: true, showInput: true, inputLabel: '取消原因（必填，记入审计）', inputPlaceholder: '如：客户要求取消 / 无法交付', onConfirm: async function(reason){
+    if (!reason || !reason.trim()){ toast('请填写取消原因', 'error'); return false; }
+    var r = await api('/api/admin/orders/' + id + '/cancel', 'POST', { reason: reason.trim() });
+    if (!r.ok){ toast(r.error, 'error'); return false; }
+    toast('已取消', 'success'); closeDrawer(); renderAdminOrders(window._orderFilter.page || 1);
+  }});
+}
+// ---- 商品管理 ----
+window._prodFilter = { q: '', category: '', source: '', is_active: '', stock: '', page: 1 };
+async function renderAdminProducts(page){
+  var f = window._prodFilter;
+  f.page = page || 1;
+  var qs = '/api/admin/products?page=' + f.page + '&page_size=20';
+  if (f.q) qs += '&q=' + encodeURIComponent(f.q);
+  if (f.category) qs += '&category=' + encodeURIComponent(f.category);
+  if (f.source) qs += '&source=' + encodeURIComponent(f.source);
+  if (f.is_active !== '') qs += '&is_active=' + f.is_active;
+  if (f.stock) qs += '&stock=' + f.stock;
+  var r = await api(qs);
+  if (!r.ok){ el('adminBody').innerHTML = '<div class="adm-empty">加载失败：' + escH(r.error) + '</div>'; return; }
+  var list = r.products || [];
+  window._adminProducts = list;
+  function selOpts(opts, cur){ var h = ''; for (var i = 0; i < opts.length; i++) h += '<option value="' + opts[i][0] + '"' + (String(cur) === String(opts[i][0]) ? ' selected' : '') + '>' + opts[i][1] + '</option>'; return h; }
+  var h = '<div class="admin-page"><div class="admin-page-head"><h2>商品管理</h2><button class="btn" onclick="adminProductForm(null)">+ 新增商品</button></div>';
+  h += '<div class="admin-toolbar"><input id="prodQ" placeholder="搜索标题 / slug" value="' + escH(f.q) + '" onkeydown="if(event.key===\'Enter\')adminProdSearch()"><select id="prodCat" onchange="adminProdSearch()">' + selOpts([['', '全部分类'], ['recharge', '代充'], ['account', '成品号'], ['card', '卡密']], f.category) + '</select><select id="prodSrc" onchange="adminProdSearch()">' + selOpts([['', '全部来源'], ['self', '自营'], ['prodseller', '上游']], f.source) + '</select><select id="prodAct" onchange="adminProdSearch()">' + selOpts([['', '在售/下架'], ['1', '在售'], ['0', '下架']], f.is_active) + '</select><select id="prodStock" onchange="adminProdSearch()">' + selOpts([['', '全部库存'], ['in', '有货'], ['out', '缺货']], f.stock) + '</select><button class="btn" onclick="adminProdSearch()">搜索</button><button class="btn ghost" onclick="adminProdReset()">重置</button></div>';
+  h += '<p class="muted">共 ' + (r.total || 0) + ' 件商品。毛利 = 售价 − 成本价；无成本数据的商品毛利显示 —。</p>';
+  if (!list.length) h += '<div class="adm-empty">暂无符合条件的商品</div>';
+  else {
+    h += '<div class="adm-table-wrap"><table class="adm-table"><thead><tr><th>商品</th><th>ID</th><th>分类</th><th>来源</th><th>成本</th><th>售价</th><th>毛利</th><th>库存</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+    for (var i = 0; i < list.length; i++){ var p = list[i]; var eff = Number(p.sell_price || p.price_usdt || 0); var cost = Number(p.cost_price || 0);
+      var marginHtml = (cost > 0) ? (eff - cost).toFixed(2) + ' USDT' : '—';
+      var stockHtml = '';
+      if (p.source === 'prodseller') stockHtml = Number(p.in_stock) ? '<span class="spill green">有货</span>' : '<span class="spill red">缺货</span>';
+      else if (p.stock_type === 'card' || p.category === 'account') stockHtml = '可用 ' + (p.card_stock || 0) + (Number(p.card_reserved || 0) ? ' · 预留 ' + p.card_reserved : '');
+      else stockHtml = Number(p.in_stock) ? '<span class="spill green">有货</span>' : '<span class="spill red">缺货</span>';
+      var isSelfCard = (p.source !== 'prodseller') && (p.stock_type === 'card' || p.category === 'account');
+      h += '<tr><td data-label="商品"><b>' + escH(p.title) + '</b><div class="muted">' + escH(p.slug) + '</div></td><td data-label="ID">' + p.id + '</td><td data-label="分类">' + escH(catLabel(p.category)) + '</td><td data-label="来源">' + escH(p.source || 'self') + '</td><td data-label="成本">' + cost.toFixed(2) + ' USDT</td><td data-label="售价">' + eff.toFixed(2) + ' USDT</td><td data-label="毛利">' + marginHtml + '</td><td data-label="库存">' + stockHtml + '</td><td data-label="状态">' + (Number(p.is_active) ? '<span class="spill green">在售</span>' : '<span class="spill gray">下架</span>') + '</td><td data-label="操作"><div class="row"><button class="btn small ghost" data-id="' + p.id + '" onclick="adminProductForm(this.dataset.id)">编辑</button>' + (isSelfCard ? ' <button class="btn small" data-id="' + p.id + '" onclick="adminJumpToCards(this.dataset.id)">卡密</button>' : '') + ' <button class="btn small danger" data-id="' + p.id + '" onclick="adminDelProduct(this.dataset.id)">删除</button></div></td></tr>';
+    }
+    h += '</tbody></table></div>';
+    h += paginationHTML(r.page || 1, r.total_pages || 1, 'renderAdminProducts');
+  }
+  h += '</div>';
+  el('adminBody').innerHTML = h;
+}
+function adminProdSearch(){
+  var f = window._prodFilter;
+  f.q = el('prodQ') ? el('prodQ').value.trim() : '';
+  f.category = el('prodCat') ? el('prodCat').value : '';
+  f.source = el('prodSrc') ? el('prodSrc').value : '';
+  f.is_active = el('prodAct') ? el('prodAct').value : '';
+  f.stock = el('prodStock') ? el('prodStock').value : '';
+  renderAdminProducts(1);
+}
+function adminProdReset(){ window._prodFilter = { q: '', category: '', source: '', is_active: '', stock: '', page: 1 }; renderAdminProducts(1); }
+function adminJumpToCards(pid){
+  window._cardFilter = window._cardFilter || {};
+  window._cardFilter.product_id = String(pid);
+  adminTab('cards');
+}
+function productFormHTML(pfx, p){
+  p = p || {};
+  function v(k, d){ var x = p[k]; return escH(x == null ? (d == null ? '' : d) : x); }
+  function sel(k, opts){ var h = ''; for (var i = 0; i < opts.length; i++){ h += '<option value="' + opts[i][0] + '"' + (String(p[k]) === opts[i][0] ? ' selected' : '') + '>' + opts[i][1] + '</option>'; } return h; }
+  var isUp = String(p.source) === 'prodseller';
+  var initCat = p.category || 'recharge';
+  var initHint = initCat === 'card' ? '发货方式：付款后从卡密库自动发。保存后，去左侧「卡密库存」按商品筛选批量导入卡密。' : (initCat === 'account' ? '发货方式：付款后从卡密库自动发（成品号按账号卡密发）。保存后，去左侧「卡密库存」按商品筛选批量导入账号。' : '发货方式：付款后人工发货。确认收款后，在订单页点「发货」填交付内容。');
+  var h = '<div class="field-grid">';
+  h += '<div><label>slug（商品链接唯一标识，留空自动生成；修改后旧链接失效）</label><input id="' + pfx + 'slug" value="' + v('slug') + '"></div>';
+  h += '<div><label>标题 *</label><input id="' + pfx + 'title" value="' + v('title') + '"></div>';
+  h += '<div><label>售价 USDT *</label><input id="' + pfx + 'price" type="number" step="0.01" min="0" value="' + v('sell_price', v('price_usdt', 0)) + '"></div>';
+  h += '<div><label>成本价 cost_price</label><input id="' + pfx + 'cost" type="number" step="0.01" min="0" value="' + v('cost_price', 0) + '"></div>';
+  h += '<div><label>来源</label><select id="' + pfx + 'source" onchange="adminSourceChange(\'' + pfx + '\')">' + sel('source', [['self','自营 self'],['prodseller','上游 prodseller']]) + '</select></div>';
+  h += '<div id="' + pfx + 'psid-row"' + (isUp ? '' : ' style="display:none"') + '><label>上游商品 ID（仅上游）</label><input id="' + pfx + 'psid" value="' + v('prodseller_id') + '"><div class="muted" style="margin-top:4px">一般不用手动填：去上游页同步 + 导入，系统自动填。上游发货靠这个 ID 去 ProdSeller 拿货。</div></div>';
+  h += '<div><label>分类</label><select id="' + pfx + 'cat" onchange="adminCatChange(\'' + pfx + '\')">' + sel('category', [['recharge','代充'],['account','成品号'],['card','卡密']]) + '</select></div>';
+  h += '<div><label>库存类型</label><select id="' + pfx + 'stock" onchange="adminStockRow(\'' + pfx + '\')">' + sel('stock_type', [['manual','人工发货'],['card','卡密自动发']]) + '</select></div>';
+  var showStockRow = (String(p.source) !== 'prodseller') && !(p.stock_type === 'card' || p.category === 'account');
+  h += '<div id="' + pfx + 'stock-row"' + (showStockRow ? '' : ' style="display:none"') + '><label>库存状态</label><select id="' + pfx + 'instock">' + sel('in_stock', [['1','有货'],['0','缺货']]) + '</select><div class="muted" style="margin-top:4px">仅人工发货商品有效：选缺货后前台显示「缺货 · 补货中」，顾客无法下单。卡密/成品号商品的库存由卡密数量决定，上游商品由上游同步。</div></div>';
+  h += '<div><label>商品图片</label><div id="' + pfx + 'imgpv">' + (p.image_data ? '<img src="' + escH(p.image_data) + '" style="width:120px;height:120px;object-fit:cover;border-radius:16px">' : '<div class="muted">暂无图片，将显示默认图标</div>') + '</div><input type="file" accept="image/*" style="margin-top:8px" onchange="handleProductImage(this.files[0], \'' + pfx + '\')"><div class="muted" style="margin-top:4px">最佳比例 1:1（正方形），建议 800×800；非正方形会自动居中裁剪，原图不超过 2MB，上传后自动压缩。</div><button type="button" class="btn small ghost" style="margin-top:8px" onclick="clearProductImage(\'' + pfx + '\')">移除图片</button></div>';
+  h += '<div><label>在售</label><select id="' + pfx + 'active">' + sel('is_active', [['1','在售'],['0','下架']]) + '</select></div>';
+  h += '</div>';
+  h += '<div id="' + pfx + 'delivery-hint" class="muted" style="margin-top:8px">' + initHint + '</div>';
+  h += '<label>说明</label><input id="' + pfx + 'desc" value="' + v('description') + '">';
+  h += '<label>使用说明（显示在详情页）</label><textarea id="' + pfx + 'notice" rows="2">' + v('notice') + '</textarea>';
+  h += '<label><input type="checkbox" id="' + pfx + 'reqact" style="width:auto"' + (Number(p.requires_email_activation) ? ' checked' : '') + '> 需要激活邮箱</label>';
+  return h;
 }
 function adminSourceChange(pfx){
   var row = document.getElementById(pfx + 'psid-row');
@@ -483,162 +941,56 @@ function adminDeliveryHint(pfx){
   var hint = document.getElementById(pfx + 'delivery-hint');
   if (!hint) return;
   var cat = el(pfx + 'cat').value;
-  if (cat === 'card') hint.textContent = '发货方式：付款后从卡密库自动发。添加商品后，去左侧「卡密」页按商品 ID 批量导入卡密。';
-  else if (cat === 'account') hint.textContent = '发货方式：付款后从卡密库自动发（成品号按账号卡密发）。添加商品后，去左侧「卡密」页按商品 ID 批量导入账号。';
+  if (cat === 'card') hint.textContent = '发货方式：付款后从卡密库自动发。保存后，去左侧「卡密库存」按商品筛选批量导入卡密。';
+  else if (cat === 'account') hint.textContent = '发货方式：付款后从卡密库自动发（成品号按账号卡密发）。保存后，去左侧「卡密库存」按商品筛选批量导入账号。';
   else hint.textContent = '发货方式：付款后人工发货。确认收款后，在订单页点「发货」填交付内容。';
 }
-function adminJumpToCards(pid){
-  adminTab('cards');
-  setTimeout(function(){ var i = el('ci-pid'); if (i){ i.value = pid; i.focus(); } }, 300);
-}
-function adminSettingField(sv, k, label, rows){
-  return '<div><label>' + label + '（' + k + '）</label><textarea data-sk="' + k + '" rows="' + (rows || 2) + '">' + escH(sv[k] || '') + '</textarea></div>';
-}
-function productFormHTML(pfx, p){
-  p = p || {};
-  function v(k, d){ var x = p[k]; return escH(x == null ? (d == null ? '' : d) : x); }
-  function sel(k, opts){ var h = ''; for (var i = 0; i < opts.length; i++){ h += '<option value="' + opts[i][0] + '"' + (String(p[k]) === opts[i][0] ? ' selected' : '') + '>' + opts[i][1] + '</option>'; } return h; }
-  var isUp = String(p.source) === 'prodseller';
-  var initCat = p.category || 'recharge';
-  var initHint = initCat === 'card' ? '发货方式：付款后从卡密库自动发。添加商品后，去左侧「卡密」页按商品 ID 批量导入卡密。' : (initCat === 'account' ? '发货方式：付款后从卡密库自动发（成品号按账号卡密发）。添加商品后，去左侧「卡密」页按商品 ID 批量导入账号。' : '发货方式：付款后人工发货。确认收款后，在订单页点「发货」填交付内容。');
-  var h = '<div class="field-grid">';
-  h += '<div><label>slug（商品链接唯一标识，留空自动生成）</label><input id="' + pfx + 'slug" value="' + v('slug') + '"></div>';
-  h += '<div><label>标题</label><input id="' + pfx + 'title" value="' + v('title') + '"></div>';
-  h += '<div><label>售价 USDT</label><input id="' + pfx + 'price" type="number" step="0.01" value="' + v('sell_price', v('price_usdt', 0)) + '"></div>';
-  h += '<div><label>成本价 cost_price</label><input id="' + pfx + 'cost" type="number" step="0.01" value="' + v('cost_price', 0) + '"></div>';
-  h += '<div><label>来源</label><select id="' + pfx + 'source" onchange="adminSourceChange(\'' + pfx + '\')">' + sel('source', [['self','自营 self'],['prodseller','上游 prodseller']]) + '</select></div>';
-  h += '<div id="' + pfx + 'psid-row"' + (isUp ? '' : ' style="display:none"') + '><label>上游商品 ID（仅上游）</label><input id="' + pfx + 'psid" value="' + v('prodseller_id') + '"><div class="muted" style="margin-top:4px">一般不用手动填：去上游页同步 + 导入，系统自动填。上游发货靠这个 ID 去 ProdSeller 拿货。</div></div>';
-  h += '<div><label>分类</label><select id="' + pfx + 'cat" onchange="adminCatChange(\'' + pfx + '\')">' + sel('category', [['recharge','代充'],['account','成品号'],['card','卡密']]) + '</select></div>';
-  h += '<div><label>库存类型</label><select id="' + pfx + 'stock" onchange="adminStockRow(\'' + pfx + '\')">' + sel('stock_type', [['manual','人工发货'],['card','卡密自动发']]) + '</select></div>';
-  var showStockRow = (String(p.source) !== 'prodseller') && !(p.stock_type === 'card' || p.category === 'account');
-  h += '<div id="' + pfx + 'stock-row"' + (showStockRow ? '' : ' style="display:none"') + '><label>库存状态</label><select id="' + pfx + 'instock">' + sel('in_stock', [['1','有货'],['0','缺货']]) + '</select><div class="muted" style="margin-top:4px">仅人工发货商品有效：选缺货后前台显示「缺货 · 补货中」，顾客无法下单。卡密/成品号商品的库存由卡密数量决定，上游商品由上游同步。</div></div>';
-  h += '<div><label>商品图片</label><div id="' + pfx + 'imgpv">' + (p.image_data ? '<img src="' + escH(p.image_data) + '" style="width:120px;height:120px;object-fit:cover;border-radius:16px">' : '<div class="muted">暂无图片，将显示默认图标</div>') + '</div><input type="file" accept="image/*" style="margin-top:8px" onchange="handleProductImage(this.files[0], \'' + pfx + '\')"><div class="muted" style="margin-top:4px">最佳比例 1:1（正方形），建议 800×800；非正方形会自动居中裁剪，原图不超过 2MB，上传后自动压缩。</div><button type="button" class="btn small ghost" style="margin-top:8px" onclick="clearProductImage(\'' + pfx + '\')">移除图片</button></div>';
-  h += '<div><label>在售</label><select id="' + pfx + 'active">' + sel('is_active', [['1','在售'],['0','下架']]) + '</select></div>';
-  h += '</div>';
-  h += '<div id="' + pfx + 'delivery-hint" class="muted" style="margin-top:8px">' + initHint + '</div>';
-  h += '<label>说明</label><input id="' + pfx + 'desc" value="' + v('description') + '">';
-  h += '<label>使用说明（显示在详情页）</label><textarea id="' + pfx + 'notice" rows="2">' + v('notice') + '</textarea>';
-  h += '<label><input type="checkbox" id="' + pfx + 'reqact" style="width:auto"' + (Number(p.requires_email_activation) ? ' checked' : '') + '> 需要激活邮箱</label>';
-  return h;
-}
-function adminStatsHTML(s){
-  var cards = [
-    ['订单总数', s.total_orders || 0, ''],
-    ['待付款', s.pending_payment || 0, 'warn'],
-    ['待发货', s.pending_fulfill || 0, 'warn'],
-    ['激活待处理', s.pending_activation || 0, 'warn'],
-    ['待处理', s.pending_upstream || 0, 'bad'],
-    ['已完成', s.completed || 0, 'good'],
-    ['收入 (USDT)', s.revenue_usdt || 0, 'good'],
-    ['在售商品', s.active_products || 0, ''],
-    ['卡密库存', s.card_stock || 0, '']
-  ];
-  var h = '<div class="stat-grid">';
-  for (var i = 0; i < cards.length; i++){ h += '<div class="stat-card ' + cards[i][2] + '"><div class="lbl">' + cards[i][0] + '</div><div class="num">' + cards[i][1] + '</div></div>'; }
-  return h + '</div>';
-}
-async function renderAdminHome(){
-  window._adminTab = window._adminTab || 'data';
-  var html = '<div class="admin-layout"><div class="admin-backdrop" onclick="adminToggleSide(false)"></div>';
-  html += '<aside class="admin-side"><div class="admin-side-head"><b>管理后台</b><button class="admin-side-close" onclick="adminToggleSide(false)">✕</button></div>';
-  html += adminNavHTML();
-  html += '<div class="admin-side-foot"><button class="btn small ghost" onclick="adminLogout()">退出登录</button><a href="#/" class="muted">← 返回商城</a></div></aside>';
-  html += '<div class="admin-main"><div class="admin-topbar"><button class="admin-burger" onclick="adminToggleSide(true)">☰</button><div class="h2" id="adminTitle" style="margin:0">数据</div></div>';
-  html += '<div id="adminBody"></div></div></div>';
-  el('app').innerHTML = html; adminTab(window._adminTab);
-}
-function adminProductCard(p){
-  var eff = Number(p.sell_price || p.price_usdt || 0);
-  var h = '<div class="admin-card prod-card">' + productThumb(p) + '<div class="row" style="justify-content:space-between;margin-top:8px"><span class="muted">ID ' + p.id + '</span>' + (Number(p.is_active) ? '<span class="spill green">在售</span>' : '<span class="spill gray">已下架</span>') + '</div>';
-  h += '<div style="margin-top:8px"><b>' + escH(p.title) + '</b></div>';
-  h += '<div class="muted" style="margin-top:4px">' + escH(p.category) + ' / ' + escH(p.stock_type) + ' · ' + escH(p.source || 'self') + '</div>';
-  if (p.source !== 'prodseller' && (p.stock_type === 'card' || p.category === 'account')) {
-    var cs = Number(p.card_stock || 0);
-    h += '<div class="muted" style="margin-top:4px">卡密库存：' + cs + (cs === 0 ? ' ⚠️ 需补货' : '') + '</div>';
-  } else if (Number(p.in_stock) === 0) {
-    h += '<div class="muted" style="margin-top:4px">缺货（前台显示缺货 · 补货中）</div>';
-  }
-  h += '<div class="price" style="margin-top:6px">' + fmtPrice(eff) + '</div>';
-  var isSelfCard = (p.source !== 'prodseller') && (p.stock_type === 'card' || p.category === 'account');
-  h += '<div class="row" style="margin-top:10px"><button class="btn small ghost" data-id="' + p.id + '" onclick="adminEditProduct(this.dataset.id)">编辑</button>' + (isSelfCard ? ' <button class="btn small" data-id="' + p.id + '" onclick="adminJumpToCards(this.dataset.id)">导入卡密</button>' : '') + ' <button class="btn small danger" data-id="' + p.id + '" onclick="adminDelProduct(this.dataset.id)">删除</button></div>';
-  h += '<div id="edit-' + p.id + '" style="display:none;margin-top:12px"></div></div>';
-  return h;
-}
-async function adminTab(t){
-  window._adminTab = t;
-  adminNavSync();
-  if (t === 'data'){
-    var st = await api('/api/admin/stats'); var s = st.stats || {};
-    el('adminBody').innerHTML = adminStatsHTML(s);
-    return;
-  }
-  if (t === 'orders'){
-    var r = await api('/api/admin/orders'); var list = r.orders || [];
-    var h = '<div class="admin-card"><div class="row" style="justify-content:space-between"><b>订单</b><button class="btn small ghost" onclick="adminCleanup()">执行 7 天清理</button></div><p class="muted" style="margin:8px 0 0">卡密类：点确认收款即自动发卡；代充 / 成品号：先确认收款，再点发货填交付内容。</p></div>';
-    if (!list.length) h += '<div class="empty">暂无订单</div>';
-    else h += '<div class="order-grid">';
-    for (var i = 0; i < list.length; i++){ var o = list[i]; var snap = o.product_snapshot || {};
-      h += '<div class="admin-card order-card"><div class="row" style="justify-content:space-between"><b>' + escH(o.order_no) + '</b>' + statusPill(o.status) + '</div>';
-      h += '<div class="muted" style="margin-top:8px">' + escH(snap.title || '') + ' × ' + o.quantity + ' · ' + o.total_usdt + ' USDT · ' + escH(o.pay_method || '') + ' · ' + escH(o.pay_chain || '') + '</div>';
-      if (o.txid) h += '<div class="muted">TXID：' + escH(o.txid) + '</div>';
-      if (o.admin_note) h += '<div class="muted">备注：' + escH(o.admin_note) + '</div>';
-      h += '<div class="row" style="margin-top:12px"><button class="btn small" data-id="' + o.id + '" onclick="adminConfirm(this.dataset.id)">确认收款</button> <button class="btn small ghost" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">发货</button> <button class="btn small danger" data-id="' + o.id + '" onclick="adminCancel(this.dataset.id)">取消</button></div></div>';
+async function adminProductForm(id){
+  var p = null;
+  if (id) { for (var i = 0; i < (window._adminProducts || []).length; i++){ if (String(window._adminProducts[i].id) === String(id)) p = window._adminProducts[i]; } }
+  var pfx = 'pm-';
+  window._productImage = {};
+  showModal({ title: id ? '编辑商品' : '新增商品', bodyHTML: '<div>' + productFormHTML(pfx, p) + '</div>', confirmText: '保存', onConfirm: async function(){
+    var slugVal = (el(pfx + 'slug').value || '').trim().toLowerCase().replace(/[^a-z0-9\-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!slugVal) slugVal = 'p-' + Date.now().toString(36);
+    var titleVal = (el(pfx + 'title').value || '').trim();
+    if (!titleVal){ toast('标题必填', 'error'); return false; }
+    var priceVal = parseFloat(el(pfx + 'price').value || '0');
+    if (!isFinite(priceVal) || priceVal < 0){ toast('售价无效', 'error'); return false; }
+    var body = { slug: slugVal, title: titleVal, price_usdt: priceVal, sell_price: priceVal, cost_price: parseFloat(el(pfx + 'cost').value || '0'), source: el(pfx + 'source').value, prodseller_id: el(pfx + 'psid').value, requires_email_activation: el(pfx + 'reqact').checked ? 1 : 0, delivery_method: 'both', category: el(pfx + 'cat').value, stock_type: el(pfx + 'stock').value, description: el(pfx + 'desc').value, notice: el(pfx + 'notice').value, image_emoji: '🤖', is_active: Number(el(pfx + 'active').value), in_stock: Number(el(pfx + 'instock').value) };
+    if (id){
+      var old = p;
+      body.image_emoji = (old && old.image_emoji) || '🤖';
+      if (window._productImage && (pfx in window._productImage)) body.image_data = window._productImage[pfx];
+      var ff = [{ key: 'contact', label: '联系方式（邮箱/TG）', required: true, placeholder: '' }];
+      if (old && old.form_fields != null){ if (typeof old.form_fields === 'string'){ try { ff = JSON.parse(old.form_fields); } catch (e) { ff = ff; } } else { ff = old.form_fields; } }
+      body.form_fields = ff;
+      var r = await api('/api/admin/products/' + id, 'PUT', body);
+      if (!r.ok){ toast(r.error, 'error'); return false; }
+    } else {
+      body.form_fields = [{ key: 'contact', label: '联系方式（邮箱/TG）', required: true, placeholder: '' }];
+      if (window._productImage && (pfx in window._productImage)) body.image_data = window._productImage[pfx];
+      var r2 = await api('/api/admin/products', 'POST', body);
+      if (!r2.ok){ toast(r2.error, 'error'); return false; }
     }
-    if (list.length) h += '</div>';
-    el('adminBody').innerHTML = h;
-  }
-  if (t === 'products'){
-    var pr = await api('/api/admin/products'); var plist = pr.products || []; window._adminProducts = plist;
-    var upList = plist.filter(function(x){ return x.source === 'prodseller'; });
-    var selfList = plist.filter(function(x){ return x.source !== 'prodseller'; });
-    var h = '<div class="admin-group collapsed" id="grp-up"><div class="admin-group-head" onclick="adminToggleGroup(\'grp-up\')"><span class="h2" style="margin:0">对接商品 (' + upList.length + ')</span><span class="admin-group-chev">▼</span></div><div class="admin-group-body">';
-    h += upList.length ? '<div class="prod-grid">' + upList.map(adminProductCard).join('') + '</div>' : '<div class="empty">暂无对接商品</div>';
-    h += '</div></div>';
-    h += '<div class="admin-group" id="grp-self" style="margin-top:24px"><div class="admin-group-head" onclick="adminToggleGroup(\'grp-self\')"><span class="h2" style="margin:0">自营商品 (' + selfList.length + ')</span><span class="admin-group-chev">▼</span></div><div class="admin-group-body">';
-    h += selfList.length ? '<div class="prod-grid">' + selfList.map(adminProductCard).join('') + '</div>' : '<div class="empty">暂无自营商品</div>';
-    h += '</div></div>';
-    h += '<div class="admin-card"><b>新增商品</b><div style="margin-top:8px">' + productFormHTML('np-', null) + '</div><div style="margin-top:12px"><button class="btn small" onclick="adminSaveProduct(null)">添加商品</button></div></div>';
-    el('adminBody').innerHTML = h;
-  }
-  if (t === 'cards'){
-    var cr = await api('/api/admin/cards'); var clist = cr.cards || [];
-    var h = '<div class="admin-card"><b>卡密列表</b><p class="muted" style="margin:8px 0 0">共 ' + clist.length + ' 条（最近 500 条）</p></div>';
-    h += '<div class="admin-card table-card"><table class="table resp" style="margin:0"><tr><th>ID</th><th>商品ID</th><th>卡密</th><th>状态</th><th>操作</th></tr>';
-    for (var k = 0; k < clist.length; k++){ var c = clist[k];
-      h += '<tr><td data-label="ID">' + c.id + '</td><td data-label="商品ID">' + c.product_id + '</td><td data-label="卡密">' + escH(c.code) + '</td><td data-label="状态">' + (c.is_used ? '<span class="spill gray">已用</span>' : '<span class="spill green">未用</span>') + ' ' + (c.is_disabled ? '<span class="spill red">禁用</span>' : '') + '</td><td data-label="操作"><button class="btn small danger" data-id="' + c.id + '" onclick="adminDelCard(this.dataset.id)">删除</button></td></tr>';
-    }
-    h += '</table></div>';
-    h += '<div class="admin-card"><b>批量导入卡密</b><label>商品ID（卡密类商品的ID）</label><input id="ci-pid" type="number"><label>卡密（每行一个）</label><textarea id="ci-codes" rows="4"></textarea><div style="margin-top:10px"><button class="btn small" onclick="adminImportCards()">导入</button></div></div>';
-    el('adminBody').innerHTML = h;
-  }
-  if (t === 'upstream'){
-    var al = await api('/api/admin/upstream/alerts'); var alerts = al.alerts || [];
-    var h = '<div class="admin-card"><b>上游同步</b><p class="muted" style="margin:8px 0">同步限速 300 / 15min，结果缓存到 upstream_cache，导入只从缓存读。售价 = cost × markup + fixed（在设置里配）。</p><div class="row"><button class="btn small" onclick="adminUpstreamSync()">同步上游商品</button> <button class="btn small ghost" onclick="adminUpstreamBalance()">查余额</button></div><div id="upRes" class="muted" style="margin-top:10px"></div></div>';
-    h += '<div class="admin-card"><b>置顶告警 · pending_upstream</b><p class="muted" style="margin:8px 0 0">402 余额不足 / 409 缺货 / 上游错误，不发货。</p>';
-    if (!alerts.length) h += '<div class="empty">暂无告警</div>';
-    else { h += '<table class="table resp"><tr><th>ID</th><th>订单号</th><th>原因</th></tr>'; for (var ai = 0; ai < alerts.length; ai++){ var ao = alerts[ai]; h += '<tr><td data-label="ID">' + ao.id + '</td><td data-label="订单号">' + escH(ao.order_no) + '</td><td data-label="原因">' + escH(ao.admin_note || '') + '</td></tr>'; } h += '</table>'; }
-    h += '</div>';
-    h += '<div class="admin-card"><b>导入上游商品</b><label>上游商品 ID（多个用英文逗号分隔，对应缓存里的 id）</label><input id="up-ids" placeholder="如 123,456"><div style="margin-top:10px"><button class="btn small" onclick="adminUpstreamImport()">从缓存导入</button></div></div>';
-    el('adminBody').innerHTML = h;
-  }
-  if (t === 'settings'){
-    var sr = await api('/api/admin/settings'); var sv = sr.settings || {};
-    var h = '<div class="admin-card"><b>基础设置</b>' + adminSettingField(sv, 'site_name', '站点名称', 1) + adminSettingField(sv, 'announcement', '公告', 2) + adminSettingField(sv, 'order_notice', '下单须知', 3) + adminSettingField(sv, 'tg_link', '客服 / TG 链接', 1) + '</div>';
-    h += '<div class="admin-card"><b>收款设置</b>' + adminSettingField(sv, 'usdt_addresses', '收款地址 JSON（键：支付方式|链）', 3) + adminSettingField(sv, 'binance_uid', '币安 UID', 1) + adminSettingField(sv, 'pay_tutorials', '支付教程 JSON', 2) + '</div>';
-    h += '<div class="admin-card"><b>到账轮询</b>' + adminSettingField(sv, 'poll_enabled', '轮询开关（1 开 / 0 关）', 1) + adminSettingField(sv, 'rpc_urls', 'RPC 地址 JSON', 3) + adminSettingField(sv, 'usdt_contracts', 'USDT 合约 JSON', 3) + '</div>';
-    h += '<div class="admin-card"><b>上游与汇率</b>' + adminSettingField(sv, 'prodseller_base_url', '上游 Base URL', 1) + adminSettingField(sv, 'upstream_markup', '上游加价倍率', 1) + adminSettingField(sv, 'upstream_fixed', '上游固定加价', 1) + adminSettingField(sv, 'cny_rate', 'CNY 汇率', 1) + '</div>';
-    h += '<div><button class="btn" onclick="adminSaveSettings()">保存设置</button></div>';
-    el('adminBody').innerHTML = h;
-  }
+    toast('已保存', 'success');
+    renderAdminProducts(window._prodFilter.page || 1);
+  }});
 }
-async function adminConfirm(id){ var r = await api('/api/admin/orders/' + id + '/confirm-payment', 'POST', {}); if (!r.ok){ alert(r.error); return; } alert(r.message || '已确认'); adminTab('orders'); }
-async function adminFulfill(id){ var d = prompt('交付内容（卡密类留空自动发卡，代充/成品号请填账号/密码/说明）：', ''); if (d === null) return; var r = await api('/api/admin/orders/' + id + '/fulfill', 'POST', { delivery_content: d }); if (!r.ok){ alert(r.error); return; } alert('已发货'); adminTab('orders'); }
-async function adminCancel(id){ if (!confirm('确认取消该订单？')) return; var r = await api('/api/admin/orders/' + id + '/cancel', 'POST', {}); if (!r.ok){ alert(r.error); return; } adminTab('orders'); }
-async function adminCleanup(){ var r = await api('/api/admin/cleanup', 'POST', {}); alert(r.message || '已执行'); }
+async function adminDelProduct(id){
+  var p = null;
+  for (var i = 0; i < (window._adminProducts || []).length; i++){ if (String(window._adminProducts[i].id) === String(id)) p = window._adminProducts[i]; }
+  showModal({ title: '删除商品', bodyHTML: '<p>确定删除商品 <b>' + escH(p ? p.title : id) + '</b>？</p><p class="muted">已有订单的商品无法物理删除（请改用下架）；还有卡密的商品需先处理卡密。订单快照不受影响。</p>', confirmText: '确认删除', danger: true, onConfirm: async function(){
+    var r = await api('/api/admin/products/' + id, 'DELETE');
+    if (!r.ok){ toast(r.error, 'error'); return false; }
+    toast('已删除', 'success');
+    renderAdminProducts(window._prodFilter.page || 1);
+  }});
+}
 function handleProductImage(file, pfx){
   if (!file) return;
-  if (file.type.indexOf('image/') !== 0){ alert('请选择图片文件'); return; }
-  if (file.size > 2 * 1024 * 1024){ alert('图片不能超过 2MB'); return; }
+  if (file.type.indexOf('image/') !== 0){ toast('请选择图片文件', 'error'); return; }
+  if (file.size > 2 * 1024 * 1024){ toast('图片不能超过 2MB', 'error'); return; }
   var rd = new FileReader();
   rd.onload = function(){
     var img = new Image();
@@ -650,7 +1002,7 @@ function handleProductImage(file, pfx){
       ctx.drawImage(img, sx, sy, side, side, 0, 0, 800, 800);
       var url = cv.toDataURL('image/jpeg', 0.82);
       if (url.length > 700000) url = cv.toDataURL('image/jpeg', 0.6);
-      if (url.length > 700000){ alert('图片压缩后仍超过 500KB，请换一张更小的图'); return; }
+      if (url.length > 700000){ toast('图片压缩后仍超过 500KB，请换一张更小的图', 'error'); return; }
       window._productImage = window._productImage || {};
       window._productImage[pfx] = url;
       var pv = el(pfx + 'imgpv');
@@ -666,43 +1018,266 @@ function clearProductImage(pfx){
   var pv = el(pfx + 'imgpv');
   if (pv) pv.innerHTML = '<div class="muted">已移除，保存后显示默认图标</div>';
 }
-function adminEditProduct(id){
-  var box = el('edit-' + id); if (!box) return;
-  if (box.style.display !== 'none'){ box.style.display = 'none'; box.innerHTML = ''; return; }
-  var p = null; for (var i = 0; i < (window._adminProducts || []).length; i++){ if (String(window._adminProducts[i].id) === String(id)) p = window._adminProducts[i]; }
-  if (!p) return;
-  box.style.display = 'block';
-  box.innerHTML = productFormHTML('ep' + id + '-', p) + '<div class="row" style="margin-top:12px"><button class="btn small" data-id="' + id + '" onclick="adminSaveProduct(this.dataset.id)">保存</button> <button class="btn small ghost" data-id="' + id + '" onclick="adminEditProduct(this.dataset.id)">收起</button></div>';
-}
-async function adminSaveProduct(id){
-  var pfx = id ? 'ep' + id + '-' : 'np-';
-  var slugVal = (el(pfx + 'slug').value || '').trim().toLowerCase().replace(/[^a-z0-9\-]+/g, '-').replace(/^-+|-+$/g, '');
-  if (!slugVal) slugVal = 'p-' + Date.now().toString(36);
-  var body = { slug: slugVal, title: el(pfx + 'title').value, price_usdt: parseFloat(el(pfx + 'price').value || '0'), sell_price: parseFloat(el(pfx + 'price').value || '0'), cost_price: parseFloat(el(pfx + 'cost').value || '0'), source: el(pfx + 'source').value, prodseller_id: el(pfx + 'psid').value, requires_email_activation: el(pfx + 'reqact').checked ? 1 : 0, delivery_method: 'both', category: el(pfx + 'cat').value, stock_type: el(pfx + 'stock').value, description: el(pfx + 'desc').value, notice: el(pfx + 'notice').value, image_emoji: '🤖', is_active: Number(el(pfx + 'active').value), in_stock: Number(el(pfx + 'instock').value) };
-  if (id){
-    var old = null; for (var i = 0; i < (window._adminProducts || []).length; i++){ if (String(window._adminProducts[i].id) === String(id)) old = window._adminProducts[i]; }
-    body.image_emoji = (old && old.image_emoji) || '🤖';
-    if (window._productImage && (pfx in window._productImage)) body.image_data = window._productImage[pfx];
-    var ff = [{ key: 'contact', label: '联系方式（邮箱/TG）', required: true, placeholder: '' }];
-    if (old && old.form_fields != null){ if (typeof old.form_fields === 'string'){ try { ff = JSON.parse(old.form_fields); } catch (e) { ff = ff; } } else { ff = old.form_fields; } }
-    body.form_fields = ff;
-    var r = await api('/api/admin/products/' + id, 'PUT', body);
-  } else {
-    body.form_fields = [{ key: 'contact', label: '联系方式（邮箱/TG）', required: true, placeholder: '' }];
-    if (window._productImage && (pfx in window._productImage)) body.image_data = window._productImage[pfx];
-    var r = await api('/api/admin/products', 'POST', body);
+// ---- 卡密库存 ----
+window._cardFilter = { product_id: '', status: '', q: '', page: 1 };
+async function renderAdminCards(page){
+  var f = window._cardFilter;
+  f.page = page || 1;
+  var qs = '/api/admin/cards?page=' + f.page + '&page_size=20';
+  if (f.product_id) qs += '&product_id=' + encodeURIComponent(f.product_id);
+  if (f.status) qs += '&status=' + encodeURIComponent(f.status);
+  if (f.q) qs += '&q=' + encodeURIComponent(f.q);
+  var r = await api(qs);
+  if (!r.ok){ el('adminBody').innerHTML = '<div class="adm-empty">加载失败：' + escH(r.error) + '</div>'; return; }
+  var list = r.cards || [];
+  // 商品下拉：用商品列表的前 100 件
+  var pr = await api('/api/admin/products?page_size=100');
+  var prods = (pr && pr.products) || [];
+  var prodOpts = '<option value="">全部商品</option>';
+  for (var pi = 0; pi < prods.length; pi++) prodOpts += '<option value="' + prods[pi].id + '"' + (String(f.product_id) === String(prods[pi].id) ? ' selected' : '') + '>' + escH(prods[pi].title) + ' (ID ' + prods[pi].id + ')</option>';
+  function selOpts2(opts, cur){ var h = ''; for (var i = 0; i < opts.length; i++) h += '<option value="' + opts[i][0] + '"' + (String(cur) === String(opts[i][0]) ? ' selected' : '') + '>' + opts[i][1] + '</option>'; return h; }
+  var h = '<div class="admin-page"><div class="admin-page-head"><h2>卡密库存</h2></div>';
+  h += '<div class="admin-toolbar"><select id="cardProd" onchange="adminCardSearch()">' + prodOpts + '</select><select id="cardStatus" onchange="adminCardSearch()">' + selOpts2([['', '全部状态'], ['unused', '未用'], ['reserved', '已预留'], ['used', '已用'], ['disabled', '禁用']], f.status) + '</select><input id="cardQ" placeholder="搜索卡密 ID / 内容" value="' + escH(f.q) + '" onkeydown="if(event.key===\'Enter\')adminCardSearch()"><button class="btn" onclick="adminCardSearch()">搜索</button><button class="btn ghost" onclick="adminCardReset()">重置</button></div>';
+  h += '<p class="muted">共 ' + (r.total || 0) + ' 条卡密。已预留 = 被待付款订单占用，订单取消/超时后自动释放；已用卡密关联历史交付，不可删除。</p>';
+  if (!list.length) h += '<div class="adm-empty">暂无符合条件的卡密</div>';
+  else {
+    h += '<div class="adm-table-wrap"><table class="adm-table"><thead><tr><th>ID</th><th>商品ID</th><th>卡密</th><th>状态</th><th>预留订单</th><th>操作</th></tr></thead><tbody>';
+    for (var i = 0; i < list.length; i++){ var c = list[i];
+      var statusHtml = '';
+      if (c.is_used) statusHtml = '<span class="spill gray">已用</span>';
+      else if (c.is_disabled) statusHtml = '<span class="spill red">禁用</span>';
+      else if (c.reserved_order_id) statusHtml = '<span class="spill purple">已预留</span>';
+      else statusHtml = '<span class="spill green">未用</span>';
+      var canDisable = !c.is_used && !c.reserved_order_id;
+      var canDel = !c.is_used && !c.reserved_order_id;
+      h += '<tr><td data-label="ID">' + c.id + '</td><td data-label="商品ID">' + c.product_id + '</td><td data-label="卡密"><span class="adm-mono">' + escH(c.code) + '</span></td><td data-label="状态">' + statusHtml + '</td><td data-label="预留订单">' + (c.reserved_order_id ? '#' + c.reserved_order_id : '—') + '</td><td data-label="操作"><div class="row">' + (canDisable ? '<button class="btn small ghost" data-id="' + c.id + '" data-dis="' + (c.is_disabled ? 0 : 1) + '" onclick="adminToggleCard(this.dataset.id, this.dataset.dis)">' + (c.is_disabled ? '启用' : '禁用') + '</button>' : '') + (canDel ? ' <button class="btn small danger" data-id="' + c.id + '" onclick="adminDelCard(this.dataset.id)">删除</button>' : '<span class="muted">受保护</span>') + '</div></td></tr>';
+    }
+    h += '</tbody></table></div>';
+    h += paginationHTML(r.page || 1, r.total_pages || 1, 'renderAdminCards');
   }
-  if (!r.ok){ alert(r.error); return; }
-  if (window._productImage) delete window._productImage[pfx];
-  adminTab('products');
+  h += '<div class="adm-card" style="margin-top:14px"><h3>批量导入卡密</h3><p class="muted">仅自营卡密 / 成品号商品可导入。对接商品不需要卡密，人工发货商品请在订单页手动填写交付内容。</p><div class="adm-field"><label>商品</label><select id="ci-pid">' + prodOpts + '</select></div><div class="adm-field"><label>卡密（每行一个）</label><textarea id="ci-codes" rows="4"></textarea></div><button class="btn" id="importBtn" onclick="adminImportCards()">导入</button><div id="importRes" class="muted" style="margin-top:10px"></div></div>';
+  h += '</div>';
+  el('adminBody').innerHTML = h;
 }
-async function adminDelProduct(id){ if (!confirm('确认删除？订单快照不受影响')) return; await api('/api/admin/products/' + id, 'DELETE'); adminTab('products'); }
-async function adminImportCards(){ var r = await api('/api/admin/cards/import', 'POST', { product_id: parseInt(el('ci-pid').value || '0', 10), codes: el('ci-codes').value }); if (!r.ok){ alert(r.error); return; } alert('导入 ' + r.imported + ' 条'); adminTab('cards'); }
-async function adminDelCard(id){ if (!confirm('确认删除该卡密？')) return; await api('/api/admin/cards/' + id, 'DELETE'); adminTab('cards'); }
-async function adminSaveSettings(){ var obj = {}; var tas = document.querySelectorAll('[data-sk]'); for (var i = 0; i < tas.length; i++) obj[tas[i].getAttribute('data-sk')] = tas[i].value; var r = await api('/api/admin/settings', 'POST', { settings: obj }); if (!r.ok){ alert(r.error); return; } alert('已保存'); }
-async function adminUpstreamSync(){ var r = await api('/api/admin/upstream/sync', 'POST', {}); if (!r.ok){ alert(r.error); return; } el('upRes').textContent = '同步成功 ' + r.count + ' 件，fetched_at ' + r.fetched_at; }
-async function adminUpstreamBalance(){ var r = await api('/api/admin/upstream/balance'); if (!r.ok){ alert(r.error); return; } el('upRes').textContent = '余额：' + JSON.stringify(r.balance); }
-async function adminUpstreamImport(){ var ids = (el('up-ids').value || '').split(',').map(function(s){ return { id: s.trim() }; }).filter(function(x){ return x.id; }); if (!ids.length){ alert('请填写上游商品 ID'); return; } var r = await api('/api/admin/upstream/import', 'POST', { items: ids }); if (!r.ok){ alert(r.error); return; } alert('导入 ' + r.imported + ' 件（markup ' + r.markup + ' / fixed ' + r.fixed + '）'); adminTab('products'); }
+function adminCardSearch(){
+  var f = window._cardFilter;
+  f.product_id = el('cardProd') ? el('cardProd').value : '';
+  f.status = el('cardStatus') ? el('cardStatus').value : '';
+  f.q = el('cardQ') ? el('cardQ').value.trim() : '';
+  renderAdminCards(1);
+}
+function adminCardReset(){ window._cardFilter = { product_id: '', status: '', q: '', page: 1 }; renderAdminCards(1); }
+async function adminImportCards(){
+  var pid = parseInt(el('ci-pid').value || '0', 10);
+  var codes = el('ci-codes').value;
+  if (!pid){ toast('请选择商品', 'error'); return; }
+  if (!codes.trim()){ toast('请填写卡密', 'error'); return; }
+  var btn = el('importBtn'); setBtnLoading(btn, true);
+  var r = await api('/api/admin/cards/import', 'POST', { product_id: pid, codes: codes });
+  setBtnLoading(btn, false);
+  if (!r.ok){ toast(r.error, 'error'); return; }
+  var resEl = el('importRes');
+  if (resEl) resEl.textContent = '导入完成：新增 ' + r.added + ' 条，重复 ' + r.duplicate + ' 条，无效 ' + (r.invalid || 0) + ' 条（共 ' + r.total + ' 行）';
+  toast('导入完成：新增 ' + r.added + ' 条', 'success');
+  el('ci-codes').value = '';
+  renderAdminCards(1);
+}
+async function adminToggleCard(id, dis){
+  var r = await api('/api/admin/cards/' + id + '/disable', 'POST', { disabled: Number(dis) === 1 });
+  if (!r.ok){ toast(r.error, 'error'); return; }
+  toast(dis === '1' || dis === 1 ? '已禁用' : '已启用', 'success');
+  renderAdminCards(window._cardFilter.page || 1);
+}
+async function adminDelCard(id){
+  showModal({ title: '删除卡密', bodyHTML: '<p>确定删除该卡密？已用 / 被预留的卡密受保护，无法删除。</p>', confirmText: '确认删除', danger: true, onConfirm: async function(){
+    var r = await api('/api/admin/cards/' + id, 'DELETE');
+    if (!r.ok){ toast(r.error, 'error'); return false; }
+    toast('已删除', 'success');
+    renderAdminCards(window._cardFilter.page || 1);
+  }});
+}
+// ---- 上游管理 ----
+async function renderAdminUpstream(){
+  var al = await api('/api/admin/upstream/alerts');
+  var alerts = (al && al.alerts) || [];
+  var cache = await api('/api/admin/upstream/cache');
+  var hasCache = !!(cache && cache.cached);
+  var settings = await api('/api/admin/settings');
+  var sv = (settings && settings.settings) || {};
+  var markup = Number(sv.upstream_markup || 1.2) || 1.2;
+  var fixed = Number(sv.upstream_fixed || 0) || 0;
+  var h = '<div class="admin-page"><div class="admin-page-head"><h2>上游管理</h2></div>';
+  h += '<div class="adm-card"><h3>第一步：同步上游商品</h3><p class="muted">同步限速 300 / 15min，结果缓存到 upstream_cache，导入只从缓存读，不直接拉上游。售价 = cost × ' + markup + ' + ' + fixed + '（在设置里配）。</p><div class="row"><button class="btn" id="syncBtn" onclick="adminUpstreamSync()">同步上游商品</button> <button class="btn ghost" onclick="adminUpstreamBalance()">查余额</button></div><div id="upRes" class="muted" style="margin-top:10px">' + (hasCache ? '缓存有效：同步于 ' + escH(fmtTime(cache.fetched_at)) + '，共 ' + (Array.isArray(cache.payload) ? cache.payload.length : (cache.payload && Array.isArray(cache.payload.products) ? cache.payload.products.length : 0)) + ' 件。点同步可刷新。' : '暂无缓存，请先同步。') + '</div></div>';
+  h += '<div class="adm-card"><h3>第二步：浏览商品目录（来自缓存）</h3><p class="muted">勾选要导入的商品，导入前会展示成本、加价与最终售价预览。重新导入已存在的商品时，不会覆盖管理员人工修改的标题与简介。</p><div class="admin-toolbar"><input id="upQ" placeholder="搜索上游商品名称 / ID" oninput="adminUpstreamFilter()"><button class="btn" onclick="adminUpstreamImport()">批量导入已选</button></div><div id="upCatalog">' + (hasCache ? '<div class="muted">加载中…</div>' : '<div class="muted">暂无缓存，请先同步。</div>') + '</div><div id="upPreview" class="muted" style="margin-top:10px"></div></div>';
+  h += '<div class="adm-card"><h3>第三步：上游订单与异常</h3>';
+  if (!alerts.length) h += '<div class="muted">暂无置顶告警（pending_upstream 订单）</div>';
+  else { h += '<table class="adm-table"><tr><th>订单号</th><th>原因</th><th>操作</th></tr>'; for (var ai = 0; ai < alerts.length; ai++){ var ao = alerts[ai]; h += '<tr><td data-label="订单号"><span class="adm-mono">' + escH(ao.order_no) + '</span></td><td data-label="原因">' + escH(ao.admin_note || '') + '</td><td data-label="操作"><button class="btn small" data-id="' + ao.id + '" onclick="adminOrderDetail(this.dataset.id)">详情</button> <button class="btn small ghost" data-id="' + ao.id + '" onclick="adminUpstreamRetry(' + ao.id + ')">重试</button></td></tr>'; } h += '</table>'; }
+  h += '</div>';
+  h += '<div class="adm-card"><h3>上游订单列表</h3><div id="upOrders"><div class="muted">加载中…</div></div></div>';
+  h += '</div>';
+  el('adminBody').innerHTML = h;
+  if (hasCache) adminUpstreamFilter();
+  var uo = await api('/api/admin/upstream/orders?page_size=10');
+  var uoEl = el('upOrders');
+  if (uoEl) {
+    var uolist = (uo && uo.upstream_orders) || [];
+    if (!uolist.length) uoEl.innerHTML = '<div class="muted">暂无上游订单</div>';
+    else { var uh = '<table class="adm-table"><tr><th>订单ID</th><th>上游单号</th><th>状态</th><th>金额</th><th>创建时间</th></tr>'; for (var ui = 0; ui < uolist.length; ui++){ var u = uolist[ui]; uh += '<tr><td data-label="订单ID">' + u.order_id + '</td><td data-label="上游单号"><span class="adm-mono">' + escH(u.prodseller_order_id) + '</span></td><td data-label="状态">' + escH(u.status) + '</td><td data-label="金额">' + u.amount + '</td><td data-label="创建时间">' + escH(fmtTime(u.created_at)) + '</td></tr>'; } uh += '</table>'; uoEl.innerHTML = uh; }
+  }
+}
+window._upCatalog = [];
+async function adminUpstreamFilter(){
+  var cache = await api('/api/admin/upstream/cache');
+  var payload = (cache && cache.payload) || {};
+  var arr = Array.isArray(payload) ? payload : (payload.products || []);
+  window._upCatalog = arr;
+  var q = (el('upQ') ? el('upQ').value.trim().toLowerCase() : '');
+  var filtered = arr.filter(function(x){ if (!q) return true; return String(x.title || x.name || '').toLowerCase().indexOf(q) !== -1 || String(x.id).toLowerCase().indexOf(q) !== -1; });
+  var settings = await api('/api/admin/settings');
+  var sv = (settings && settings.settings) || {};
+  var markup = Number(sv.upstream_markup || 1.2) || 1.2;
+  var fixed = Number(sv.upstream_fixed || 0) || 0;
+  var h = '';
+  if (!filtered.length) h = '<div class="adm-empty">暂无符合条件的上游商品</div>';
+  else {
+    h = '<div class="adm-table-wrap"><table class="adm-table"><thead><tr><th><input type="checkbox" onchange="adminUpstreamCheckAll(this.checked)"></th><th>上游 ID</th><th>名称</th><th>成本</th><th>库存</th><th>激活</th><th>售价预览</th></tr></thead><tbody>';
+    for (var i = 0; i < filtered.length; i++){ var up = filtered[i]; var cost = Number(up.cost || up.cost_price || up.price || 0) || 0; var sell = Math.round((cost * markup + fixed) * 100) / 100; var inSt = (up.inStock === false || up.in_stock === 0) ? '<span class="spill red">缺货</span>' : '<span class="spill green">有货</span>'; var reqAct = (up.requiresEmailActivation === true || up.requires_email_activation === true || up.activation === true) ? '是' : '否';
+      h += '<tr><td data-label="选择"><input type="checkbox" class="up-check" data-id="' + escH(String(up.id)) + '" onchange="adminUpstreamPreview()"></td><td data-label="上游 ID"><span class="adm-mono">' + escH(String(up.id)) + '</span></td><td data-label="名称">' + escH(up.title || up.name || '') + '</td><td data-label="成本">' + cost.toFixed(2) + ' USDT</td><td data-label="库存">' + inSt + '</td><td data-label="激活">' + reqAct + '</td><td data-label="售价预览">' + sell.toFixed(2) + ' USDT</td></tr>';
+    }
+    h += '</tbody></table></div>';
+  }
+  var cat = el('upCatalog');
+  if (cat) cat.innerHTML = h;
+  adminUpstreamPreview();
+}
+function adminUpstreamCheckAll(checked){
+  var boxes = document.querySelectorAll('.up-check');
+  for (var i = 0; i < boxes.length; i++) boxes[i].checked = checked;
+  adminUpstreamPreview();
+}
+async function adminUpstreamPreview(){
+  var boxes = document.querySelectorAll('.up-check:checked');
+  var pv = el('upPreview');
+  if (!pv) return;
+  if (!boxes.length){ pv.textContent = ''; return; }
+  var settings = await api('/api/admin/settings');
+  var sv = (settings && settings.settings) || {};
+  var markup = Number(sv.upstream_markup || 1.2) || 1.2;
+  var fixed = Number(sv.upstream_fixed || 0) || 0;
+  var totalCost = 0, totalSell = 0;
+  var cat = window._upCatalog || [];
+  for (var i = 0; i < boxes.length; i++){
+    var id = boxes[i].getAttribute('data-id');
+    for (var j = 0; j < cat.length; j++){ if (String(cat[j].id) === String(id)){ var cost = Number(cat[j].cost || cat[j].cost_price || cat[j].price || 0) || 0; totalCost += cost; totalSell += Math.round((cost * markup + fixed) * 100) / 100; break; } }
+  }
+  pv.textContent = '已选 ' + boxes.length + ' 件：总成本 ' + totalCost.toFixed(2) + ' USDT，售价合计 ' + totalSell.toFixed(2) + ' USDT（售价 = cost × ' + markup + ' + ' + fixed + '）';
+}
+async function adminUpstreamSync(){
+  var btn = el('syncBtn'); setBtnLoading(btn, true);
+  var r = await api('/api/admin/upstream/sync', 'POST', {});
+  setBtnLoading(btn, false);
+  if (!r.ok){ toast(r.error, 'error'); return; }
+  toast('同步成功 ' + r.count + ' 件', 'success');
+  renderAdminUpstream();
+}
+async function adminUpstreamBalance(){
+  var r = await api('/api/admin/upstream/balance');
+  if (!r.ok){ toast(r.error, 'error'); return; }
+  var resEl = el('upRes');
+  if (resEl) resEl.textContent = '余额：' + JSON.stringify(r.balance);
+  toast('余额已更新', 'success');
+}
+async function adminUpstreamImport(){
+  var boxes = document.querySelectorAll('.up-check:checked');
+  if (!boxes.length){ toast('请先勾选要导入的上游商品', 'error'); return; }
+  var ids = [];
+  for (var i = 0; i < boxes.length; i++) ids.push({ id: boxes[i].getAttribute('data-id') });
+  showModal({ title: '批量导入上游商品', bodyHTML: '<p>将导入 <b>' + ids.length + '</b> 件商品。重新导入已存在的商品时，不会覆盖标题与简介（保留人工翻译）。确定导入？</p>', confirmText: '确认导入', onConfirm: async function(){
+    var r = await api('/api/admin/upstream/import', 'POST', { items: ids });
+    if (!r.ok){ toast(r.error, 'error'); return false; }
+    toast('导入 ' + r.imported + ' 件（markup ' + r.markup + ' / fixed ' + r.fixed + '）', 'success');
+    adminTab('products');
+  }});
+}
+async function adminUpstreamRetry(orderId){
+  showModal({ title: '重试上游轮询', bodyHTML: '<p>将对该订单重新执行上游轮询（已有上游单号时只轮询状态，无单号时用同一 Idempotency-Key 重试下单，不会重复扣费）。确定重试？</p>', confirmText: '确认重试', showInput: true, inputLabel: '重试原因（可选，记入审计）', inputPlaceholder: '如：上游已充值，重新轮询', onConfirm: async function(reason){
+    var r = await api('/api/admin/upstream/orders/' + orderId + '/retry', 'POST', { reason: reason || '' });
+    if (!r.ok){ toast(r.error, 'error'); return false; }
+    toast('重试已执行', 'success');
+    renderAdminUpstream();
+  }});
+}
+// ---- 系统设置 ----
+function adminSettingField(sv, k, label, rows, hint){
+  return '<div class="adm-field"><label>' + escH(label) + '（' + k + '）</label><textarea data-sk="' + k + '" rows="' + (rows || 2) + '">' + escH(sv[k] || '') + '</textarea>' + (hint ? '<div class="hint">' + escH(hint) + '</div>' : '') + '</div>';
+}
+function adminSettingInput(sv, k, label, hint, type){
+  return '<div class="adm-field"><label>' + escH(label) + '（' + k + '）</label><input data-sk="' + k + '" type="' + (type || 'text') + '" value="' + escH(sv[k] || '') + '">' + (hint ? '<div class="hint">' + escH(hint) + '</div>' : '') + '</div>';
+}
+async function renderAdminSettings(){
+  var sr = await api('/api/admin/settings');
+  if (!sr.ok){ el('adminBody').innerHTML = '<div class="adm-empty">加载失败：' + escH(sr.error) + '</div>'; return; }
+  var sv = sr.settings || {};
+  var h = '<div class="admin-page"><div class="admin-page-head"><h2>系统设置</h2></div>';
+  h += '<p class="muted">JSON 配置保存前会校验结构与字段，错误时会指出具体字段，不会静默保存无效配置。未修改的配置不会因界面未展示字段而被清空。敏感密钥请走 Secrets，不要写进设置。</p>';
+  h += '<div class="adm-card"><h3>基础设置</h3>' + adminSettingInput(sv, 'site_name', '站点名称', '前台显示的站名') + adminSettingField(sv, 'announcement', '公告', 2, '前台顶部公告') + adminSettingField(sv, 'order_notice', '下单须知', 3, '显示在商品详情页') + adminSettingInput(sv, 'tg_link', '客服 / TG 链接', '必须是 http(s) 开头的 URL') + '</div>';
+  h += '<div class="adm-card"><h3>收款设置</h3>' + adminSettingField(sv, 'usdt_addresses', '收款地址 JSON', 4, '键必须是“支付方式|链”格式，如 Binance|X Layer，值是收款地址') + adminSettingInput(sv, 'binance_uid', '币安 UID', '纯数字，币安 UID 站内转账的收款 UID') + adminSettingField(sv, 'pay_tutorials', '支付教程 JSON', 2, '键是支付方式，值是教程 URL') + '</div>';
+  h += '<div class="adm-card"><h3>链上到账轮询</h3>' + adminSettingInput(sv, 'poll_enabled', '轮询开关', '1 开 / 0 关（关了只走手动 TXID / 管理员确认）') + adminSettingField(sv, 'rpc_urls', 'RPC 地址 JSON', 3, '键是链，值是 URL 数组，如 {"X Layer":["https://xlayerrpc.okx.com"]}') + adminSettingField(sv, 'usdt_contracts', 'USDT 合约 JSON', 3, '键是链，值是合约地址') + '</div>';
+  h += '<div class="adm-card"><h3>上游与汇率</h3>' + adminSettingInput(sv, 'prodseller_base_url', '上游 Base URL', 'Env 优先于此设置') + adminSettingInput(sv, 'upstream_markup', '上游加价倍率', '导入售价 = cost × markup + fixed，默认 1.2', 'number') + adminSettingInput(sv, 'upstream_fixed', '上游固定加价', '默认 0', 'number') + adminSettingInput(sv, 'cny_rate', 'CNY 汇率', '前台 CNY 展示汇率，当前 7.2', 'number') + '</div>';
+  h += '<div><button class="btn" id="saveSettingsBtn" onclick="adminSaveSettings()">保存设置</button></div></div>';
+  el('adminBody').innerHTML = h;
+}
+async function adminSaveSettings(){
+  var obj = {};
+  var tas = document.querySelectorAll('[data-sk]');
+  for (var i = 0; i < tas.length; i++) obj[tas[i].getAttribute('data-sk')] = tas[i].value;
+  // 前端先做一层 JSON 校验，错误时指出字段，不发请求
+  var jsonKeys = ['usdt_addresses', 'pay_tutorials', 'rpc_urls', 'usdt_contracts'];
+  for (var j = 0; j < jsonKeys.length; j++){
+    var k = jsonKeys[j];
+    if (obj[k] !== undefined) { try { var parsed = JSON.parse(obj[k] || '{}'); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('x'); } catch (e) { toast('设置 ' + k + ' 不是合法 JSON 对象', 'error'); return; } }
+  }
+  var btn = el('saveSettingsBtn'); setBtnLoading(btn, true);
+  var r = await api('/api/admin/settings', 'POST', { settings: obj });
+  setBtnLoading(btn, false);
+  if (!r.ok){ toast(r.error, 'error'); return; }
+  toast('已保存', 'success');
+}
+// ---- 操作审计 ----
+window._auditFilter = { action: '', order_id: '', page: 1 };
+async function renderAdminAudit(page){
+  var f = window._auditFilter;
+  f.page = page || 1;
+  var qs = '/api/admin/audit?page=' + f.page + '&page_size=20';
+  if (f.action) qs += '&action=' + encodeURIComponent(f.action);
+  if (f.order_id) qs += '&order_id=' + encodeURIComponent(f.order_id);
+  var r = await api(qs);
+  if (!r.ok){ el('adminBody').innerHTML = '<div class="adm-empty">加载失败：' + escH(r.error) + '</div>'; return; }
+  var list = r.audit || [];
+  function selOpts3(opts, cur){ var h = ''; for (var i = 0; i < opts.length; i++) h += '<option value="' + opts[i][0] + '"' + (String(cur) === String(opts[i][0]) ? ' selected' : '') + '>' + opts[i][1] + '</option>'; return h; }
+  var h = '<div class="admin-page"><div class="admin-page-head"><h2>操作审计</h2></div>';
+  h += '<p class="muted">记录确认收款、人工发货、订单取消、上游重试、配置修改等关键操作。审计不记录密码、查单凭证、完整卡密、API Key。</p>';
+  h += '<div class="admin-toolbar"><select id="auditAction" onchange="adminAuditSearch()">' + selOpts3([['', '全部操作'], ['confirm_payment', '确认收款'], ['fulfill', '人工发货'], ['cancel', '取消订单'], ['upstream_retry', '上游重试'], ['settings_update', '配置修改'], ['product_delete', '删除商品'], ['auto_cancel_timeout', '超时自动取消']], f.action) + '</select><input id="auditOrderId" placeholder="按订单 ID 筛选" value="' + escH(f.order_id) + '" onkeydown="if(event.key===\'Enter\')adminAuditSearch()"><button class="btn" onclick="adminAuditSearch()">搜索</button><button class="btn ghost" onclick="adminAuditReset()">重置</button></div>';
+  if (!list.length) h += '<div class="adm-empty">暂无审计记录</div>';
+  else {
+    h += '<div class="adm-table-wrap"><table class="adm-table"><thead><tr><th>时间</th><th>订单 ID</th><th>操作</th><th>状态变化</th><th>说明</th></tr></thead><tbody>';
+    for (var i = 0; i < list.length; i++){ var a = list[i];
+      h += '<tr><td data-label="时间">' + escH(fmtTime(a.created_at)) + '</td><td data-label="订单 ID">' + (a.order_id != null ? a.order_id : '—') + '</td><td data-label="操作">' + escH(a.action) + '</td><td data-label="状态变化">' + escH(a.before_status || '-') + ' → ' + escH(a.after_status || '-') + '</td><td data-label="说明">' + escH(a.note || '') + '</td></tr>';
+    }
+    h += '</tbody></table></div>';
+    h += paginationHTML(r.page || 1, r.total_pages || 1, 'renderAdminAudit');
+  }
+  h += '</div>';
+  el('adminBody').innerHTML = h;
+}
+function adminAuditSearch(){
+  var f = window._auditFilter;
+  f.action = el('auditAction') ? el('auditAction').value : '';
+  f.order_id = el('auditOrderId') ? el('auditOrderId').value.trim() : '';
+  renderAdminAudit(1);
+}
+function adminAuditReset(){ window._auditFilter = { action: '', order_id: '', page: 1 }; renderAdminAudit(1); }
+
 
 load();
 </script>

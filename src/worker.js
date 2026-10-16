@@ -1179,6 +1179,12 @@ async function handleApi(req, env, url, ctx) {
     var list = (orr.results || []).map(function (x) { return sanitizeOrderForPublic(x); });
     return json({ ok: true, orders: list, total: total, page: page, page_size: pageSize, total_pages: Math.max(1, Math.ceil(total / pageSize)) });
   }
+  var mAdminOrder = path.match(/^\/api\/admin\/orders\/(\d+)$/);
+  if (mAdminOrder && method === 'GET') {
+    var oneOrd = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(Number(mAdminOrder[1])).first();
+    if (!oneOrd) return err('订单不存在', 404);
+    return json({ ok: true, order: sanitizeOrderForPublic(oneOrd) });
+  }
   var mConfirm = path.match(/^\/api\/admin\/orders\/(\d+)\/confirm-payment$/);
   if (mConfirm && method === 'POST') {
     var oid = Number(mConfirm[1]);
