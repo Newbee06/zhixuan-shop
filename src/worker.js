@@ -465,10 +465,17 @@ function deliverWithCtx(ctx, promise) {
   // 无 ctx（测试/手动路径）时等待完成，保证邮件失败可记录且不阻塞发货主流程（调用方已 catch）
   return promise.catch(function () {});
 }
-async function pollUpstreamActivations(env, ctx) {
+async function pollUpstreamActivations(env, ctx, opts) {
+  // opts.orderId：管理员重试单笔订单时只处理该订单（避免误处理其他订单）；Cron 不传，处理全部待处理订单。
+  var onlyOrderId = opts && opts.orderId ? Number(opts.orderId) : 0;
   var settings = await getAllSettings(env);
   var out = { checked: 0, delivered: 0, retried: 0, still_pending: 0 };
-  var rows = await env.DB.prepare("SELECT * FROM orders WHERE status IN ('pending_activation','pending_upstream') ORDER BY id ASC LIMIT 100").all();
+  var rows;
+  if (onlyOrderId) {
+    rows = await env.DB.prepare("SELECT * FROM orders WHERE id = ? AND status IN ('pending_activation','pending_upstream') ORDER BY id ASC LIMIT 1").bind(onlyOrderId).all();
+  } else {
+    rows = await env.DB.prepare("SELECT * FROM orders WHERE status IN ('pending_activation','pending_upstream') ORDER BY id ASC LIMIT 100").all();
+  }
   var list = rows.results || [];
   for (var i = 0; i < list.length; i++) {
     var o = list[i];
@@ -541,34 +548,47 @@ async function rpcCall(fetchFn, rpcUrl, method, params) {
   if (j.error) throw new Error('RPC ' + (j.error.message || JSON.stringify(j.error)));
   return j.result;
 }
-// TRC20：Tronscan token_trc20/transfers，匹配 to + 金额 + token + 时间
+// TRC20：Tronscan token_trc20/transfers，匹配 to + 金额 + token + 时间。
+// 分页：共享收款地址在忙时 1 分钟内可收到 >50 笔，单页 limit=50 会漏到账。按 start 偏移逐页取，最多 10 页（500 笔）；
+// 某页已全部早于订单创建时间（减 1 分钟缓冲）时停止（后续页只会更早，不会含本订单的到账）。
 async function checkTrc20Payment(fetchFn, payAddress, actualAmount, createdAtISO) {
-  var url = 'https://apilist.tronscanapi.com/api/token_trc20/transfers?limit=50&toAddress=' + encodeURIComponent(payAddress);
-  var res = await fetchFn(url);
-  if (!res.ok) throw new Error('Tronscan HTTP ' + res.status);
-  var j = await res.json();
-  var list = (j && (j.data || j.token_transfers)) || [];
-  if (!Array.isArray(list)) list = [];
   var createdMs = Date.parse(String(createdAtISO).replace(' ', 'T') + 'Z') || 0;
-  for (var i = 0; i < list.length; i++) {
-    var t = list[i] || {};
-    var to = t.to_address || t.toAddress || (t.to && t.to.address) || '';
-    if (String(to).toLowerCase() !== String(payAddress).toLowerCase()) continue;
-    var info = t.tokenInfo || t.token_info || {};
-    var tokenId = info.tokenId || info.token_id || t.tokenId || '';
-    var abbr = info.tokenAbbr || info.token_abbr || t.tokenAbbr || '';
-    if (tokenId && tokenId !== USDT_TRC20_ID) continue;
-    if (abbr && String(abbr).toUpperCase() !== 'USDT') continue;
-    var decimals = Number(info.tokenDecimal != null ? info.tokenDecimal : (info.token_decimal != null ? info.token_decimal : 6));
-    var quant = Number(t.quant != null ? t.quant : t.value);
-    if (!isFinite(quant)) continue;
-    var amt = quant / Math.pow(10, decimals);
-    if (!amountsEqual(amt, actualAmount)) continue;
-    var ts = Number(t.block_ts || t.timestamp || 0);
-    if (ts && ts < createdMs - 60000) continue;
-    if (t.confirmed === false) continue;
-    var hash = t.transactionHash || t.transaction_hash || t.hash || '';
-    if (hash) return { txHash: String(hash), amount: amt };
+  var start = 0;
+  var pageSize = 50;
+  for (var page = 0; page < 10; page++) {
+    var url = 'https://apilist.tronscanapi.com/api/token_trc20/transfers?limit=' + pageSize + '&start=' + start + '&toAddress=' + encodeURIComponent(payAddress);
+    var res = await fetchFn(url);
+    if (!res.ok) throw new Error('Tronscan HTTP ' + res.status);
+    var j = await res.json();
+    var list = (j && (j.data || j.token_transfers)) || [];
+    if (!Array.isArray(list)) list = [];
+    var oldestTsInPage = Infinity;
+    for (var i = 0; i < list.length; i++) {
+      var t = list[i] || {};
+      // 本页最旧时间（页内按时间倒序，所有转账都统计，与金额过滤无关，用于提前停页判断）
+      var tsAll = Number(t.block_ts || t.timestamp || 0);
+      if (tsAll) oldestTsInPage = Math.min(oldestTsInPage, tsAll);
+      var to = t.to_address || t.toAddress || (t.to && t.to.address) || '';
+      if (String(to).toLowerCase() !== String(payAddress).toLowerCase()) continue;
+      var info = t.tokenInfo || t.token_info || {};
+      var tokenId = info.tokenId || info.token_id || t.tokenId || '';
+      var abbr = info.tokenAbbr || info.token_abbr || t.tokenAbbr || '';
+      if (tokenId && tokenId !== USDT_TRC20_ID) continue;
+      if (abbr && String(abbr).toUpperCase() !== 'USDT') continue;
+      var decimals = Number(info.tokenDecimal != null ? info.tokenDecimal : (info.token_decimal != null ? info.token_decimal : 6));
+      var quant = Number(t.quant != null ? t.quant : t.value);
+      if (!isFinite(quant)) continue;
+      var amt = quant / Math.pow(10, decimals);
+      if (!amountsEqual(amt, actualAmount)) continue;
+      var ts = Number(t.block_ts || t.timestamp || 0);
+      if (ts && ts < createdMs - 60000) continue;
+      if (t.confirmed === false) continue;
+      var hash = t.transactionHash || t.transaction_hash || t.hash || '';
+      if (hash) return { txHash: String(hash), amount: amt };
+    }
+    if (list.length < pageSize) break; // 最后一页
+    if (oldestTsInPage !== Infinity && oldestTsInPage < createdMs - 60000) break; // 本页已全部早于订单创建时间
+    start += pageSize;
   }
   return null;
 }
@@ -646,6 +666,13 @@ async function checkTxidPayment(env, fetchFn, order, txid) {
       try {
         var receipt = await rpcCall(fetchFn, rpcs[ri], 'eth_getTransactionReceipt', [txid]);
         if (!receipt || receipt.status !== '0x1') continue;
+        // 至少 1 确认（与轮询口径一致）：收据区块号必须 <= 最新区块 - 1，否则为 0 确认，跳过（防链重组导致已发货但付款失效）。
+        try {
+          var latestHex = await rpcCall(fetchFn, rpcs[ri], 'eth_blockNumber', []);
+          var latestBn = parseInt(latestHex, 16);
+          var receiptBn = parseInt(receipt.blockNumber, 16);
+          if (!isFinite(latestBn) || !isFinite(receiptBn) || receiptBn > latestBn - 1) continue;
+        } catch (e) { continue; }
         var logs = receipt.logs || [];
         for (var li = 0; li < logs.length; li++) {
           var lg = logs[li];
@@ -687,6 +714,12 @@ async function claimTxid(env, txHash, orderId) {
 async function claimOrderForPayment(env, orderId, txHash) {
   // 原子认领：status=pending_payment 且（未认领 或 认领已超租约）。成功时同时写入 paid_at（付款事实）与 tx_hash。
   // txHash 为空时不覆盖已有 tx_hash（保留 /pay 提交的 TXID）。
+  // 接管时若用新 TXID 覆盖旧 tx_hash，释放旧 TXID 的认领（仅当旧认领属于本订单），避免旧认领成孤儿（旧 TXID 的真实付款无法被正确订单认领）。
+  var oldTx = null;
+  if (txHash) {
+    var oldRow = await env.DB.prepare('SELECT tx_hash FROM orders WHERE id = ?').bind(orderId).first();
+    oldTx = oldRow ? oldRow.tx_hash : null;
+  }
   var token = randomHex(16);
   var now = nowISO();
   var sql = "UPDATE orders SET claim_token=?, claimed_at=?, paid_at=?" + (txHash ? ", tx_hash=?" : "") + " WHERE id=? AND status='pending_payment' AND (claim_token IS NULL OR claim_token='' OR claimed_at IS NULL OR claimed_at < datetime('now', '-" + CLAIM_LEASE_MINUTES + " minutes'))";
@@ -696,6 +729,9 @@ async function claimOrderForPayment(env, orderId, txHash) {
   binds.push(orderId);
   var upd = await stmt.bind.apply(stmt, binds).run();
   if (!upd.meta || upd.meta.changes !== 1) return { ok: false, reason: '订单已被其他请求认领或处理', claimToken: null };
+  if (oldTx && oldTx !== txHash) {
+    try { await env.DB.prepare('DELETE FROM txid_claims WHERE tx_hash = ? AND order_id = ?').bind(oldTx, orderId).run(); } catch (e) {}
+  }
   return { ok: true, claimToken: token };
 }
 // ---- 卡密领取与订单完成的一致性（两阶段 + 补偿 + 恢复）----
@@ -795,10 +831,10 @@ async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
   if (fresh.status !== 'pending_payment') return { ok: false, reason: '当前状态不可发货' };
   var o = fresh;
   var prod = await env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(o.product_id).first();
-  // 1. TXID 原子认领（仅链上已验证哈希；币安站内转账订单 ID 不是链上哈希，不认领）。
+  // 1. TXID 原子认领（仅链上已验证哈希才认领；管理员人工确认 txVerified=false 时不认领，避免未核验 TXID 永久污染 txid_claims）。
   // 严格先到先得：已有其他订单认领时拒绝，不接管（见 claimTxid）。
   var isChainHash = !!txHash && /^(0x)?[0-9a-fA-F]{64}$/.test(String(txHash)) && o.pay_method !== 'BinanceUID';
-  if (isChainHash) {
+  if (isChainHash && txVerified) {
     var tc = await claimTxid(env, txHash, o.id);
     if (!tc.ok) return { ok: false, reason: tc.reason };
   }
@@ -962,8 +998,18 @@ function sanitizeOrderForPublic(o, level) {
     delete out.admin_note;
     delete out.wallet_address;
     delete out.pay_address;
+    // 内部字段不公开：退款凭证（退款交易哈希）、内部异常原因、上游处理租约。
+    delete out.refund_ref;
+    delete out.exception_reason;
+    delete out.upstream_lock;
+    delete out.upstream_lock_expires_at;
   } else {
     try { out.customer_fields = JSON.parse(o.customer_fields || '{}'); } catch (e) { out.customer_fields = {}; }
+    // 凭证验证通过的本人仍不返回内部字段（退款凭证、异常原因、上游租约仅管理员可见）。
+    delete out.refund_ref;
+    delete out.exception_reason;
+    delete out.upstream_lock;
+    delete out.upstream_lock_expires_at;
   }
   if (o.data_expired === 1 || isExpired7d(o.fulfilled_at)) {
     out.delivery_content = '';
@@ -1024,10 +1070,11 @@ async function reserveCards(env, orderId, productId, qty) {
 async function releaseReservation(env, orderId) {
   try { await env.DB.prepare('UPDATE cards SET reserved_order_id = NULL, reserved_at = NULL WHERE reserved_order_id = ? AND is_used = 0').bind(orderId).run(); } catch (e) {}
 }
-// 释放过期/异常订单的预留（日清理与轮询兜底用）：订单已不在 pending_payment 但仍有预留卡时释放。
+// 释放过期/异常订单的预留（日清理与轮询兜底用）：仅释放终态订单（已取消/已完成）的预留。
+// 已付款待履约（pending_fulfill/pending_activation/pending_upstream/refund_pending）订单的预留必须保留，否则已付款订单的卡会被其他订单取走。
 async function releaseStaleReservations(env) {
   try {
-    await env.DB.prepare('UPDATE cards SET reserved_order_id = NULL, reserved_at = NULL WHERE is_used = 0 AND reserved_order_id IS NOT NULL AND reserved_order_id NOT IN (SELECT id FROM orders WHERE status = \'pending_payment\')').run();
+    await env.DB.prepare('UPDATE cards SET reserved_order_id = NULL, reserved_at = NULL WHERE is_used = 0 AND reserved_order_id IS NOT NULL AND reserved_order_id NOT IN (SELECT id FROM orders WHERE status NOT IN (\'cancelled\', \'completed\'))').run();
   } catch (e) {}
 }
 function parseJsonBody(req) {
@@ -1418,7 +1465,7 @@ async function handleApi(req, env, url, ctx) {
     if (!oo) return err('订单不存在', 404);
     if (oo.status !== 'pending_payment') return err('当前状态不可确认收款');
     // 管理员确认收款复用同一 fulfillAfterPayment：自营卡密自动发，上游商品走 ProdSeller 拿货（不要只发本地卡密）。
-    // 管理员确认无新鲜链上证明（txVerified=false）：TXID 已被他人认领时严格阻塞，须先排查。
+    // 管理员确认无新鲜链上证明（txVerified=false）：不认领 TXID（避免未核验 TXID 污染 txid_claims）；管理员已在系统外核对到账，确认即发货。
     var cbConfirm = await parseJsonBody(req);
     var confirmReason = String(cbConfirm.reason || cbConfirm.admin_note || '').trim();
     var cr2 = await fulfillAfterPayment(env, oo, oo.tx_hash || oo.txid || '', ctx, { txVerified: false });
@@ -1509,7 +1556,9 @@ async function handleApi(req, env, url, ctx) {
     var exNote = String(eb.note || eb.admin_note || '').trim();
     var refundNeeded = !!eb.refund_needed;
     if (refundNeeded) {
-      var upE = await env.DB.prepare("UPDATE orders SET status='refund_pending', refund_status='pending', exception_reason=?, admin_note=? WHERE id=? AND status IN ('pending_payment','pending_fulfill','pending_activation','pending_upstream')").bind(exReason, exNote, eid).run();
+      // 退款仅针对已付款订单：未付款（pending_payment / paid_at 为空）的订单没有收到钱，无需退款，应直接取消，不得制造幽灵退款义务。
+      if (eo.status === 'pending_payment' || !eo.paid_at) return err('未付款订单无需退款，请直接取消订单');
+      var upE = await env.DB.prepare("UPDATE orders SET status='refund_pending', refund_status='pending', exception_reason=?, admin_note=? WHERE id=? AND status IN ('pending_fulfill','pending_activation','pending_upstream') AND paid_at IS NOT NULL").bind(exReason, exNote, eid).run();
       if (!upE.meta || upE.meta.changes === 0) return err('当前状态不可标记异常（可能已被处理）');
       var auditOkE = await logAudit(env, eid, 'order_exception', eo.status, 'refund_pending', '异常处理：标记退款待处理，原因：' + exReason + (exNote ? '，备注：' + exNote : ''));
       if (!auditOkE) return err(auditFailMsg(eid, 'order_exception'), 500);
@@ -1810,7 +1859,7 @@ async function handleApi(req, env, url, ctx) {
     var rb = await parseJsonBody(req);
     var retryReason = String(rb.reason || '').trim();
     var beforeRetry = rOrd.status;
-    var pollRes = await pollUpstreamActivations(env, ctx);
+    var pollRes = await pollUpstreamActivations(env, ctx, { orderId: Number(mUpRetry[1]) });
     var afterRetry = (await env.DB.prepare('SELECT status FROM orders WHERE id = ?').bind(Number(mUpRetry[1])).first() || {}).status || beforeRetry;
     var auditOkRetry = await logAudit(env, Number(mUpRetry[1]), 'upstream_retry', beforeRetry, afterRetry, '管理员重试上游轮询' + (retryReason ? '，原因：' + retryReason : ''));
     if (!auditOkRetry) return err(auditFailMsg(Number(mUpRetry[1]), 'upstream_retry'), 500);
@@ -1869,7 +1918,7 @@ async function handleApi(req, env, url, ctx) {
     if (key === 'cny_rate') { var cr = Number(v); if (!isFinite(cr) || cr <= 0 || cr > 1000) return 'cny_rate 必须是 0~1000 之间的汇率'; return null; }
     if (key === 'poll_enabled') { if (v !== '0' && v !== '1') return 'poll_enabled 只能是 0 或 1'; return null; }
     if (key === 'tg_link') { if (v && v.indexOf('http') !== 0) return 'tg_link 必须是 URL'; return null; }
-    if (key === 'prodseller_base_url') { if (v && v.indexOf('http') !== 0) return 'prodseller_base_url 必须是 URL'; return null; }
+    if (key === 'prodseller_base_url') { if (v && v.indexOf('https://prodseller.com/') !== 0) return 'prodseller_base_url 仅允许官方域名 https://prodseller.com/（自定义端点请经环境变量 PRODSELLER_BASE_URL 配置，避免 API Key 被发往非官方地址）'; return null; }
     if (key === 'site_name') { if (!v.trim()) return 'site_name 不能为空'; if (v.length > 100) return 'site_name 过长（最多 100 字符）'; return null; }
     if (key === 'binance_uid') { if (v && !/^[0-9]+$/.test(v.trim())) return 'binance_uid 必须是纯数字'; return null; }
     var lowerKey = key.toLowerCase();

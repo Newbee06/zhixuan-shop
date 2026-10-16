@@ -1,0 +1,163 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [feat/admin-overhaul-security]
+  workflow_dispatch:
+
+# 默认只读。除非有经证实的必要需求，不授予写权限。
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Static checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Worker syntax check
+        run: node --check src/worker.js
+      - name: Frontend inline scripts syntax check
+        run: node tests/extract-frontend-check.mjs
+      - name: wrangler.toml parses
+        run: python3 -c "import tomllib; tomllib.load(open('wrangler.toml','rb')); print('wrangler.toml OK')"
+      - name: Migration files present and non-empty
+        run: |
+          set -e
+          for f in migrations/000*.sql; do
+            [ -s "$f" ] || { echo "FAIL: empty migration $f"; exit 1; }
+            echo "OK: $f"
+          done
+          [ -s schema.sql ] || { echo "FAIL: schema.sql empty"; exit 1; }
+          echo "schema.sql OK"
+      - name: No hard-coded secrets in tracked files
+        run: |
+          set -e
+          # 只扫高置信度的真实密钥模式（不把虚构测试数据、资源 ID 当密钥）。
+          if git grep -nE 'github_pat_[A-Za-z0-9_]{20,}|sk-proj-[A-Za-z0-9_-]{10,}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN (RSA )?PRIVATE KEY-----' -- .; then
+            echo "FAIL: possible hard-coded secret found"; exit 1
+          fi
+          echo "No hard-coded secrets found"
+      - name: No remote/prod write commands in CI or tests
+        run: |
+          set -e
+          # CI 与测试绝不允许 --remote / wrangler deploy（生产写操作）。
+          # 排除检查自身的定义行（grep -rn）与明确禁止的注释行（绝不碰/绝不允许/禁止/never/not allowed）。
+          if grep -rn -- '--remote\|wrangler deploy\|d1 migrations apply --remote' .github/ tests/ 2>/dev/null | grep -v 'grep -rn' | grep -v '绝不碰\|绝不允许\|禁止\|never\|not allowed'; then
+            echo "FAIL: remote/prod write command found in CI or tests"; exit 1
+          fi
+          echo "No remote/prod write commands in CI or tests"
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Static checks — ${{ job.status }}"
+            echo "- Worker syntax: checked"
+            echo "- Frontend inline scripts: checked"
+            echo "- wrangler.toml / migrations / secrets scan: checked"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  regression:
+    name: Business regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Mock end-to-end test
+        run: node tests/mock-test.mjs
+      - name: Stock test
+        run: node tests/stock-test.mjs
+      - name: Security test
+        run: node tests/security-test.mjs
+      - name: Concurrency / failure-recovery / migration test
+        run: node tests/concurrency-test.mjs
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Business regression — ${{ job.status }}"
+            echo "- mock-test / stock-test / security-test / concurrency-test: see logs for counts"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  migration:
+    name: D1 migration test (local only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Install locked CI tooling (wrangler)
+        run: npm ci
+      - name: D1 local migration test (old DB + dedup + idempotency + failure recovery + fresh DB)
+        run: bash tests/d1-local-test.sh
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## D1 migration — ${{ job.status }}"
+            echo "- old DB → v7, duplicate upstream_orders dedup, unique index, idempotency, failure recovery, fresh DB: see logs"
+            echo "- Local only (--local). No production D1 touched."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  browser:
+    name: Browser acceptance (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Install locked CI tooling (playwright + wrangler)
+        run: npm ci
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Start wrangler dev (--local) and run browser acceptance (same step, so the server stays alive)
+        run: |
+          set -e
+          rm -rf .wrangler/state
+          npx wrangler d1 execute aisou-lite-db --local --file=schema.sql
+          npx wrangler dev --local --port 8791 > /tmp/wrangler-dev-ci.log 2>&1 &
+          DEV_PID=$!
+          trap "kill $DEV_PID 2>/dev/null; true" EXIT
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8791/api/config" 2>/dev/null | grep -q 200; then echo "WORKER UP"; break; fi
+            sleep 2
+          done
+          curl -s "http://127.0.0.1:8791/api/config" | head -c 300; echo
+          node tests/browser-acceptance-ci.mjs
+          kill $DEV_PID 2>/dev/null; trap - EXIT; true
+        env:
+          BASE: http://127.0.0.1:8791
+      - name: Upload wrangler dev log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrangler-dev-log
+          path: /tmp/wrangler-dev-ci.log
+          retention-days: 7
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Browser acceptance — ${{ job.status }}"
+            echo "- Real Playwright Chromium against local wrangler dev (--local), fictional data only."
+            echo "- Viewports 1440/390/360, dark mode, admin menus, exception/refund flow, console errors: see logs."
+          } >> "$GITHUB_STEP_SUMMARY"

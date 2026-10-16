@@ -19,7 +19,7 @@ check('home 1440: no horizontal overflow', overflow1 <= 1, 'overflow=' + overflo
 check('home shows 智选', (await page.content()).includes('智选'));
 
 // ===== 2. 下单（经 UI：读验证码 SVG 取码）=====
-await page.goto(BASE + '/#/order/1', { waitUntil: 'networkidle' });
+await page.goto(BASE + '/#/product/1', { waitUntil: 'networkidle' });
 await page.waitForTimeout(800);
 // 读验证码：GET /api/captcha 返回 SVG，<text> 元素即验证码字符
 const cap = await page.evaluate(async () => {

@@ -811,7 +811,7 @@ async function adminOrderDetail(id){
   if (o.exception_reason || o.refund_status) h += '<div class="drawer-section"><h4>异常 / 退款</h4><div class="drawer-kv"><span class="k">异常原因</span><span class="v">' + escH(o.exception_reason || '') + '</span><span class="k">退款状态</span><span class="v">' + escH(o.refund_status === 'pending' ? '退款待处理（须在系统外真实退款）' : (o.refund_status === 'refunded' ? '已确认退款' : o.refund_status || '无')) + '</span>' + (o.refund_ref ? '<span class="k">退款凭证</span><span class="v adm-mono">' + escH(o.refund_ref) + '</span>' : '') + '</div><p class="muted">本系统不执行真实退款。“确认已退款”仅表示管理员确认已在系统外完成退款，须填写退款凭证备查。</p></div>';
   h += '<div class="drawer-section"><h4>交付情况</h4>';
   if (o.data_expired) h += '<p class="muted">交付数据已超过 7 天自动清空</p>';
-  else if (o.delivery_content) h += '<div class="codebox">' + escH(o.delivery_content) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(' + JSON.stringify(o.delivery_content) + ')">复制交付内容</button>';
+  else if (o.delivery_content) h += '<div class="codebox">' + escH(o.delivery_content) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(' + escH(JSON.stringify(o.delivery_content)) + ')">复制交付内容</button>';
   else h += '<p class="muted">暂无交付内容</p>';
   h += '</div>';
   h += '<div class="drawer-section"><h4>处理记录</h4>' + auditHtml + '</div>';

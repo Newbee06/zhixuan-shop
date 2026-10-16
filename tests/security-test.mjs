@@ -312,5 +312,25 @@ const actions = (r.json.audit || []).map((a) => a.action);
 check('audit has confirm_payment + cancel', actions.includes('confirm_payment') && actions.includes('cancel'), JSON.stringify(actions));
 check('audit entries have no card codes/passwords', !JSON.stringify(r.json.audit).includes('SEC-CARD-ONLY-1') && !JSON.stringify(r.json.audit).includes('query_token'));
 
+// ===== 10. 第三轮复审修复回归（A-02 / E-03 / F-02）=====
+// A-02：未付款订单 exception + refund_needed → 拒绝，不进 refund_pending（防幽灵退款义务）
+r = await orderCall({ product_id: pManual, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'unpaid-ex@test.example' } });
+const ordUnpaid = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+r = await call('POST', '/api/admin/orders/' + ordUnpaid.id + '/exception', { reason: '未付款也想退款', refund_needed: true }, cookie);
+check('A-02: unpaid order exception+refund rejected', r.json && !r.json.ok && /未付款|无需退款/.test(r.json.error || ''), JSON.stringify(r.json));
+check('A-02: unpaid order still pending_payment', q('SELECT status FROM orders WHERE id=?', ordUnpaid.id).status === 'pending_payment');
+check('A-02: unpaid order refund_status still empty', q('SELECT refund_status FROM orders WHERE id=?', ordUnpaid.id).refund_status === '');
+// E-03：公开概要不泄露 refund_ref / exception_reason / upstream_lock（ordP 已走完退款流程，DB 含这些字段）
+r = await call('GET', '/api/orders/' + ordP.order_no, null, null);
+check('E-03: public summary has no refund_ref', r.json && r.json.ok === true && !('refund_ref' in (r.json.order || {})), JSON.stringify(r.json).slice(0, 300));
+check('E-03: public summary has no exception_reason', r.json && !('exception_reason' in (r.json.order || {})));
+check('E-03: public summary has no upstream_lock', r.json && !('upstream_lock' in (r.json.order || {})) && !('upstream_lock_expires_at' in (r.json.order || {})));
+check('E-03: public summary still has refund_status', r.json && ('refund_status' in (r.json.order || {})));
+// F-02：prodseller_base_url 仅允许官方域名（防 API Key 被发往攻击者地址）
+r = await call('POST', '/api/admin/settings', { key: 'prodseller_base_url', value: 'https://evil.example.com/v1' }, cookie);
+check('F-02: prodseller_base_url to attacker domain rejected', r.json && !r.json.ok && /官方域名/.test(r.json.error || ''), JSON.stringify(r.json));
+r = await call('POST', '/api/admin/settings', { key: 'prodseller_base_url', value: 'https://prodseller.com/v1' }, cookie);
+check('F-02: prodseller_base_url to official domain accepted', r.json && r.json.ok === true, JSON.stringify(r.json));
+
 console.log(`\nSECURITY TEST DONE pass=${pass} fail=${fail}`);
 process.exit(fail ? 1 : 0);

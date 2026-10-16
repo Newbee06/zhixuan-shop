@@ -196,39 +196,42 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   check('concurrent fulfill: order completed with one delivery', finalM.status === 'completed' && (finalM.delivery_content === 'DELIVERY-A' || finalM.delivery_content === 'DELIVERY-B'), JSON.stringify(finalM));
 }
 
-// ===== 5. 同一个链上交易哈希同时提交到两个不同订单（真并行）=====
-// 订单 A 先认领 tx；订单 B 再用同一 tx 确认 → 严格阻塞。另测两订单同时认领同一 tx：只有一个成功。
+// ===== 5. 管理员确认不认领未核验 TXID（A-01 修复：仅链上核验路径认领）=====
+// 订单 A：人工商品，手动设置 tx_hash 后管理员确认（无链上证明）→ 订单完成，但 TXID 不进入 txid_claims（不污染）。
+// 订单 B：同一 tx，管理员确认 → 同样完成（管理员为人工确认的权威；未认领的 TXID 不阻塞人工确认）。
+// TXID 的全局认领仅由链上核验路径（/pay、轮询）执行，见 §5b。
 {
   const txHash2 = 'b'.repeat(64);
-  // 订单 A：人工商品，手动提交 txid 后管理员确认（无链上证明，但 tx 格式为链上哈希，触发认领）
   r = await call('POST', '/api/admin/products', { title: 'TXID测试商品', category: 'recharge', stock_type: 'manual', sell_price: 4, source: 'self' }, cookie);
   const pTx = q("SELECT * FROM products WHERE title='TXID测试商品'");
   r = await orderCall({ product_id: pTx.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'tx-a@test.example' } });
   const ordA = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  // 直接设置 tx_hash（模拟客户已提交 TXID），再管理员确认 → 认领 tx
+  // 直接设置 tx_hash（模拟客户已提交 TXID），再管理员确认 → 完成但不认领 tx
   db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(txHash2, ordA.id);
   r = await call('POST', '/api/admin/orders/' + ordA.id + '/confirm-payment', { reason: 'A 确认' }, cookie);
-  check('order A claims txid', r.json && r.json.ok === true, JSON.stringify(r.json));
-  check('txid claimed by order A', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txHash2).order_id === ordA.id);
-  // 订单 B：同一 tx → 确认时阻塞
+  check('admin confirm fulfills order A', r.json && r.json.ok === true, JSON.stringify(r.json));
+  check('admin confirm does NOT claim unverified txid', !q('SELECT * FROM txid_claims WHERE tx_hash=?', txHash2));
+  // 订单 B：同一 tx，管理员确认 → 同样完成（不因未认领的 TXID 阻塞）
   r = await orderCall({ product_id: pTx.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'tx-b@test.example' } });
   const ordB = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(txHash2, ordB.id);
-  r = await call('POST', '/api/admin/orders/' + ordB.id + '/confirm-payment', { reason: 'B 确认（应被阻塞）' }, cookie);
-  check('order B with same txid blocked', r.json && !r.json.ok && /已用于其他订单/.test(r.json.error || ''), JSON.stringify(r.json));
-  check('order B still pending_payment after blocked confirm', q('SELECT status FROM orders WHERE id=?', ordB.id).status === 'pending_payment');
+  r = await call('POST', '/api/admin/orders/' + ordB.id + '/confirm-payment', { reason: 'B 确认（不因未认领 TXID 阻塞）' }, cookie);
+  check('admin confirm fulfills order B with same txid', r.json && r.json.ok === true, JSON.stringify(r.json));
+  check('txid still not claimed after admin confirms', !q('SELECT * FROM txid_claims WHERE tx_hash=?', txHash2));
 }
 
-// ===== 5b. TXID 不接管：链上核验路径（/pay）也不能抢占已认领的 TXID =====
-// 订单 A 已认领 tx；订单 C 经 /pay 提交同一 tx 且链上核验通过 → 必须返回 409 明确错误，不静默接受为“已提交”。
+// ===== 5b. TXID 不接管：链上核验路径（/pay）认领后，其他订单经 /pay 提交同一 tx 必须 409 =====
+// 订单 C1 经 /pay 提交 tx 且链上核验通过 → 认领 tx；订单 C2 经 /pay 提交同一 tx → 409 明确错误，不静默接受。
 {
   const pTx = q("SELECT * FROM products WHERE title='TXID测试商品'");
   const txHash3 = 'c'.repeat(64);
-  r = await orderCall({ product_id: pTx.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'tx-c1@test.example' } });
+  // 订单 C1：TRC20，经 /pay 提交（Tronscan 返回匹配到账）→ 认领
+  r = await orderCall({ product_id: pTx.id, quantity: 1, pay_method: 'Binance', pay_chain: 'TRC20', customer_fields: { contact_email: 'tx-c1@test.example' } });
   const ordC1 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(txHash3, ordC1.id);
-  r = await call('POST', '/api/admin/orders/' + ordC1.id + '/confirm-payment', { reason: 'C1 认领 tx' }, cookie);
-  check('order C1 claims txid', r.json && r.json.ok === true, JSON.stringify(r.json));
+  tronscanTransfer = { to: ordC1.pay_address, amount: ordC1.actual_amount, hash: txHash3 };
+  r = await call('POST', '/api/orders/' + ordC1.order_no + '/pay', { txid: txHash3 });
+  check('order C1 claims txid via /pay', r.json && r.json.ok === true, JSON.stringify(r.json));
+  check('txid claimed by order C1', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txHash3).order_id === ordC1.id);
   // 订单 C2：TRC20，Tronscan 返回匹配到账（同一 tx 哈希）
   r = await orderCall({ product_id: pTx.id, quantity: 1, pay_method: 'Binance', pay_chain: 'TRC20', customer_fields: { contact_email: 'tx-c2@test.example' } });
   const ordC2 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
@@ -492,6 +495,139 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const cancelAF = await callNoAudit('POST', '/api/admin/orders/' + ordAF.id + '/cancel', { reason: '审计失败测试' }, ck2);
   check('audit failure: cancel reports audit error, not success', cancelAF.json && !cancelAF.json.ok && /审计/.test(cancelAF.json.error || ''), JSON.stringify(cancelAF.json));
   check('audit failure: order was cancelled (primary effect stands)', dbNoAudit.prepare('SELECT status FROM orders WHERE id=?').get(ordAF.id).status === 'cancelled');
+}
+
+// ===== 12. 第三轮复审修复回归：B-01 / C-01 / A-03 =====
+// B-01：已付款待履约订单的预留卡不被日清理释放
+{
+  r = await call('POST', '/api/admin/products', { title: 'B01卡密商品', category: 'card', stock_type: 'card', sell_price: 3, source: 'self' }, cookie);
+  const pB01 = q("SELECT * FROM products WHERE title='B01卡密商品'");
+  r = await call('POST', '/api/admin/cards/import', { product_id: pB01.id, codes: 'B01-CARD-1' }, cookie);
+  check('B-01 setup: card imported', r.json && r.json.ok === true, JSON.stringify(r.json));
+  r = await orderCall({ product_id: pB01.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'b01@test.example', delivery_email: 'b01@test.example' } });
+  const ordB01 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  check('B-01 setup: card reserved', q('SELECT reserved_order_id FROM cards WHERE code=?', 'B01-CARD-1').reserved_order_id === ordB01.id);
+  // 模拟：已付款但领取失败进入 pending_fulfill，预留仍持有（is_used=0, reserved_order_id=本订单）
+  db.prepare("UPDATE orders SET status='pending_fulfill', paid_at=datetime('now') WHERE id=?").run(ordB01.id);
+  r = await call('POST', '/api/admin/cleanup', {}, cookie);
+  check('B-01 cleanup ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+  check('B-01: paid pending_fulfill reservation NOT released', q('SELECT reserved_order_id FROM cards WHERE code=?', 'B01-CARD-1').reserved_order_id === ordB01.id);
+}
+
+// C-01：管理员重试单笔上游订单只处理该订单，不处理其他待处理订单
+{
+  r = await orderCall({ product_id: pUp.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'c01-a@test.example' } });
+  const ordC01A = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  r = await orderCall({ product_id: pUp.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'c01-b@test.example' } });
+  const ordC01B = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  upstreamFailFirst = true;
+  await call('POST', '/api/admin/orders/' + ordC01A.id + '/confirm-payment', { reason: 'C01-A 超时' }, cookie);
+  upstreamFailFirst = true;
+  await call('POST', '/api/admin/orders/' + ordC01B.id + '/confirm-payment', { reason: 'C01-B 超时' }, cookie);
+  check('C-01 setup: both pending_upstream', q('SELECT status FROM orders WHERE id=?', ordC01A.id).status === 'pending_upstream' && q('SELECT status FROM orders WHERE id=?', ordC01B.id).status === 'pending_upstream');
+  upstreamFailFirst = false;
+  r = await call('POST', '/api/admin/upstream/orders/' + ordC01A.id + '/retry', { reason: '只重试 A' }, cookie);
+  check('C-01 retry A ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+  check('C-01: A completed', q('SELECT status FROM orders WHERE id=?', ordC01A.id).status === 'completed');
+  check('C-01: B untouched (still pending_upstream)', q('SELECT status FROM orders WHERE id=?', ordC01B.id).status === 'pending_upstream');
+  check('C-01: B upstream row untouched (still empty psId + upstream_error)', (() => { const ub = q('SELECT * FROM upstream_orders WHERE order_id=?', ordC01B.id); return ub && ub.prodseller_order_id === '' && ub.status === 'upstream_error'; })(), JSON.stringify(q('SELECT * FROM upstream_orders WHERE order_id=?', ordC01B.id)));
+}
+
+// A-03：租约接管用新 TXID 覆盖旧 tx_hash 时，旧 TXID 认领被释放（不留孤儿）
+{
+  const pTx3 = q("SELECT * FROM products WHERE title='TXID测试商品'");
+  const txOld = 'd'.repeat(64);
+  const txNew = 'e'.repeat(64);
+  r = await orderCall({ product_id: pTx3.id, quantity: 1, pay_method: 'Binance', pay_chain: 'TRC20', customer_fields: { contact_email: 'a03@test.example' } });
+  const ordA03 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  // 模拟：订单已认领旧 TXID（链上核验路径），但处理崩溃，租约过期
+  db.prepare('INSERT INTO txid_claims (tx_hash, order_id) VALUES (?, ?)').run(txOld, ordA03.id);
+  db.prepare("UPDATE orders SET tx_hash=?, claim_token='STALE-TOKEN', claimed_at=datetime('now','-10 minutes') WHERE id=?").run(txOld, ordA03.id);
+  // 新请求以新 TXID 经 /pay 接管（Tronscan 返回新 TXID 匹配到账）
+  tronscanTransfer = { to: ordA03.pay_address, amount: ordA03.actual_amount, hash: txNew };
+  r = await call('POST', '/api/orders/' + ordA03.order_no + '/pay', { txid: txNew });
+  check('A-03 takeover via /pay ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+  check('A-03: order tx_hash updated to new', q('SELECT tx_hash FROM orders WHERE id=?', ordA03.id).tx_hash === txNew);
+  check('A-03: new txid claimed', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txNew).order_id === ordA03.id);
+  check('A-03: old txid claim released (no orphan)', !q('SELECT * FROM txid_claims WHERE tx_hash=?', txOld));
+  tronscanTransfer = null;
+}
+
+// C-02：Tronscan 分页——匹配到账在第 2 页（第 1 页 50 笔均不匹配），轮询仍能找到
+{
+  const pTxC02 = q("SELECT * FROM products WHERE title='TXID测试商品'");
+  r = await orderCall({ product_id: pTxC02.id, quantity: 1, pay_method: 'Binance', pay_chain: 'TRC20', customer_fields: { contact_email: 'c02@test.example' } });
+  const ordC02 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const txC02 = 'f'.repeat(64);
+  // 临时替换 fetch：Tronscan transfers 按 start 分页；其他请求走原 mock
+  const origFetch = env.__fetch;
+  const pageFetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('tronscanapi.com/api/token_trc20/transfers')) {
+      const start = Number(new URL(u).searchParams.get('start') || 0);
+      if (start === 0) {
+        // 第 1 页：50 笔，金额均不匹配，时间戳为当前（不触发提前停页）
+        const rows = [];
+        for (let i = 0; i < 50; i++) rows.push({ to_address: ordC02.pay_address, tokenInfo: { tokenId: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', tokenDecimal: 6 }, quant: Math.round((ordC02.actual_amount + 1 + i) * 1e6), block_ts: Date.now(), confirmed: true, transactionHash: 'NONMATCH-' + i });
+        return new Response(JSON.stringify({ data: rows }), { status: 200 });
+      }
+      // 第 2 页：匹配到账
+      return new Response(JSON.stringify({ data: [{ to_address: ordC02.pay_address, tokenInfo: { tokenId: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', tokenDecimal: 6 }, quant: Math.round(ordC02.actual_amount * 1e6), block_ts: Date.now(), confirmed: true, transactionHash: txC02 }] }), { status: 200 });
+    }
+    return origFetch(url, opts);
+  };
+  env.__fetch = pageFetch;
+  globalThis.fetch = pageFetch;
+  const ctxC02 = makeCtx();
+  try { await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxC02); await ctxC02.drain(); } catch (e) { check('C-02 scheduled no throw', false, String(e)); }
+  env.__fetch = origFetch;
+  globalThis.fetch = origFetch;
+  check('C-02: match on page 2 found, order paid (pending_fulfill, manual product)', q('SELECT status FROM orders WHERE id=?', ordC02.id).status === 'pending_fulfill');
+  check('C-02: txid claimed from page 2', q('SELECT tx_hash FROM orders WHERE id=?', ordC02.id).tx_hash === txC02);
+}
+
+// A-04：EVM /pay 要求至少 1 确认（收据区块 == 最新区块 → 0 确认，拒绝；收据区块 <= 最新-1 → 接受）
+{
+  const pTxA04 = q("SELECT * FROM products WHERE title='TXID测试商品'");
+  const txA04 = '1'.repeat(64); // 唯一 TXID（§4 用 'a'*64、§5 用 'b'*64、A-03 用 'd'/'e'、C-02 用 'f'，不得撞）
+  const ERC20_USDT = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
+  const TRANSFER0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+  r = await orderCall({ product_id: pTxA04.id, quantity: 1, pay_method: 'OKX', pay_chain: 'ERC20', customer_fields: { contact_email: 'a04@test.example' } });
+  const ordA04 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const toTopic = '0x' + '000000000000000000000000' + String(ordA04.pay_address).slice(2).toLowerCase();
+  const amtHex = '0x' + BigInt(Math.round(Number(ordA04.actual_amount) * 1e6)).toString(16).padStart(64, '0');
+  let evmLatest = 100; // 最新区块（可推进，模拟确认数增长）
+  const origFetch2 = env.__fetch;
+  const evmFetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('llamarpc.com') || u.includes('ankr.com')) {
+      const body = JSON.parse(opts.body || '{}');
+      if (body.method === 'eth_getTransactionReceipt') {
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {
+          status: '0x1', blockNumber: '0x64', // 收据区块 100
+          logs: [{ address: ERC20_USDT, topics: [TRANSFER0, '0x' + '0'.repeat(64), toTopic], data: amtHex }],
+        } }), { status: 200 });
+      }
+      if (body.method === 'eth_blockNumber') {
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + evmLatest.toString(16) }), { status: 200 });
+      }
+    }
+    return origFetch2(url, opts);
+  };
+  env.__fetch = evmFetch;
+  globalThis.fetch = evmFetch;
+  // 0 确认：/pay 暂存 TXID 交轮询核验（auto:false），不立即完成、不认领 TXID（A-04 修复：0 确认不得直接发货）
+  r = await call('POST', '/api/orders/' + ordA04.order_no + '/pay', { txid: txA04 });
+  check('A-04: EVM /pay 0-confirmation deferred (auto:false)', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
+  check('A-04: order still pending_payment after 0-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_payment');
+  check('A-04: 0-conf TXID NOT claimed', !q('SELECT * FROM txid_claims WHERE tx_hash=?', txA04));
+  // 1 确认：最新区块推进到 101，收据区块 100 <= 100 → 接受
+  evmLatest = 101;
+  r = await call('POST', '/api/orders/' + ordA04.order_no + '/pay', { txid: txA04 });
+  check('A-04: EVM /pay 1-confirmation accepted', r.json && r.json.ok === true, JSON.stringify(r.json));
+  check('A-04: order paid after 1-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_fulfill');
+  env.__fetch = origFetch2;
+  globalThis.fetch = origFetch2;
 }
 
 console.log('\nCONCURRENCY TEST DONE pass=' + pass + ' fail=' + fail);
