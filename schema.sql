@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS products (
   image_data TEXT NOT NULL DEFAULT '',
   sort INTEGER NOT NULL DEFAULT 0,
   is_active INTEGER NOT NULL DEFAULT 1,
+  in_stock INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -32,17 +33,24 @@ CREATE TABLE IF NOT EXISTS cards (
   is_used INTEGER NOT NULL DEFAULT 0,
   is_disabled INTEGER NOT NULL DEFAULT 0,
   order_id INTEGER,
+  -- 卡密预留：下单时预留给某订单，取消/超时释放，发货时优先分配预留卡
+  reserved_order_id INTEGER,
+  reserved_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(product_id, code),
   FOREIGN KEY(product_id) REFERENCES products(id)
 );
 CREATE INDEX IF NOT EXISTS idx_cards_product ON cards(product_id);
 CREATE INDEX IF NOT EXISTS idx_cards_used ON cards(product_id, is_used, is_disabled);
+CREATE INDEX IF NOT EXISTS idx_cards_reserved ON cards(reserved_order_id);
+CREATE INDEX IF NOT EXISTS idx_cards_avail ON cards(product_id, is_used, is_disabled, reserved_order_id);
 
 CREATE TABLE IF NOT EXISTS orders (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   order_no TEXT UNIQUE NOT NULL,
   query_password TEXT NOT NULL,
+  -- 查单凭证哈希：新订单下单时生成高强度凭证，只存 SHA-256 哈希，只在创建时返回一次；旧订单为空，走旧密码兼容路径
+  query_token_hash TEXT NOT NULL DEFAULT '',
   product_id INTEGER NOT NULL,
   product_snapshot TEXT NOT NULL DEFAULT '{}',
   quantity INTEGER NOT NULL DEFAULT 1,
@@ -116,7 +124,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 INSERT OR IGNORE INTO settings (key, value) VALUES
   ('site_name', '智选'),
   ('announcement', '示例公告：本店仅售卖自有合法货源的虚拟商品 / 代充服务，虚拟商品一经交付不退换，下单前请仔细阅读商品说明。'),
-  ('order_notice', '1. 建议注册/留好订单号与查询密码，便于查询与售后。\n2. 卡密 / 账号交付数据仅保留 7 天，请及时保存，逾期自动清空不补。\n3. 成品号收到后请第一时间修改密码。\n4. 虚拟商品一经交付，不因密码被修改、个人操作失误等原因提供售后。\n5. 本站仅支持 USDT 付款，请按页面展示的收款地址付款并提交 TXID。'),
+  ('order_notice', '1. 请妥善保存订单号与查单凭证（下单成功页只展示一次），凭订单号 + 查单凭证查询订单与交付内容。\n2. 卡密 / 账号交付数据仅保留 7 天，请及时保存，逾期自动清空不补。\n3. 成品号收到后请第一时间修改密码。\n4. 虚拟商品一经交付，不因密码被修改、个人操作失误等原因提供售后。\n5. 本站仅支持 USDT 付款，请按页面展示的收款地址付款并提交 TXID。'),
   ('tg_link', 'https://t.me/your_support'),
   ('usdt_addresses', '{"Binance|X Layer":"0xYOUR_BINANCE_XLAYER_ADDRESS","Binance|TRC20":"TYOUR_BINANCE_TRC20_ADDRESS","Binance|ERC20":"0xYOUR_BINANCE_ERC20_ADDRESS","Binance|BEP20":"0xYOUR_BINANCE_BEP20_ADDRESS","OKX|X Layer":"0xYOUR_OKX_XLAYER_ADDRESS","OKX|TRC20":"TYOUR_OKX_TRC20_ADDRESS","OKX|ERC20":"0xYOUR_OKX_ERC20_ADDRESS","OKX|BEP20":"0xYOUR_OKX_BEP20_ADDRESS"}'),
   ('pay_tutorials', '{"Binance":"https://example.com/tutorial-binance","OKX":"https://example.com/tutorial-okx"}'),
@@ -137,7 +145,7 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
 INSERT OR IGNORE INTO products (slug, title, category, price_usdt, stock_type, description, notice, form_fields, image_emoji, sort, is_active) VALUES
   ('chatgpt-plus-recharge', 'ChatGPT Plus 代充示例（1个月）', 'recharge', 20.00, 'manual', '示例商品：为你自己的 ChatGPT 账号代充 Plus 会员（1个月）。下单时请填写需要充值的账号邮箱，付款后管理员核对 TXID 后人工代充。', '请确认账号邮箱无误；代充需 1-24 小时；虚拟商品一经交付不退换。', '[{"key":"account_email","label":"充值账号邮箱","required":true,"placeholder":"如 your@email.com"},{"key":"account_name","label":"账号昵称（可选）","required":false,"placeholder":""}]', '💬', 10, 1),
   ('claude-pro-recharge', 'Claude Pro 代充示例（1个月）', 'recharge', 20.00, 'manual', '示例商品：为你自己的 Claude 账号代充 Pro 会员（1个月）。下单时请填写充值账号邮箱。', '请确认账号邮箱无误；代充需 1-24 小时；虚拟商品一经交付不退换。', '[{"key":"account_email","label":"充值账号邮箱","required":true,"placeholder":"如 your@email.com"}]', '🧠', 20, 1),
-  ('cursor-account', 'Cursor 成品号示例', 'account', 15.00, 'manual', '示例商品：全新成品号，内含 1 个月会员权益。发货后请第一时间修改密码并绑定自己的邮箱。', '成品号一经交付请立即改密；虚拟商品一经交付不退换。', '[{"key":"contact","label":"联系方式（邮箱/TG）","required":true,"placeholder":"用于接收发货通知"}]', '⌨️', 30, 1),
+  ('cursor-account', 'Cursor 成品号示例', 'account', 15.00, 'card', '示例商品：全新成品号，内含 1 个月会员权益。发货后请第一时间修改密码并绑定自己的邮箱。', '成品号一经交付请立即改密；虚拟商品一经交付不退换。', '[{"key":"contact","label":"联系方式（邮箱/TG）","required":true,"placeholder":"用于接收发货通知"}]', '⌨️', 30, 1),
   ('gemini-card', 'Gemini 卡密示例', 'card', 10.00, 'card', '示例商品：卡密类，付款后管理员确认收款即自动发卡密，查询订单即可看到卡密。', '卡密请及时保存，7 天后自动清空；虚拟商品一经交付不退换。', '[{"key":"contact","label":"联系方式（邮箱/TG）","required":true,"placeholder":""}]', '✨', 40, 1);
 
 -- 种子卡密：仅用于本地演示，生产请删除并在后台重新导入真实卡密
@@ -157,3 +165,24 @@ CREATE TABLE IF NOT EXISTS order_rate (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_order_rate_ip ON order_rate(ip, created_at);
+
+-- 操作审计：订单标识、操作类型、前后状态、时间、结果与说明；绝不记密码、查单凭证、完整卡密、API Key
+CREATE TABLE IF NOT EXISTS admin_audit (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id INTEGER,
+  action TEXT NOT NULL DEFAULT '',
+  before_status TEXT NOT NULL DEFAULT '',
+  after_status TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_order ON admin_audit(order_id);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON admin_audit(created_at);
+
+-- 登录限流：按 IP 记失败次数与封禁截止时间
+CREATE TABLE IF NOT EXISTS login_attempts (
+  ip TEXT PRIMARY KEY,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  blocked_until TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

@@ -54,9 +54,11 @@ async function orderCall(body) {
   const cid = mkCaptcha('AB12');
   return call('/api/orders', 'POST', { ...body, captcha_id: cid, captcha_code: 'AB12' });
 }
-// admin login
+// admin login + 首次改密（新规则：未改密的会话不能调管理接口）
 let loginRes = await call('/api/admin/login', 'POST', { password: 'admin' });
-const cookie = (loginRes.headers.get('set-cookie') || '').split(';')[0];
+let cookie = (loginRes.headers.get('set-cookie') || '').split(';')[0];
+let changeRes = await call('/api/admin/change-password', 'POST', { old_password: 'admin', new_password: 'test-admin-password-123' }, { Cookie: cookie });
+if (!changeRes.json || !changeRes.json.ok) { console.log('FAIL: change-password', JSON.stringify(changeRes.json)); process.exit(1); }
 const adminHeaders = { Cookie: cookie };
 let pass = 0, fail = 0;
 function check(name, cond, extra = '') { if (cond) { pass++; console.log('PASS:', name); } else { fail++; console.log('FAIL:', name, extra); } }
@@ -95,11 +97,11 @@ check('order self card 0 cards rejected', r.json && r.json.ok === false && /库�
 r = await orderCall({ product_id: p2, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'a@b.com', delivery_email: 'a@b.com' } });
 check('order self card 2 cards ok', r.json && r.json.ok === true, JSON.stringify(r.json));
 
-// 5. order create: self manual in_stock=0 -> still allowed (manual, admin decides)
+// 5. order create: self manual in_stock=0 -> BLOCKED（新规则：人工缺货服务端必须阻止下单）
 r = await orderCall({ product_id: p3, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'other@b.com' } });
-check('order self manual in_stock=0 allowed (manual)', r.json && r.json.ok === true, JSON.stringify(r.json));
+check('order self manual in_stock=0 blocked', r.json && r.json.ok === false && /缺货/.test(r.json.error || ''), JSON.stringify(r.json));
 
-// 6. admin products: card_stock present
+// 6. admin products: card_stock = 可用数（已预留的卡不再算可用），card_reserved = 预留数
 r = await call('/api/admin/products', 'GET', null, adminHeaders);
 let adminList = null;
 if (r.json && r.json.products) adminList = r.json.products;
@@ -108,8 +110,25 @@ if (!adminList) {
 }
 if (adminList) {
   const m = {}; for (const p of adminList) m[p.slug] = p;
-  check('admin card_stock self-card2 = 2', m['self-card2'].card_stock === 2, JSON.stringify(m['self-card2']));
+  // Test 4 的订单已预留 1 张卡：可用 1（CODE-B），预留 1（CODE-A）
+  check('admin card_stock self-card2 = 1 (reserved excluded)', m['self-card2'].card_stock === 1, JSON.stringify(m['self-card2']));
+  check('admin card_reserved self-card2 = 1', m['self-card2'].card_reserved === 1, JSON.stringify(m['self-card2']));
   check('admin card_stock self-card = 0', m['self-card'].card_stock === 0);
+}
+
+// 6b. 取消 Test 4 的订单 -> 预留释放，card_stock 回到 2
+const reservedOrder = db.prepare("SELECT id FROM orders WHERE product_id=? AND status='pending_payment'").get(p2);
+if (reservedOrder) {
+  r = await call('/api/admin/orders/' + reservedOrder.id + '/cancel', 'POST', { reason: '测试释放预留' }, adminHeaders);
+  check('cancel pending order ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+  r = await call('/api/admin/products', 'GET', null, adminHeaders);
+  if (r.json && r.json.products) {
+    const m2 = {}; for (const p of r.json.products) m2[p.slug] = p;
+    check('after cancel, card_stock self-card2 back to 2', m2['self-card2'].card_stock === 2, JSON.stringify(m2['self-card2']));
+    check('after cancel, card_reserved self-card2 = 0', m2['self-card2'].card_reserved === 0, JSON.stringify(m2['self-card2']));
+  }
+} else {
+  check('reserved order exists for cancel test', false, 'no pending order for p2');
 }
 
 // 7. admin save: in_stock persists (PUT)

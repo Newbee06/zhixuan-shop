@@ -92,16 +92,31 @@ function qa(sql, ...a) { return db.prepare(sql).all(...a); }
 db.prepare("UPDATE settings SET value='1' WHERE key='email_enabled'").run();
 db.prepare("UPDATE settings SET value='noreply@test.example' WHERE key='email_from'").run();
 db.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'Binance|TRC20': 'TXYZPAYADDRESS' }));
-// admin login
+// admin login + 首次改密（新规则：未改密的会话不能调其他管理接口）
 let r = await call('POST', '/api/admin/login', { password: 'admin' });
 assert(r.json.ok, 'admin login');
-const cookie = (r.headers.get('set-cookie') || '').split(';')[0];
+let cookie = (r.headers.get('set-cookie') || '').split(';')[0];
+r = await call('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'test-admin-password-123' }, cookie);
+assert(r.json.ok, 'change-password from initial admin');
+cookie = (r.headers.get('set-cookie') || '').split(';')[0] || cookie;
+// 未改密会话应被拦截（用一个全新登录但不改密的会话验证）
+let rNoChange = await call('POST', '/api/admin/login', { password: 'test-admin-password-123' });
+assert(rNoChange.json.ok, 're-login with new password');
+const cookieNoChange = (rNoChange.headers.get('set-cookie') || '').split(';')[0];
+// 把 must_change_password 临时置 1，验证未改密会话调管理接口被 403（随后恢复）
+db.prepare("UPDATE admin_meta SET value='1' WHERE key='must_change_password'").run();
+let rBlocked = await call('GET', '/api/admin/stats', null, cookieNoChange);
+assert(!rBlocked.json.ok && rBlocked.status === 403, 'un-changed-password session blocked from admin APIs');
+db.prepare("UPDATE admin_meta SET value='0' WHERE key='must_change_password'").run();
 // self card product
 r = await call('POST', '/api/admin/products', { slug: 'self-card', title: 'Self Card', category: 'card', price_usdt: 10, sell_price: 10, source: 'self', delivery_method: 'both', stock_type: 'card', form_fields: [] }, cookie);
 assert(r.json.ok, 'create self product');
 const selfProd = q('SELECT * FROM products WHERE slug=?', 'self-card');
-r = await call('POST', '/api/admin/cards/import', { product_id: selfProd.id, codes: 'DEMO-KEY-1\nDEMO-KEY-2' }, cookie);
-assert(r.json.imported === 2, 'import cards');
+r = await call('POST', '/api/admin/cards/import', { product_id: selfProd.id, codes: 'DEMO-KEY-1\nDEMO-KEY-2\nDEMO-KEY-3\nDEMO-KEY-4\nDEMO-KEY-5\nDEMO-KEY-6' }, cookie);
+assert(r.json.added === 6 && r.json.duplicate === 0, 'import cards 6 (added/duplicate split)');
+// 重复导入：应正确识别重复，不把循环次数当成功数
+r = await call('POST', '/api/admin/cards/import', { product_id: selfProd.id, codes: 'DEMO-KEY-1\nDEMO-KEY-7' }, cookie);
+assert(r.json.added === 1 && r.json.duplicate === 1, 'import duplicate detected: added=1 duplicate=1');
 // upstream sync + import
 r = await call('POST', '/api/admin/upstream/sync', {}, cookie);
 assert(r.json.ok && r.json.count === 2, 'upstream sync count=2');
