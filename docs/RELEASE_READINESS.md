@@ -581,3 +581,9 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 | F. 是否可以启用真实链上收款 | BLOCKED | 真实链上测试未执行（仅 mock 核验） |
 | G. 是否可以启用 ProdSeller 自动采购与履约 | BLOCKED | 真实 ProdSeller 行为未验证，门禁保持关闭 |
 
+
+### CI 与推送（2026-10-17 00:47 CST 补记）
+
+- 主提交 `0e31e6b`（代码+测试+文档）经 `gh` 推送成功；CI 提交 `95d6f26` 含 `.github/workflows/ci.yml`，`gh` 缺 `workflow` 权限被拒，改走 PAT（细粒度，仅限本仓库，Contents+Workflows 读写，经安全入口提交、用完即丢）经 Git Data API 推送，远端提交 `4462d60`，`git diff` 与本地逐字节一致，ci.yml blob SHA 一致。
+- CI：push `38934786472` success、PR `38934792012` success；PR #1 仍 OPEN、MERGEABLE、CLEAN，未合并。
+- PR #1 不合并、不部署生产；真实链上验证仍 BLOCKED / NOT VERIFIED。
