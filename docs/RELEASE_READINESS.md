@@ -336,3 +336,70 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 - 安全授权方式：用户在自己终端执行 `npx wrangler login`（OAuth 浏览器授权），或经 Muse 安全入口提交 Cloudflare API Token（绝不粘贴到聊天）。
   授权完成后，按上文“授权后续跑命令”继续，部署前仍需重核远端 SHA / PR / CI。
 
+## 八、第六轮：Cloudflare 实际部署 staging 并完成验收（2026-10-16，已部署并通过验收）
+
+**状态：staging 已实际部署并可访问，部署后验收通过。未合并 PR，未部署生产，未触碰生产 D1。**
+
+**部署信息（真实执行结果）**
+
+- 部署候选提交：`8288db0bdcbc5e5c64657479ffa7138aa462cdde`（含两项真实缺陷修复，见下）
+- Worker：`zhixuan-shop-staging`
+- staging URL：`https://zhixuan-shop-staging.f-00a.workers.dev`
+- staging D1：`zhixuan-shop-staging-db`，ID `4fb3878b-02bf-4cac-b833-716c050242e6`（新创建，独立，与生产 D1 不同）
+- 部署方式：Cloudflare Workers Script Upload API（`PUT /workers/scripts/zhixuan-shop-staging`，multipart：`worker.js` + `frontend.html`，D1 绑定指向 staging D1 ID）；子域 serving 显式启用；Cron 通过 Schedules API 设置（`0 2 * * *`、`*/1 * * * *`）
+- 授权：用户经 Muse 安全入口提交 Cloudflare API Token（最小权限：Account Settings:Read、Workers Scripts:Edit、D1:Edit；Token 未写入代码/提交/日志/报告）。已存旧凭据验证 401 失效，已替换。
+- 生产未变更：生产 Worker `aisou-lite` 修改时间仍为部署前时间；生产 D1 未连接/读取/修改；未配置生产域名/路由。
+- Schema：staging 首次请求自动迁移至 v9；`GET /api/admin/migrate` → `current_version=9, latest_version=9, up_to_date=true`；`GET /api/admin/schema-check` → `precheck.ok=true`，18 张表全部 ok，issues 为空。
+- 隔离设置（显式设置，非默认值）：`poll_enabled=0`、`prodseller_enabled=0`（已通过管理接口设置并验证）。
+
+**本轮发现并修复的真实缺陷（2 项，均有回归断言，修复后重新全绿 CI）**
+
+1. **真正空库首次迁移失败（v1 假设基表已存在）**：全新空 D1（未导入 `schema.sql`）首次请求时，`runMigrations` 直接跑 v1 的 `ALTER TABLE orders ADD COLUMN`，因 `orders` 表不存在而 500。此路径此前未被测试覆盖（D1 本地测试只覆盖旧库→v8 与已导入 schema 的新库）。
+   修复：`runMigrations` 先判断库是否全新（除迁移表与内部表外无用户表；排除 `schema_migrations`、`sqlite_%`、`_cf_%` 如 `_cf_METADATA`），全新时先建 6 张基表（与 `schema.sql` 定义一致），再跑 v1–v9。仅全新空库建基表；已有部分表但缺基表（如 `orders` 被误删）不静默重建空表掩盖数据丢失，仍让 v1 自然失败、版本不标记（并发测试迁移失败场景仍通过）。
+   回归：D1 本地测试新增真正空库段（建基表 + 迁移到 v9 + schema-check ok）。
+2. **v9：金额唯一索引误伤 BinanceUID 订单（下单 500）**：v8 的部分唯一索引 `idx_orders_amount_claim (pay_address, actual_amount) WHERE status='pending_payment'` 未排除 BinanceUID。BinanceUID 订单无链上地址（`pay_address=''`）且金额=总价无随机尾数，同金额待付款 BinanceUID 订单触发唯一冲突，下单代码对 BinanceUID 唯一冲突直接 throw → 500。staging 验收复现：已有 1 笔待付款 BinanceUID 订单（5 USDT）时，第二笔同金额 BinanceUID 订单必 500。
+   修复（追加式 v9，不改已应用的 v8）：DROP 旧索引，重建为 `WHERE status='pending_payment' AND pay_method != 'BinanceUID'`。BinanceUID 走管理员手动核对，不靠链上 (地址,金额) 匹配。旧索引约束更严，数据一定满足新条件，DROP 后重建不会失败。`schema.sql` 同步新索引定义与迁移版本 9。
+   回归：Release Readiness 新增 v9 专项 4 断言（旧索引 + 待付款 BinanceUID 订单 → 迁移 v9 后同金额第二笔 BinanceUID 订单成功）。
+
+**部署前测试（本轮真实执行，部署候选提交 `8288db0`）**
+
+- `node --check src/worker.js`：通过
+- `npm run test:static`：通过（Worker 语法 + 前端脚本 2/2）
+- `npm run test:regression`：Mock 通过（`emails=0 upstreamCalls=10`）、库存 17/17、安全 98/98、并发 114/114、Release Readiness 57/57（含新增 v9 专项 4 断言）
+- `bash tests/d1-local-test.sh`：`D1 LOCAL TEST ALL OK`（旧库→v9、故障恢复、新库 up_to_date、真正空库→v9）
+- 浏览器验收：48/48（CI，Playwright；同代码）
+- CI 运行 38893207661（push，提交 `8288db0`）：Static / Regression / D1 迁移 / Browser 四项全部成功
+
+**部署后验收（staging 真实执行，17/17 通过）**
+
+- 前台 `GET /` 200，含“智选”。
+- 管理员登录、改密（随机强密码，仅本次会话使用，验收后已重置为默认 `admin`、首次登录强制改密）、`me`、登出、登出后 `me` 401。
+- 未登录访问 `/api/admin/orders` → 401。
+- 创建测试商品（自营卡密）+ 导入测试卡密 2 张。
+- 验证码解析 + 下单（BinanceUID，避开主网 RPC）成功；同一验证码重复使用被拒绝（一次性消费）。
+- 订单号 + 查单凭证查单成功；`GET /api/orders` → 410（旧邮箱查单已关闭）；`GET` 单订单仅概要，无交付内容泄露。
+- ProdSeller 门禁：对接商品下单被拦截（“该商品暂未开放购买（上游服务验证中）”），未发起真实采购。
+- `/pay` 限流：同一订单前 5 次 200，第 6 次 429。
+- 付款账本接口正常；404 返回“接口不存在”（脱敏）；500 响应为通用错误 + 关联 ID（不泄露 SQL/堆栈，见本轮 staging 500 实测）。
+- 支付/履约：BinanceUID 订单走人工核对，未触发主网 RPC；`poll_enabled=0`，轮询不运行；`prodseller_enabled=0`，无真实采购。
+
+**未执行项目及原因**
+
+- 浏览器验收未在本 VM 对 staging URL 执行：Playwright Chromium 经代理隧道失败（`ERR_TUNNEL_CONNECTION_FAILED`），为本 VM 浏览器代理配置限制，非 staging 缺陷。同代码已在 CI 通过 48/48 浏览器验收；staging 前台已通过 curl + API 验收（17/17）验证。
+- 真实链上收款、真实 ProdSeller 采购、真实 RPC 确认数/扫描游标/重组处理未验证（按任务要求未发起真实交易；见 §六）。
+
+**决策矩阵（本轮真实证据）**
+
+| 项 | 判定 | 依据 |
+| --- | --- | --- |
+| A. staging 是否已实际部署并可访问 | PASS | Worker 已上传、子域已启用、URL 可访问、迁移至 v9 |
+| B. staging 是否通过部署后验收 | PASS | 部署后验收 17/17，隔离设置已验证 |
+| C. PR 是否具备提交人工审查的条件 | PASS | 候选提交 `8288db0` CI 全绿 + 两项缺陷已修复并有回归断言；仅代表可进入人工审查，不代表自动合并 |
+| D. 是否已经获得生产部署批准 | BLOCKED | 未获得生产部署批准，本轮不部署生产 |
+| E. 是否可以开放真实客户销售 | BLOCKED | 真实链上收款未验证 |
+| F. 是否可以启用真实链上收款 | BLOCKED | 真实链上测试未执行 |
+| G. 是否可以启用 ProdSeller 自动采购与履约 | BLOCKED | 真实 ProdSeller 行为未验证，门禁保持关闭 |
+
+**staging 管理员密码交接**：验收后已将 staging 管理员密码重置为默认 `admin`，首次登录强制改密。请尽快登录 staging 后台改为强密码。
+
+
