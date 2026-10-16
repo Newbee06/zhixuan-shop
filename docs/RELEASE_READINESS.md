@@ -403,3 +403,75 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 **staging 管理员密码交接**：验收后已将 staging 管理员密码重置为默认 `admin`，首次登录强制改密。请尽快登录 staging 后台改为强密码。
 
 
+
+## 九、第七轮：统一邮箱输入框、修复交付邮箱映射及 Staging 实际验收（2026-10-16，已部署并通过验收）
+
+**代码提交**：`e450b0a`（功能分支 `feat/admin-overhaul-security`；仅修改功能分支，未合并 PR #1，未部署生产）
+**CI**：push 运行 [38899010902](https://github.com/Newbee06/zhixuan-shop/actions/runs/38899010902)（Static / Regression / D1 迁移 / Browser 四项全部成功）；PR 运行 [38899018407](https://github.com/Newbee06/zhixuan-shop/actions/runs/38899018407) 同样全部成功。
+**Staging 部署**：Worker `zhixuan-shop-staging`，部署后修改时间 `2026-10-16T12:16:10Z`（部署前 `11:22:43Z`）；D1 仍为独立 `zhixuan-shop-staging-db`（`4fb3878b…`），未动生产。
+
+### 原始问题现象
+
+商品详情页出现两个输入框：`联系方式（邮箱/TG）*` 与 `邮箱地址`。用户只在唯一的“邮箱地址”框填了合法邮箱，点击“立即购买”后仍看到：`请填写正确的交付邮箱 delivery_email（用于接收卡密/账号）`。
+
+### 根因与代码证据
+
+1. **重复字段**：详情页由两部分组成——商品 `form_fields` 动态渲染（历史商品含旧默认字段 `{ key:'contact', label:'联系方式（邮箱/TG）', required:true }`，渲染为第一个框）+ 硬编码 `邮箱地址` 输入框（`id="contact"`，第二个框）。
+2. **映射缺失**：旧 `submitOrder` 只把 `cust`（`[data-k]` 收集，含旧 `cust.contact`）与顶层 `contact` 提交，从不设置 `customer_fields.delivery_email` / `contact_email`。
+3. **后端无回退**：旧 `POST /api/orders` 中 `deliveryEmail = String(cust.delivery_email || '').trim()`，只读 `customer_fields.delivery_email`，无任何回退；自营卡密/成品号且 `delivery_method=email|both` 时 `deliveryEmail` 为空即拒绝。前端填了邮箱也必然失败。
+4. **管理端重加旧字段**：新建/编辑商品保存时默认 `form_fields = [{ key:'contact', label:'联系方式（邮箱/TG）', required:true }]`，编辑历史商品时原样保留旧字段，旧字段不断再生。
+
+### 改动内容
+
+**`src/frontend.html`**
+- 新增 `isLegacyContactField(f)`（`key + label` 精确匹配）与 `validEmail(s)`（与后端同一正则）。
+- 详情页渲染动态字段时跳过旧字段；`邮箱地址` 改为 `邮箱地址 *`（`type="email"`）+ 辅助文案“用于订单联系；需要邮件交付的商品，也会使用该邮箱接收卡密或账号。”
+- `submitOrder`：读唯一邮箱框并 trim；为空 / 格式错误时 toast 拦截不提交；统一设置 `cust.contact_email = emailValue`、`cust.delivery_email = emailValue`、`contact = emailValue`。
+- 新建/编辑商品保存时不再自动加入旧字段；编辑历史商品时过滤掉旧字段（保留管理员其他自定义字段）。
+
+**`src/worker.js`**
+- 新增同名 `isLegacyContactField(f)`；动态必填校验跳过旧字段（历史商品不再因它必填而拒单）。
+- 兼容回退：需要邮件交付且 `delivery_email` 为空时，若 `contact`（`contact_email` 或顶层 `contact`）为有效邮箱则回填 `delivery_email`；仅接受有效邮箱，Telegram 用户名等非邮箱文本不回填；仅对需要邮件交付的商品生效。
+- 统一持久化：`contact_email` / `delivery_email` 以 trim 后规范化值落库，避免主表与 `customer_fields` 不一致。
+- 邮件交付路径：`orderMailTo` 仍从已持久化订单读取（`delivery_email || contact_email || order.contact`）。注意：`sendEmail` 仍为 `email_removed` 存根（本轮未改动），实际交付以站内查单页为准；本轮验证的是“交付路径能从已保存订单取到正确收件人”，不是“真实邮件已发出”。
+
+**不删除的数据**：历史商品 `form_fields` 中的旧字段仍保留在库中（仅渲染/校验时过滤），未删除 `orders.contact` 列，未清空已有订单数据。
+
+### 新增测试与真实测试结果（本地）
+
+- `npm run test:static`：通过（Worker 语法 + 前端脚本 2/2）。
+- `npm run test:regression`：Mock 通过（`emails=0 upstreamCalls=10`）、库存 17/17、安全 98/98、并发 114/114、Release Readiness **90/90**（原 57 + 第七轮新增 33）。
+  - 新增覆盖：旧客户端仅传顶层 `contact`（兼容回填成功 + 落库三字段一致）；旧 `cust.contact` 为空不再拒单；TG 用户名被拒；新客户端完整映射 + 自定义字段保留；首尾空格规范化；显式无效 `delivery_email` 仍被拒；`orderMailTo` 从持久化订单读正确收件人（提取真实函数，非复制逻辑）；人工商品不强制 `delivery_email`；激活类商品仍独立校验激活邮箱（缺失/不一致被拒、正确通过、激活邮箱与联系/交付邮箱分离）；`GET /api/orders?contact=` 仍 410；前端静态补充（旧默认不再自动加入、统一映射存在、渲染过滤存在、前端邮箱校验存在、旧标签只在匹配谓词中）。
+- `bash tests/d1-local-test.sh`：`D1 LOCAL TEST ALL OK`。
+- 浏览器验收（本地 Playwright + wrangler dev，`tests/browser-acceptance-ci.mjs`）：**64/64**（原 48 + 第七轮新增 16）。新增 6c 用例：创建含旧字段的历史卡密商品并导入卡密，访问详情页验证无旧字段、唯一邮箱框、自定义字段保留；真实点击“立即购买”，拦截请求验证载荷三字段映射且无旧 `cust.contact`；订单创建成功并验证落库一致。测试过程修掉两个测试自身缺陷（6b 抽屉遮挡按钮 → 进页后 Escape 关闭；`page.content()` 含 script 源码误报旧标签 → 改查 `innerText`），非放宽断言。
+
+### Staging 实际验收（真实执行）
+
+- 部署前核对：本地 HEAD = 部署候选 `e450b0a`（CI 全绿）；生产 Worker `aisou-lite` 修改时间仍为 `2026-10-16T04:03:50Z`，未动。
+- 部署方式：同第六轮（Workers Script Upload API，multipart 上传 `worker.js` + `frontend.html`，D1 绑定明确指向 staging D1，子域显式启用，Schedules 保持 `0 2 * * *` + `*/1 * * * *`）。
+- 隔离设置再验：`poll_enabled=0`、`prodseller_enabled=0`。
+- **旧版载荷复验**：用旧客户端形态（`customer_fields:{}`，只传顶层 `contact`）对商品 11（历史旧字段、自营卡密、`delivery_method=both`）下单 → 成功，订单号 `AISMVAXMT9B27ACBF`。落库验证：`orders.contact`、`customer_fields.contact_email`、`customer_fields.delivery_email` 均为同一测试邮箱，无旧 `contact` 键；卡密已预留 1 张。
+- **查单**：订单号 + 查单凭证查询成功（凭证字段为 `token`；前端查单用 `credential`，后端两者均接受）；`GET /api/orders?contact=` → 410；`GET` 单订单仅概要，无 `customer_fields`/`contact` 泄露。
+- **真实浏览器验收**（live browser，虚构测试邮箱，未付款、未登录后台、未改设置）：
+  - 商品 11：可见文字无“联系方式（邮箱/TG）”；标签“邮箱地址 *”+ 辅助文案正常；仅 1 个 `id=contact` 输入框。但商品 11 显示“缺货 · 补货中”、购买按钮禁用（因 API 订单已预留其唯一卡密，属正确库存行为），未发出下单请求，故浏览器侧无法验证该商品的错误文案。
+  - 商品 1：同样页面检查通过；真实点击“立即购买”成功，跳转成功页，订单号 `AISMVAXQD9H01F68E`（`actual_amount=5.0057`，OKX · X Layer，未付款）。落库验证：三字段均为浏览器填写的测试邮箱，无旧 `contact` 键——以落库数据补齐了浏览器工具无法拦截请求体的缺口。
+  - 浏览器工具限制（诚实记录）：该浏览器任务无 JS 执行与网络拦截能力，故未直接观测 POST 请求体与控制台；请求体证据来自本地 Playwright 拦截（64/64）+ Staging 落库数据；控制台零错误仅由本地 Playwright 验证，未由 staging 浏览器任务验证。
+- VM 本地 Playwright 仍无法直连 staging URL（`ERR_TUNNEL_CONNECTION_FAILED`，直连/代理均失败，第六轮同款 VM 限制），故 staging 浏览器验收改走 live browser；同代码本地 Playwright 64/64。
+
+### 未验证项目与残留风险
+
+- 真实链上收款、真实 ProdSeller 采购、真实 RPC 确认数/游标/重组、真实邮件发送（邮件发送仍为存根）未验证。
+- 浏览器任务观察到一次 SPA 导航残留：从商品 11 直接跳转 `#/product/1` 时页面短暂残留商品 11 表单内容，刷新后正确渲染。未确认为缺陷（可能是观察时机早于异步渲染完成），商品 1 订单最终成功；列为待观察项，未在本轮改动路由。
+- **Staging 管理员密码状态变更**：本轮尝试用默认 `admin` 登录 staging 后台返回“密码错误”，说明用户已在第六轮提醒后改了密码（第六轮记录的“已重置为默认 admin”已过期）。本轮未尝试恢复、未索取新密码；需要后台操作请用户自行登录。
+
+### 决策矩阵（本轮真实证据）
+
+| 项 | 判定 | 依据 |
+| --- | --- | --- |
+| A. staging 是否已实际部署并可访问 | PASS | Worker 已上传（`12:16:10Z`）、子域启用、API 可访问 |
+| B. staging 是否通过部署后验收 | PASS | 旧载荷下单成功 + 浏览器真实下单成功 + 落库三字段一致 |
+| C. PR 是否具备提交人工审查的条件 | PASS | 提交 `e450b0a` CI 全绿 + 回归断言；仅代表可进入人工审查，不代表自动合并 |
+| D. 是否已经获得生产部署批准 | BLOCKED | 未获得生产部署批准，本轮不部署生产 |
+| E. 是否可以开放真实客户销售 | BLOCKED | 真实链上收款未验证 |
+| F. 是否可以启用真实链上收款 | BLOCKED | 真实链上测试未执行 |
+| G. 是否可以启用 ProdSeller 自动采购与履约 | BLOCKED | 真实 ProdSeller 行为未验证，门禁保持关闭 |
