@@ -247,7 +247,7 @@ async function orderCall(prod, contact, method, chain) {
 {
   r = await call('GET', '/api/admin/schema-check', null, cookie);
   check('7. schema-check ok', r.json && r.json.ok === true && r.json.precheck && r.json.precheck.ok === true, JSON.stringify(r.json));
-  check('7. schema-check version 8', r.json && r.json.precheck && r.json.precheck.current_version === 8, JSON.stringify(r.json));
+  check('7. schema-check version 9', r.json && r.json.precheck && r.json.precheck.current_version === 9, JSON.stringify(r.json));
   // 模拟缺表：删 payments 表后预检应报告问题（随后重建）
   db.exec('DROP TABLE payments');
   r = await call('GET', '/api/admin/schema-check', null, cookie);
@@ -369,6 +369,48 @@ db.prepare('DELETE FROM order_rate').run();
   check('14. order completed once', q('SELECT status FROM orders WHERE id=?', ord.id).status === 'completed');
   const deliveredCount = qa('SELECT * FROM cards WHERE order_id=? AND is_used=1', ord.id).length;
   check('14. cards delivered once (qty=1)', deliveredCount === 1, 'delivered=' + deliveredCount);
+}
+
+
+// ===== 15. v9：金额唯一索引排除 BinanceUID（第六轮回归） =====
+{
+  // 构造 v8 旧库：旧版金额唯一索引（未排除 BinanceUID）+ schema_migrations 1-8（仅 v9 待应用）
+  // + 一笔待付款 BinanceUID 订单（pay_address=''、actual_amount=10）。
+  const dbV9 = new DatabaseSync(':memory:');
+  dbV9.exec(fs.readFileSync(path.join(dir, '..', 'schema.sql'), 'utf8'));
+  dbV9.exec('DROP INDEX IF EXISTS idx_orders_amount_claim');
+  dbV9.exec("CREATE UNIQUE INDEX idx_orders_amount_claim ON orders(pay_address, actual_amount) WHERE status = 'pending_payment'");
+  dbV9.exec('DELETE FROM schema_migrations');
+  dbV9.exec('INSERT INTO schema_migrations (version) VALUES (1),(2),(3),(4),(5),(6),(7),(8)');
+  dbV9.prepare("INSERT INTO products (slug, title, category, price_usdt, sell_price, source, stock_type, form_fields) VALUES ('v9-card','V9 卡密','card',10,10,'self','card','[]')").run();
+  const v9Prod = dbV9.prepare("SELECT * FROM products WHERE slug='v9-card'").get();
+  dbV9.prepare('INSERT INTO cards (product_id, code) VALUES (?, ?)').run(v9Prod.id, 'V9-KEY-1');
+  dbV9.prepare('INSERT INTO cards (product_id, code) VALUES (?, ?)').run(v9Prod.id, 'V9-KEY-2');
+  const cryptoV9 = await import('node:crypto');
+  const hashV9 = (s) => cryptoV9.createHash('sha256').update(s).digest('hex');
+  // 第一笔待付款 BinanceUID 订单（直接 INSERT，模拟 v8 下已存在的订单）
+  dbV9.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES ('AISV9FIRST001', '', ?, ?, '{}', 1, 10, 10, 10, '', datetime('now','+30 minutes'), ?, 'v9-first@test.example', 'BinanceUID', '站内转账', '', 'pending_payment', datetime('now'))").run(hashV9('v9-token-1'), v9Prod.id, JSON.stringify({ delivery_email: 'v9-first@test.example' }));
+  const envV9 = { DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbV9.prepare(sql); const r = st.get(...params); return r === undefined ? null : r; } catch (e) { throw e; } }, async all() { const st = dbV9.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbV9.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; } }; return api; }, async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key' };
+  async function callV9(method, p, body) {
+    const ctx = makeCtx();
+    const req = new Request('http://test' + p, { method, headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    const res = await worker.fetch(req, envV9, ctx);
+    await ctx.drain();
+    const txt = await res.text();
+    let j = null; try { j = JSON.parse(txt); } catch {}
+    return { status: res.status, json: j, txt };
+  }
+  // 触发迁移（首次请求自动跑 v9）
+  const migV9 = await callV9('GET', '/api/config');
+  check('15. v9 migration applied (config ok)', migV9.json && migV9.json.ok === true, migV9.txt.slice(0, 200));
+  const verV9 = dbV9.prepare('SELECT MAX(version) AS v FROM schema_migrations').get();
+  check('15. v9 version marked', verV9 && verV9.v === 9, JSON.stringify(verV9));
+  const idxV9 = dbV9.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_orders_amount_claim'").get();
+  check('15. v9 index excludes BinanceUID', idxV9 && /pay_method != 'BinanceUID'/.test(idxV9.sql || ''), (idxV9 && idxV9.sql) || '');
+  // 第二笔同金额 BinanceUID 订单（不同联系方式）：v8 旧索引下会 500，v9 下应成功
+  dbV9.prepare("INSERT INTO captcha_codes (id, code_hash, expires_at, attempts) VALUES ('v9-cap', ?, datetime('now','+5 minutes'), 0)").run(hashV9('AB12'));
+  const ordV9 = await callV9('POST', '/api/orders', { product_id: v9Prod.id, quantity: 1, customer_fields: { contact_email: 'v9-second@test.example', delivery_email: 'v9-second@test.example' }, contact: 'v9-second@test.example', pay_method: 'BinanceUID', pay_chain: '站内转账', captcha_id: 'v9-cap', captcha_code: 'AB12' });
+  check('15. second BinanceUID same-amount order succeeds (no 500)', ordV9.json && ordV9.json.ok === true, ordV9.txt.slice(0, 300));
 }
 
 console.log('\nRELEASE READINESS TEST DONE pass=' + pass + ' fail=' + fail);

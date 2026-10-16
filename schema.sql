@@ -222,7 +222,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-INSERT OR IGNORE INTO schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8);
+INSERT OR IGNORE INTO schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9);
 
 -- 第四轮（Release Readiness）：付款账本 payments —— 独立记录每一笔链上付款事件，与订单分离。
 -- 状态机：submitted → discovered → verified → confirmed → posted；异常：duplicate / mismatch / unmatched / reconciled。
@@ -266,6 +266,6 @@ CREATE TABLE IF NOT EXISTS pay_rate (
 CREATE INDEX IF NOT EXISTS idx_pay_rate_key ON pay_rate(key, created_at);
 
 -- 金额唯一性：部分唯一索引，仅约束待付款订单（过期未取消的仍占位，轮询自动取消后释放）。
-CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_amount_claim ON orders(pay_address, actual_amount) WHERE status = 'pending_payment';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_amount_claim ON orders(pay_address, actual_amount) WHERE status = 'pending_payment' AND pay_method != 'BinanceUID';
 -- 同联系方式去重原子化：部分唯一索引，仅约束待付款且 contact 非空的订单。
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_contact_pending ON orders(contact, product_id) WHERE status = 'pending_payment' AND contact != '';

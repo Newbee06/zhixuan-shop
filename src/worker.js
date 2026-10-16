@@ -316,6 +316,15 @@ var MIGRATIONS = [
     // 同联系方式去重原子化：部分唯一索引，仅约束待付款且 contact 非空的订单。同一联系方式 + 同一商品只能有一笔待付款订单，
     // 与下单时的 SELECT 查重逻辑一致，但由数据库原子保证，消除 TOCTOU 窗口。
     await createIndexIfMissing(env, "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_contact_pending ON orders(contact, product_id) WHERE status = 'pending_payment' AND contact != ''");
+  } },
+  { version: 9, name: '第六轮：金额唯一索引排除 BinanceUID', up: async function (env) {
+    // BinanceUID 订单无链上地址（pay_address=''）且金额=总价无随机尾数，v8 的部分唯一索引
+    // (pay_address, actual_amount) WHERE status='pending_payment' 会把所有同金额待付款
+    // BinanceUID 订单误判为金额冲突，下单代码对 BinanceUID 唯一冲突直接 throw，导致 500。
+    // BinanceUID 走管理员手动核对，不靠链上 (地址,金额) 匹配，故从索引条件中排除。
+    // 旧索引约束更严（已包含 BinanceUID），数据一定满足新条件，DROP 后重建不会失败。
+    await env.DB.prepare('DROP INDEX IF EXISTS idx_orders_amount_claim').run();
+    await createIndexIfMissing(env, "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_amount_claim ON orders(pay_address, actual_amount) WHERE status = 'pending_payment' AND pay_method != 'BinanceUID'");
   } }
 ];
 // 执行待迁移：先建基表（空库首次迁移），再逐个版本 apply，成功才标记版本；任一失败抛错（带版本号与原因），不得伪装成功。
