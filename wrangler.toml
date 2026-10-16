@@ -1,0 +1,26 @@
+name = "aisou-lite"
+main = "src/worker.js"
+compatibility_date = "2024-01-01"
+
+# Cloudflare 免费版：单 Worker + 单 D1 + 2 个 cron，无付费功能。
+# 0 2 * * * = 7 天清理；*/1 * * * * = 轮询自动发货（先查 D1 有无待付款，无则零 RPC）。
+
+[[d1_databases]]
+binding = "DB"
+database_name = "aisou-lite-db"
+database_id = "c492fc6c-23d3-4c16-8c49-5a1a3cdf680c"
+
+# ProdSeller / Resend 密钥绝不写进本文件，走 wrangler secret：
+#   printf '%s' "$VAL" | npx wrangler secret put PRODSELLER_API_KEY
+#   printf '%s' "$VAL" | npx wrangler secret put RESEND_API_KEY
+# PRODSELLER_BASE_URL 可在 [vars] 覆盖，默认 https://prodseller.com/v1。
+[vars]
+PRODSELLER_BASE_URL = "https://prodseller.com/v1"
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true
+
+[triggers]
+crons = ["0 2 * * *", "*/1 * * * *"]

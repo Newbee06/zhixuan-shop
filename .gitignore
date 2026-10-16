@@ -1,0 +1,4 @@
+.wrangler/
+node_modules/
+*.log
+tests/_stock-worker-tmp.mjs

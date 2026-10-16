@@ -1,0 +1,229 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+const dir = path.dirname(fileURLToPath(import.meta.url)) + '/..';
+const db = new DatabaseSync(':memory:');
+db.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
+// Mock D1 over node:sqlite
+function wrapStmt(sql) {
+  let params = [];
+  const api = {
+    bind(...a) { params = a; return api; },
+    async first() { try { const st = db.prepare(sql); const r = st.get(...params); return r === undefined ? null : r; } catch (e) { throw e; } },
+    async all() { const st = db.prepare(sql); const rows = st.all(...params); return { results: rows }; },
+    async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; },
+  };
+  return api;
+}
+const env = { DB: { prepare: (sql) => wrapStmt(sql) }, PRODSELLER_API_KEY: 'test-key', RESEND_API_KEY: 'test-resend', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
+const sentEmails = [];
+const upstreamCalls = [];
+let getCountPSORD1 = 0;
+async function mockFetch(url, opts = {}) {
+  const u = String(url);
+  const method = (opts.method || 'GET').toUpperCase();
+  const body = opts.body ? JSON.parse(opts.body) : null;
+  if (u.includes('api.resend.com')) { sentEmails.push({ to: body.to, subject: body.subject, html: body.html }); return new Response(JSON.stringify({ id: 'mock-mail' }), { status: 200 }); }
+  if (u.includes('prodseller.com/v1/products') && method === 'GET') {
+    return new Response(JSON.stringify([{ id: 'PS-100', title: 'Upstream Key', cost: 10, requiresEmailActivation: false, description: 'mock' }, { id: 'PS-200', title: 'Upstream Activation', cost: 20, requiresEmailActivation: true, description: 'mock' }]), { status: 200 });
+  }
+  if (u.includes('prodseller.com/v1/balance')) return new Response(JSON.stringify({ balance: 123.45 }), { status: 200 });
+  if (u.includes('prodseller.com/v1/orders/') && method === 'GET') {
+    const id = decodeURIComponent(u.split('/v1/orders/')[1]);
+    if (id === 'PSORD-1') { getCountPSORD1++; if (getCountPSORD1 >= 2) return new Response(JSON.stringify({ id: 'PSORD-1', status: 'delivered', deliveredKey: 'UP-ACT-KEY', amount: 24 }), { status: 200 }); return new Response(JSON.stringify({ id: 'PSORD-1', status: 'paid', amount: 24 }), { status: 200 }); }
+    return new Response(JSON.stringify({ error: 'not found' }), { status: 404 });
+  }
+  if (u.includes('prodseller.com/v1/orders') && method === 'POST') {
+    upstreamCalls.push({ productId: body.productId, idem: (opts.headers || {})['Idempotency-Key'], body });
+    if (body.productId === 'PS-100') return new Response(JSON.stringify({ id: 'PSORD-100', status: 'delivered', deliveredKey: 'UP-KEY-ABC', amount: 12, discount: 0 }), { status: 200 });
+    if (body.productId === 'PS-200') return new Response(JSON.stringify({ id: 'PSORD-1', status: 'paid', amount: 24 }), { status: 200 });
+    if (body.productId === 'PS-402') return new Response(JSON.stringify({ error: 'insufficient balance' }), { status: 402 });
+    if (body.productId === 'PS-409') return new Response(JSON.stringify({ error: 'out of stock' }), { status: 409 });
+    return new Response(JSON.stringify({ error: 'unknown' }), { status: 500 });
+  }
+  if (u.includes('tronscanapi.com/api/token_trc20/transfers')) {
+    const toAddr = new URL(u).searchParams.get('toAddress');
+    const rows = db.prepare("SELECT * FROM orders WHERE pay_address=? AND status='pending_payment'").all(toAddr);
+    const o = rows[0];
+    if (!o) return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    return new Response(JSON.stringify({ data: [{ to_address: toAddr, tokenInfo: { tokenId: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', tokenAbbr: 'USDT', tokenDecimal: 6 }, quant: Math.round(Number(o.actual_amount) * 1e6), block_ts: Date.now(), confirmed: true, transactionHash: 'TXHASH-' + o.order_no }] }), { status: 200 });
+  }
+  throw new Error('Unexpected fetch: ' + u);
+}
+globalThis.fetch = mockFetch;
+env.__fetch = mockFetch;
+// Load worker: strip import/export
+let code = fs.readFileSync(path.join(dir, 'src/worker.js'), 'utf8');
+const html = fs.readFileSync(path.join(dir, 'src/frontend.html'), 'utf8');
+code = code.replace("import FRONTEND_HTML from './frontend.html';", 'const FRONTEND_HTML = ' + JSON.stringify(html) + ';');
+code = code.replace('export default {', 'globalThis.__W = {');
+const fn = new Function(code + '\nreturn globalThis.__W;');
+const worker = fn();
+function makeCtx() { const c = { pending: [] }; c.waitUntil = (pr) => { c.pending.push(pr); }; c.drain = async () => { while (c.pending.length) { const batch = c.pending.splice(0); await Promise.all(batch.map((x) => x.catch(() => {}))); } }; return c; }
+async function call(method, p, body, cookie) {
+  const ctx = makeCtx();
+  const headers = { 'content-type': 'application/json' };
+  if (cookie) headers.Cookie = cookie;
+  const req = new Request('http://test' + p, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const res = await worker.fetch(req, env, ctx);
+  await ctx.drain();
+  const txt = await res.text();
+  let j = null; try { j = JSON.parse(txt); } catch {}
+  return { status: res.status, json: j, headers: res.headers, text: txt };
+}
+let capSeq = 0;
+function mkCaptcha(code){
+  const id = 'cap-test-' + (++capSeq);
+  const h = createHash('sha256').update(code).digest('hex');
+  const exp = new Date(Date.now() + 300000).toISOString().replace('T',' ').slice(0,19);
+  db.prepare("INSERT INTO captcha_codes (id, code_hash, expires_at, attempts) VALUES (?,?,?,0)").run(id, h, exp);
+  return id;
+}
+async function orderCall(body, cookie){
+  const cid = mkCaptcha('AB12');
+  return call('POST', '/api/orders', { ...body, captcha_id: cid, captcha_code: 'AB12' }, cookie);
+}
+function assert(cond, msg) { if (!cond) { console.error('FAIL: ' + msg); process.exitCode = 1; throw new Error(msg); } console.log('PASS: ' + msg); }
+function q(sql, ...a) { return db.prepare(sql).get(...a); }
+function qa(sql, ...a) { return db.prepare(sql).all(...a); }
+// settings
+db.prepare("UPDATE settings SET value='1' WHERE key='email_enabled'").run();
+db.prepare("UPDATE settings SET value='noreply@test.example' WHERE key='email_from'").run();
+db.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'Binance|TRC20': 'TXYZPAYADDRESS' }));
+// admin login
+let r = await call('POST', '/api/admin/login', { password: 'admin' });
+assert(r.json.ok, 'admin login');
+const cookie = (r.headers.get('set-cookie') || '').split(';')[0];
+// self card product
+r = await call('POST', '/api/admin/products', { slug: 'self-card', title: 'Self Card', category: 'card', price_usdt: 10, sell_price: 10, source: 'self', delivery_method: 'both', stock_type: 'card', form_fields: [] }, cookie);
+assert(r.json.ok, 'create self product');
+const selfProd = q('SELECT * FROM products WHERE slug=?', 'self-card');
+r = await call('POST', '/api/admin/cards/import', { product_id: selfProd.id, codes: 'DEMO-KEY-1\nDEMO-KEY-2' }, cookie);
+assert(r.json.imported === 2, 'import cards');
+// upstream sync + import
+r = await call('POST', '/api/admin/upstream/sync', {}, cookie);
+assert(r.json.ok && r.json.count === 2, 'upstream sync count=2');
+r = await call('POST', '/api/admin/upstream/import', { items: [{ id: 'PS-100' }, { id: 'PS-200' }] }, cookie);
+assert(r.json.ok && r.json.imported === 2, 'upstream import 2');
+const up100 = q('SELECT * FROM products WHERE prodseller_id=?', 'PS-100');
+const up200 = q('SELECT * FROM products WHERE prodseller_id=?', 'PS-200');
+assert(up100.sell_price === 12, 'PS-100 sell = 10*1.2 = ' + up100.sell_price);
+assert(up200.sell_price === 24, 'PS-200 sell = 20*1.2 = ' + up200.sell_price);
+assert(up200.requires_email_activation === 1, 'PS-200 requires activation');
+// 402 / 409 products
+await call('POST', '/api/admin/products', { slug: 'ps-402', title: 'P402', category: 'recharge', price_usdt: 5, sell_price: 5, source: 'prodseller', prodseller_id: 'PS-402', delivery_method: 'both', stock_type: 'manual', form_fields: [] }, cookie);
+await call('POST', '/api/admin/products', { slug: 'ps-409', title: 'P409', category: 'recharge', price_usdt: 5, sell_price: 5, source: 'prodseller', prodseller_id: 'PS-409', delivery_method: 'both', stock_type: 'manual', form_fields: [] }, cookie);
+const p402 = q('SELECT * FROM products WHERE slug=?', 'ps-402');
+const p409 = q('SELECT * FROM products WHERE slug=?', 'ps-409');
+// Test A: self card via polling
+r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer1@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer1@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+assert(r.json.ok, 'self order created');
+const ctxA = makeCtx();
+await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxA); await ctxA.drain();
+let oA = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+assert(oA.status === 'completed' && oA.delivery_content === 'DEMO-KEY-1', 'A self polling -> completed + card, got ' + oA.status + '/' + oA.delivery_content);
+assert(sentEmails.length === 0, 'A email removed: no email sent, delivery via onsite only');
+// duplicate polling: no duplicate
+const emailsBefore = sentEmails.length;
+const ctxA2 = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxA2); await ctxA2.drain();
+oA = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+assert(oA.status === 'completed', 'A duplicate polling stays completed');
+assert(sentEmails.length === emailsBefore, 'A duplicate polling sends no email');
+// Test B: upstream normal via polling
+r = await orderCall({ product_id: up100.id, quantity: 1, customer_fields: { contact_email: 'buyer2@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer2@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+assert(r.json.ok, 'upstream order created');
+const ctxB = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxB); await ctxB.drain();
+let oB = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+assert(oB.status === 'completed' && oB.delivery_content === 'UP-KEY-ABC', 'B upstream polling -> delivered, got ' + oB.status + '/' + oB.delivery_content);
+assert(sentEmails.length === 0, 'B email removed: no email sent');
+// Test G: admin confirm-payment on upstream (fresh order, no polling)
+r = await orderCall({ product_id: up100.id, quantity: 1, customer_fields: { contact_email: 'buyer3@test.example' }, contact: 'buyer3@test.example', pay_method: 'BinanceUID', pay_chain: '站内转账' });
+assert(r.json.ok, 'G upstream BinanceUID order created');
+let oG = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+r = await call('POST', '/api/admin/orders/' + oG.id + '/confirm-payment', {}, cookie);
+assert(r.json.ok, 'G admin confirm-payment ok: ' + JSON.stringify(r.json));
+oG = q('SELECT * FROM orders WHERE id=?', oG.id);
+assert(oG.status === 'completed' && oG.delivery_content === 'UP-KEY-ABC', 'G admin confirm -> ProdSeller delivered, got ' + oG.status);
+// Test C: activation paid -> poll -> delivered
+r = await orderCall({ product_id: up200.id, quantity: 1, customer_fields: { contact_email: 'buyer4@test.example', activation_email: 'act@test.example', activation_email_confirm: 'act@test.example' }, contact: 'buyer4@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+assert(r.json.ok, 'C activation order created: ' + JSON.stringify(r.json));
+const ctxC1 = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxC1); await ctxC1.drain();
+let oC = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+assert(oC.status === 'pending_activation', 'C after payment -> pending_activation, got ' + oC.status);
+assert(sentEmails.length === 0, 'C email removed: no activation email, onsite only');
+assert(oC.delivery_content === '', 'C no delivery before deliveredKey');
+const ctxC2 = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxC2); await ctxC2.drain();
+oC = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+assert(oC.status === 'completed' && oC.delivery_content === 'UP-ACT-KEY', 'C poll -> delivered, got ' + oC.status + '/' + oC.delivery_content);
+// Test D: 402
+r = await orderCall({ product_id: p402.id, quantity: 1, customer_fields: { contact_email: 'buyer5@test.example' }, contact: 'buyer5@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+assert(r.json.ok, 'D 402 order created');
+const ctxD = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxD); await ctxD.drain();
+let oD = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+assert(oD.status === 'pending_upstream' && oD.delivery_content === '', 'D 402 -> pending_upstream no delivery, got ' + oD.status);
+r = await call('GET', '/api/admin/upstream/alerts', null, cookie);
+assert(r.json.alerts.some((a) => a.order_no === oD.order_no), 'D alert listed in upstream/alerts');
+// Test 409
+r = await orderCall({ product_id: p409.id, quantity: 1, customer_fields: { contact_email: 'buyer6@test.example' }, contact: 'buyer6@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+assert(r.json.ok, '409 order created');
+const ctxE = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxE); await ctxE.drain();
+let oE = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+assert(oE.status === 'pending_upstream', '409 -> pending_upstream, got ' + oE.status);
+// Test E: timeout cancel
+r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer7@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer7@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+assert(r.json.ok, 'timeout order created');
+// remove its tronscan match by expiring it (mock only returns pending_payment rows; expiry check runs before chain check, so it cancels)
+db.prepare("UPDATE orders SET expires_at=datetime('now','-1 minute') WHERE order_no=?").run(r.json.order.order_no);
+const ctxT = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxT); await ctxT.drain();
+let oT = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+assert(oT.status === 'cancelled', 'timeout -> cancelled, got ' + oT.status);
+// Idempotency-Key check: all upstream POSTs used order_no
+assert(upstreamCalls.every((c) => c.idem && c.idem.startsWith('AIS')), 'Idempotency-Key = order_no on all upstream POSTs');
+// Captcha tests
+r = await call('GET', '/api/captcha');
+assert(r.json.ok && r.json.captcha_id && r.json.svg.includes('<svg'), 'captcha GET returns svg');
+assert(q('SELECT * FROM captcha_codes WHERE id=?', r.json.captcha_id), 'captcha row stored (hash only, no plaintext)');
+r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+assert(!r.json.ok && r.json.error.includes('验证码'), 'order without captcha rejected: ' + JSON.stringify(r.json));
+const badCap = mkCaptcha('ZZ99');
+r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'TRC20', captcha_id: badCap, captcha_code: 'WRONG' });
+assert(!r.json.ok && r.json.error.includes('验证码错误'), 'wrong captcha rejected: ' + JSON.stringify(r.json));
+assert(q('SELECT attempts FROM captcha_codes WHERE id=?', badCap).attempts === 1, 'wrong attempt counted');
+const goodCap = mkCaptcha('AB12');
+r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'TRC20', captcha_id: goodCap, captcha_code: 'AB12' });
+assert(r.json.ok, 'order with correct captcha created: ' + JSON.stringify(r.json));
+r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'TRC20', captcha_id: goodCap, captcha_code: 'AB12' });
+assert(!r.json.ok && r.json.error.includes('验证码'), 'used captcha cannot be replayed: ' + JSON.stringify(r.json));
+// Duplicate pending order: same contact, one pending only
+r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'dup@test.example', delivery_email: 'dup@test.example' }, contact: 'dup@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+assert(r.json.ok, 'dup first order created: ' + JSON.stringify(r.json));
+const dupNo = r.json.order.order_no;
+r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'dup@test.example', delivery_email: 'dup@test.example' }, contact: 'dup@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+assert(!r.json.ok && r.json.error.includes('待付款'), 'dup second order blocked: ' + JSON.stringify(r.json));
+const dupOrder = q('SELECT * FROM orders WHERE order_no=?', dupNo);
+r = await call('POST', '/api/admin/orders/' + dupOrder.id + '/cancel', {}, cookie);
+assert(r.json.ok, 'dup order cancelled: ' + JSON.stringify(r.json));
+r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'dup@test.example', delivery_email: 'dup@test.example' }, contact: 'dup@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+assert(r.json.ok, 'dup contact can order again after cancel: ' + JSON.stringify(r.json));
+for (let i = 0; i < 10; i++) db.prepare("INSERT INTO order_rate (ip, created_at) VALUES ('unknown', datetime('now'))").run();
+r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer-rate@test.example', delivery_email: 'buyer-rate@test.example' }, contact: 'buyer-rate@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+assert(!r.json.ok && r.json.error.includes('频繁'), 'rate limit blocks 11th order: ' + JSON.stringify(r.json));
+// image_data validation (admin PUT)
+r = await call('GET', '/api/admin/products', null, cookie);
+const prodRow = r.json.products.find((x) => x.id === selfProd.id);
+assert(prodRow, 'admin products list has selfProd');
+const putBody = { ...prodRow };
+try { putBody.form_fields = JSON.parse(prodRow.form_fields || '[]'); } catch { putBody.form_fields = []; }
+putBody.image_data = 'not-an-image';
+r = await call('PUT', '/api/admin/products/' + selfProd.id, putBody, cookie);
+assert(!r.json.ok && r.json.error.includes('图片'), 'bad image_data rejected: ' + JSON.stringify(r.json));
+putBody.image_data = 'data:image/jpeg;base64,' + 'A'.repeat(100);
+r = await call('PUT', '/api/admin/products/' + selfProd.id, putBody, cookie);
+assert(r.json.ok, 'good image_data accepted: ' + JSON.stringify(r.json));
+assert(q('SELECT image_data FROM products WHERE id=?', selfProd.id).image_data.startsWith('data:image/jpeg'), 'image_data stored');
+putBody.image_data = '';
+r = await call('PUT', '/api/admin/products/' + selfProd.id, putBody, cookie);
+assert(r.json.ok && q('SELECT image_data FROM products WHERE id=?', selfProd.id).image_data === '', 'image_data can be cleared');
+console.log('ALL MOCK TESTS DONE, emails=' + sentEmails.length + ' upstreamCalls=' + upstreamCalls.length);
