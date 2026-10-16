@@ -268,11 +268,12 @@ html[data-theme="light"] .toast{background:#1c1c1e;color:#fff}
 .skeleton{background:linear-gradient(90deg,rgba(127,127,127,.12),rgba(127,127,127,.22),rgba(127,127,127,.12));background-size:200% 100%;animation:sk 1.2s infinite;border-radius:10px;height:16px}
 @keyframes sk{0%{background-position:200% 0}100%{background-position:-200% 0}}
 
+.ic{display:inline-block;width:1em;height:1em;vertical-align:-0.15em;flex:none;color:#5b7bff}
 </style>
 <script>try{var _t=localStorage.getItem('theme');if(_t==='dark'||_t==='light'){document.documentElement.dataset.theme=_t;}}catch(e){}</script>
 </head>
 <body>
-<header class="top"><div class="top-in"><a class="logo" href="#/"><span id="siteName">智选</span></a><nav class="nav"><a class="nav-icon" href="#/" title="商城" aria-label="商城">🛍️</a><a class="nav-icon" href="#/query" title="查询订单" aria-label="查询订单">🔍</a><button id="themeBtn" class="theme-btn" onclick="toggleTheme()" title="切换深浅色">🌙</button></nav></div></header>
+<header class="top"><div class="top-in"><a class="logo" href="#/"><span id="siteName">智选</span></a><nav class="nav"><a class="nav-icon" href="#/" title="商城" aria-label="商城"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg></a><a class="nav-icon" href="#/query" title="查询订单" aria-label="查询订单"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></a><button id="themeBtn" class="theme-btn" onclick="toggleTheme()" title="切换深浅色"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></button></nav></div></header>
 <main class="wrap"><div id="announce" class="glass muted" style="margin-bottom:14px"></div><div id="app"></div><div class="footer muted">虚拟商品一经交付不退换，下单前请仔细阅读商品说明。</div></main>
 <script>
 var CFG = null;
@@ -281,7 +282,24 @@ var curStock = 'all';
 var curSort = 'featured';
 var curQ = '';
 function currentTheme(){ if (document.documentElement.dataset.theme) return document.documentElement.dataset.theme; return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light'; }
-function renderThemeBtn(){ var b = el('themeBtn'); if (b) b.textContent = currentTheme() === 'dark' ? '☀️' : '🌙'; }
+var ICONS = {
+  shop: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>',
+  search: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
+  moon: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>',
+  sun: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>',
+  box: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>',
+  cart: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></svg>',
+  book: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>',
+  clipboard: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>',
+  chart: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/><path d="M15 8h4v4"/></svg>',
+  receipt: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M8 8h8"/><path d="M8 12h8"/></svg>',
+  card: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg>',
+  link: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
+  settings: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="1" x2="7" y1="14" y2="14"/><line x1="9" x2="15" y1="8" y2="8"/><line x1="17" x2="23" y1="16" y2="16"/></svg>',
+  warn: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>'
+};
+function ic(k){ return ICONS[String(k || '')] || ICONS.box; }
+function renderThemeBtn(){ var b = el('themeBtn'); if (b) b.innerHTML = ic(currentTheme() === 'dark' ? 'sun' : 'moon'); }
 function toggleTheme(){ var next = currentTheme() === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = next; try { localStorage.setItem('theme', next); } catch (e) {} renderThemeBtn(); }
 renderThemeBtn();
 function el(id){ return document.getElementById(id); }
@@ -389,7 +407,7 @@ function fmtCNY(usdt){ return '¥' + (Number(usdt || 0) * cnyRate()).toFixed(2);
 function fmtPrice(usdt){ return fmtCNY(usdt) + ' <span class="muted" style="font-size:13px">约 ' + Number(usdt || 0).toFixed(2) + ' USDT</span>'; }
 function productThumb(p){
   if (p && p.image_data && String(p.image_data).indexOf('data:image/') === 0) return '<img src="' + escH(p.image_data) + '" class="prod-img" alt="">';
-  return '<div class="prod-img prod-emoji">' + escH((p && p.image_emoji) || '🤖') + '</div>';
+  return '<div class="prod-img prod-emoji">' + ic((p && p.image_emoji) || 'box') + '</div>';
 }
 async function load(){ var r = await api('/api/config'); if (r.ok) CFG = r.config; var pr = await api('/api/products'); if (pr.ok) PRODUCTS = pr.products; if (CFG) { el('siteName').textContent = CFG.site_name; el('announce').textContent = CFG.announcement || ''; }
   // Turnstile 开启时动态加载官方 widget 脚本（仅在开启时加载，未开启不加载第三方脚本）。
@@ -402,7 +420,7 @@ window.addEventListener('hashchange', route);
 function renderShop(){
   curQ = '';
   var html = '<div class="h1">选购你的虚拟商品</div><div class="muted">下单后按页面收款地址付精确金额，付完成功后自动发货。</div>';
-  html += '<div class="search-row"><div class="search-wrap"><span class="search-icon">🔍</span><input id="q" placeholder="搜索商品…" oninput="doSearch()"></div><select id="sortSel" class="sort-sel" onchange="changeSort(this.value)"><option value="featured">排序方式：精选</option><option value="price-asc">排序方式：价格从低到高</option><option value="price-desc">排序方式：价格从高到低</option><option value="name-asc">排序方式：名称：A 到 Z</option></select></div>';
+  html += '<div class="search-row"><div class="search-wrap"><span class="search-icon">' + ic('search') + '</span><input id="q" placeholder="搜索商品…" oninput="doSearch()"></div><select id="sortSel" class="sort-sel" onchange="changeSort(this.value)"><option value="featured">排序方式：精选</option><option value="price-asc">排序方式：价格从低到高</option><option value="price-desc">排序方式：价格从高到低</option><option value="name-asc">排序方式：名称：A 到 Z</option></select></div>';
   html += '<div class="filter-row"><div class="tabs" style="margin:0"><button id="pill-all" onclick="filterStock(\x27all\x27)">全部 <span id="cntAll"></span></button><button id="pill-instock" onclick="filterStock(\x27instock\x27)"><span class="stock-dot"></span> 有货 <span id="cntStock"></span></button></div><div class="muted" id="prodCount"></div></div><div id="list" class="grid shop-grid"></div>';
   el('app').innerHTML = html;
   var ss = el('sortSel'); if (ss) ss.value = curSort;
@@ -413,7 +431,7 @@ function doSearch(){ curQ = el('q').value || ''; renderList(); }
 function changeSort(v){ curSort = v; renderList(); }
 function productCard(p){
   var inSt = Number(p.in_stock == null ? 1 : p.in_stock);
-  var img = (p.image_data && String(p.image_data).indexOf('data:image/') === 0) ? '<img src="' + escH(p.image_data) + '" alt="">' : '<div class="emoji">' + escH(p.image_emoji || '🤖') + '</div>';
+  var img = (p.image_data && String(p.image_data).indexOf('data:image/') === 0) ? '<img src="' + escH(p.image_data) + '" alt="">' : '<div class="emoji">' + ic(p.image_emoji || 'box') + '</div>';
   var stock = inSt ? '<span class="stock-dot">有存货</span>' : '<span class="stock-dot out">缺货</span>';
   var btn = inSt ? '<button class="pcard-btn" onclick="event.stopPropagation();location.hash=\x27#/product/' + p.id + '\x27">立即购买 +</button>' : '<button class="pcard-btn" disabled>售罄</button>';
   return '<div class="glass card pcard" data-pid="' + p.id + '" onclick="location.hash=\x27#/product/' + p.id + '\x27"><div class="pcard-img">' + img + '<span class="pcard-arrow">↗</span></div><div class="pcard-meta">' + stock + '<span class="muted pcard-cat">数字产品</span></div><div class="pcard-title">' + escH(p.title) + '</div><div class="pcard-desc">' + escH(p.description || '') + '</div><div class="pcard-foot"><div><div class="pcard-price-label">您的价格</div><div class="pcard-price">' + fmtCNY(p.price_usdt) + '</div></div>' + btn + '</div></div>';
@@ -452,7 +470,7 @@ async function renderProduct(id){
   for (var i = 0; i < p.form_fields.length; i++){ var f = p.form_fields[i]; if (isLegacyContactField(f)) continue; fh += '<label>' + escH(f.label) + (f.required ? ' *' : '') + '</label><input data-k="' + escH(f.key) + '" placeholder="' + escH(f.placeholder || '') + '">'; }
   var inSt = Number(p.in_stock == null ? 1 : p.in_stock);
   var badgeMain = inSt === 0 ? '<span class="badge" style="background:rgba(255,69,58,.14);color:var(--red)">缺货 · 补货中</span>' : '<span class="badge green">自动发货</span>';
-  var actHint = p.requires_email_activation ? '<div class="warn-box" style="margin-top:12px">⚠️ 激活类商品：激活邮箱是要开通会员的邮箱，必须填对，填错无法开通。</div>' : '';
+  var actHint = p.requires_email_activation ? '<div class="warn-box" style="margin-top:12px">' + ic('warn') + ' 激活类商品：激活邮箱是要开通会员的邮箱，必须填对，填错无法开通。</div>' : '';
   var rel = PRODUCTS.filter(function(x){ return x.id !== p.id && x.category === p.category; }).slice(0,4);
   var relHtml = '';
   if (rel.length){
@@ -465,7 +483,7 @@ async function renderProduct(id){
   // Top: left image, right buy box (aisou.pro style)
   html += '<div class="detail-top">';
   if (p.image_data && String(p.image_data).indexOf('data:image/') === 0) html += '<div class="glass detail-img" style="padding:0;overflow:hidden"><img src="' + escH(p.image_data) + '" class="detail-img-photo" alt=""></div>';
-  else html += '<div class="glass detail-img">' + escH(p.image_emoji) + '<div class="detail-img-cap">' + escH(p.title) + '</div></div>';
+  else html += '<div class="glass detail-img">' + ic(p.image_emoji || 'box') + '<div class="detail-img-cap">' + escH(p.title) + '</div></div>';
   html += '<div class="glass buy-box"><div class="h1" style="margin-top:0;font-size:22px">' + escH(p.title) + '</div><div class="detail-meta badge-row">' + badgeMain + '<span class="badge" style="background:rgba(88,86,214,.14);color:#7d7aff">已售 ' + Number(p.sold_count || 0) + '</span><button type="button" class="badge badge-share" onclick="copyText(location.href)" title="复制商品链接">↗</button></div>';
   html += '<div class="buy-price">' + fmtCNY(p.price_usdt) + ' <small>约 ' + Number(p.price_usdt||0).toFixed(2) + ' USDT · 单价</small></div>';
   html += fh;
@@ -480,7 +498,7 @@ async function renderProduct(id){
   } else {
     html += '<label>人机验证</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="captchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="captchaImg" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" onclick="loadCaptcha()"></div><div class="muted" style="margin-top:4px">看不清？点击图片刷新</div>';
   }
-  html += '<div class="pay-card"><div class="pay-card-title">🛒 付款</div><div class="pills pay-options" id="payOptions">' + payOpts + '</div></div>';
+  html += '<div class="pay-card"><div class="pay-card-title">' + ic('cart') + ' 付款</div><div class="pills pay-options" id="payOptions">' + payOpts + '</div></div>';
   html += actHint;
   html += '<div class="total-box"><span>合计 <span id="stickyQty">1</span> 件</span><span><b id="totalPrice" style="font-size:20px">' + fmtCNY(p.price_usdt) + '</b> <span class="muted" id="totalUsdt">约 ' + Number(p.price_usdt||0).toFixed(2) + ' USDT</span></span></div>';
   html += '<div style="margin-top:14px">' + (inSt === 0 ? '<button class="btn block" disabled style="background:rgba(127,127,127,.3);cursor:not-allowed">缺货 · 补货中</button>' : '<button class="btn block" data-pid="' + p.id + '" onclick="submitOrder(this.dataset.pid)">立即购买</button>') + '</div>';
@@ -491,8 +509,8 @@ async function renderProduct(id){
   var noticeHtml = noticeItems.map(function(s){ return '<div style="margin-bottom:6px">' + escH(s) + '</div>'; }).join('');
   html += '<div class="detail-blocks"><div class="detail-tabs"><span>宝贝详情</span></div>';
   html += '<div class="detail-block"><h3>' + escH(p.title) + '</h3><p>' + escH(p.description) + '</p></div>';
-  html += '<div class="detail-block"><h3>📖 使用说明</h3><p>' + escH(useTxt) + '</p></div>';
-  if (noticeHtml) html += '<div class="detail-block"><h3>📋 下单须知</h3>' + noticeHtml + '</div>';
+  html += '<div class="detail-block"><h3>' + ic('book') + ' 使用说明</h3><p>' + escH(useTxt) + '</p></div>';
+  if (noticeHtml) html += '<div class="detail-block"><h3>' + ic('clipboard') + ' 下单须知</h3>' + noticeHtml + '</div>';
   html += '</div>';
   html += relHtml;
   html += '<div style="margin-top:14px"><a class="btn ghost small" href="#/">← 返回商城</a> <a class="btn ghost small" href="#/query">查询订单</a></div>';
@@ -566,7 +584,7 @@ async function renderSuccess(no){
   var tut = ''; if (CFG && o) tut = CFG.pay_tutorials[o.pay_method] || '';
   var html = '<div class="glass"><div class="h2">下单成功</div><p>订单号：<b>' + escH(no) + '</b></p>';
   if (token) {
-    html += '<div class="warn-box" style="margin:10px 0"><b>⚠️ 查单凭证（只展示一次，请立即保存）</b><div class="codebox" id="tokenBox" style="margin-top:8px">' + escH(token) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(document.getElementById(\'tokenBox\').textContent)">复制查单凭证</button><p class="muted" style="margin:8px 0 0">查询订单与交付内容需用“订单号 + 查单凭证”。凭证只展示一次，刷新页面后不再显示，请妥善保存，勿泄露给他人。</p></div>';
+    html += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 查单凭证（只展示一次，请立即保存）</b><div class="codebox" id="tokenBox" style="margin-top:8px">' + escH(token) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(document.getElementById(\'tokenBox\').textContent)">复制查单凭证</button><p class="muted" style="margin:8px 0 0">查询订单与交付内容需用“订单号 + 查单凭证”。凭证只展示一次，刷新页面后不再显示，请妥善保存，勿泄露给他人。</p></div>';
   } else {
     html += '<p class="muted">查询订单：用订单号 + 查单凭证在“查询订单”页查询（凭证在下单成功时只展示一次，刷新页面后不再恢复，请使用事先保存的凭证）。</p>';
   }
@@ -656,7 +674,7 @@ function statusPill(s){
   return '<span class="spill ' + cls + '">' + escH(statusLabel(s)) + '</span>';
 }
 function adminNavHTML(){
-  var tabs = [['data','📊 数据总览'],['orders','🧾 订单管理'],['products','🛍️ 商品管理'],['cards','💳 卡密库存'],['upstream','🔗 上游管理'],['settings','⚙️ 系统设置'],['audit','📋 操作审计']];
+  var tabs = [['data',ic('chart')+' 数据总览'],['orders',ic('receipt')+' 订单管理'],['products',ic('shop')+' 商品管理'],['cards',ic('card')+' 卡密库存'],['upstream',ic('link')+' 上游管理'],['settings',ic('settings')+' 系统设置'],['audit',ic('clipboard')+' 操作审计']];
   var h = '<div class="admin-nav">';
   for (var i = 0; i < tabs.length; i++){ h += '<button data-tab="' + tabs[i][0] + '" onclick="adminTab(\'' + tabs[i][0] + '\');adminToggleSide(false)">' + tabs[i][1] + '</button>'; }
   return h + '</div>';
@@ -1001,10 +1019,10 @@ async function adminProductForm(id){
     if (!titleVal){ toast('标题必填', 'error'); return false; }
     var priceVal = parseFloat(el(pfx + 'price').value || '0');
     if (!isFinite(priceVal) || priceVal < 0){ toast('售价无效', 'error'); return false; }
-    var body = { slug: slugVal, title: titleVal, price_usdt: priceVal, sell_price: priceVal, cost_price: parseFloat(el(pfx + 'cost').value || '0'), source: el(pfx + 'source').value, prodseller_id: el(pfx + 'psid').value, requires_email_activation: el(pfx + 'reqact').checked ? 1 : 0, delivery_method: 'both', category: el(pfx + 'cat').value, stock_type: el(pfx + 'stock').value, description: el(pfx + 'desc').value, notice: el(pfx + 'notice').value, image_emoji: '🤖', is_active: Number(el(pfx + 'active').value), in_stock: Number(el(pfx + 'instock').value) };
+    var body = { slug: slugVal, title: titleVal, price_usdt: priceVal, sell_price: priceVal, cost_price: parseFloat(el(pfx + 'cost').value || '0'), source: el(pfx + 'source').value, prodseller_id: el(pfx + 'psid').value, requires_email_activation: el(pfx + 'reqact').checked ? 1 : 0, delivery_method: 'both', category: el(pfx + 'cat').value, stock_type: el(pfx + 'stock').value, description: el(pfx + 'desc').value, notice: el(pfx + 'notice').value, image_emoji: 'box', is_active: Number(el(pfx + 'active').value), in_stock: Number(el(pfx + 'instock').value) };
     if (id){
       var old = p;
-      body.image_emoji = (old && old.image_emoji) || '🤖';
+      body.image_emoji = (old && old.image_emoji) || 'box';
       if (window._productImage && (pfx in window._productImage)) body.image_data = window._productImage[pfx];
       // 第七轮：新建/编辑商品不再自动加入旧默认联系方式字段；编辑历史商品时过滤掉旧字段，不重新加入。
       var ff = [];
