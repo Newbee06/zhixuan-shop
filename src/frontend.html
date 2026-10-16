@@ -540,7 +540,10 @@ async function renderSuccess(no){
     html += '<p class="muted">查询订单：用订单号 + 查单凭证在“查询订单”页查询（凭证在下单成功时只展示一次，刷新页面后不再恢复，请使用事先保存的凭证）。</p>';
   }
   html += '<p>应付：<b>' + fmtCNY(actual) + '</b> <span class="muted">（实际按 ' + actual + ' USDT 精确金额付款，请一分不差）</span>（' + escH(o ? o.pay_method : '') + ' · ' + escH(o ? o.pay_chain : '') + '）</p>';
-  html += '<p>收款地址：</p><div class="codebox" id="addrBox">' + escH(addr) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(document.getElementById(\'addrBox\').textContent)">复制地址</button><div style="margin:12px 0"><img src="' + qr + '" width="180" height="180" alt="收款二维码"></div>';
+  html += '<p>收款地址：</p><div class="codebox" id="addrBox">' + escH(addr) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(document.getElementById(\'addrBox\').textContent)">复制地址</button>';
+  // 地址为空（刷新后内存凭证已清空）时不渲染二维码图片：空 data 会让 qrserver 返回 400，
+  // 浏览器记一条控制台错误，且图片本身是坏图。地址存在时才加载二维码。
+  if (addr) html += '<div style="margin:12px 0"><img src="' + qr + '" width="180" height="180" alt="收款二维码"></div>';
   html += '<p>剩余支付时间：<b id="countdown">' + fmtCountdown(o ? o.expires_at : '') + '</b>（20 分钟锁定，超时订单自动取消）</p>';
   html += '<p class="muted">付完不用做任何事，等 1-3 分钟自动发货。系统按精确金额自动匹配到账，金额差 1 分钱都匹配不上。</p>';
   html += '<p class="muted">教程：<a href="' + escH(tut) + '" target="_blank">支付教程</a></p>';
