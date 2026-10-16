@@ -1,14 +1,15 @@
 // aisou-lite — Cloudflare Worker + D1 轻量版虚拟商品售卖站
 // 单文件、无构建步骤、vanilla JS + CSS。免费版：单 Worker + 单 D1 + 2 个 cron。
 // 安全：PBKDF2 迭代 100000（Workers 生产上限），参数化查询，httpOnly session cookie。
-// 支付：CF 轮询自动发货（链上按精确金额匹配，1-3 分钟）+ 币安 UID 手动兜底。
+// 支付：CF 轮询自动发货（链上按精确金额匹配），双链收口：欧易 USDT0 · X Layer、币安 USDT · BEP20。服务端白名单强制，历史订单仍可查询与恢复。
 // 轮询原理：下单生成 actual_amount = 基础价 + 随机尾数 0.0001-0.0099，锁定 20 分钟；
 // cron 每 1 分钟查 D1 有无 pending_payment，无则零 RPC；有则查 Tronscan / 公开 RPC 匹配 to+金额。
 
 var PBKDF2_ITERATIONS = 100000;
 var SESSION_MAX_AGE = 7 * 24 * 3600;
-var PAY_METHODS = ['Binance', 'OKX', 'BinanceUID'];
-var PAY_CHAINS = ['X Layer', 'TRC20', 'ERC20', 'BEP20', '站内转账'];
+var PAY_WHITELIST = [['OKX', 'X Layer'], ['Binance', 'BEP20']];
+var PAY_METHODS = PAY_WHITELIST.map(function (c) { return c[0]; });
+var PAY_CHAINS = PAY_WHITELIST.map(function (c) { return c[1]; });
 var ORDER_STATUSES = ['pending_payment', 'pending_fulfill', 'pending_activation', 'pending_upstream', 'refund_pending', 'completed', 'cancelled'];
 // refund_pending：已付款但无法交付，管理员已标记退款待处理（本系统不执行真实退款，须在系统外退款后点“确认已退款”）。
 // 订单认领租约：认领后处理者崩溃，超过租约后其他请求可接管恢复（claim_token + claimed_at 实现原子认领，不单独设 processing 状态）。
@@ -77,7 +78,12 @@ var LOGIN_GLOBAL_BLOCK_MS = 5 * 60 * 1000;
 var EVM_SCAN_PAGE_BLOCKS = 1000;
 // Tronscan 分页：每页 50 笔，最多页数（评估见 RELEASE_READINESS；命中上限时记警告，不得静默漏账）。
 var TRONSCAN_MAX_PAGES = 20;
-var DEFAULT_USDT_CONTRACTS = { 'X Layer': '', 'ERC20': '0xdAC17F958D2ee523a2206206994597C13D831ec7', 'BEP20': '0x55d398326f99059fF775485246999027B3197955', 'TRC20': 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t' };
+var DEFAULT_USDT_CONTRACTS = { 'X Layer': '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', 'ERC20': '0xdAC17F958D2ee523a2206206994597C13D831ec7', 'BEP20': '0x55d398326f99059fF775485246999027B3197955', 'TRC20': 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t' };
+// 第九轮：X Layer 默认代币 = USDT0（欧易 + Tether 2025-09-09 上线 X Layer 的当前标准，欧易提币/充值走 USDT0；6 位精度，LayerZero OFT v2）。
+// 旧版 X Layer USDT（0x1e4a5963abfd975d8c9021ce480b42188849d41d）是不同资产，绝不混用、绝不自动接受。
+// BEP20 默认 = Binance-Peg USDT 0x55d398326f99059fF775485246999027B3197955，18 位精度（BscScan 合约源码 _decimals=18）。
+// 注意：BEP20 精度是 18，不是 6；核验时必须用合约实际 decimals（见 getTokenDecimals），不得硬编码 6。
+// 管理员可在 settings.usdt_contracts 中显式覆盖任一链的合约（覆盖后仍按该合约实际 decimals 核验）。
 
 function json(data, status) {
   return new Response(JSON.stringify(data), {
@@ -328,6 +334,12 @@ var MIGRATIONS = [
     // 旧索引约束更严（已包含 BinanceUID），数据一定满足新条件，DROP 后重建不会失败。
     await env.DB.prepare('DROP INDEX IF EXISTS idx_orders_amount_claim').run();
     await createIndexIfMissing(env, "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_amount_claim ON orders(pay_address, actual_amount) WHERE status = 'pending_payment' AND pay_method != 'BinanceUID'");
+  } },
+  { version: 10, name: '第九轮：X Layer 合约占位符替换为核实的 USDT0 合约（仅精确占位符）', up: async function (env) {
+    // 种子/旧配置里的 X Layer 合约占位符 0xYOUR_XLAYER_USDT_CONTRACT 会覆盖代码默认值且格式非法，
+    // 导致 X Layer 核验 fail-closed（永远不认账）。仅替换精确占位符为核实的 USDT0 合约；
+    // 管理员已显式配置的任何其他合约一律不动（保留显式配置能力）。
+    await env.DB.prepare("UPDATE settings SET value = REPLACE(value, '\"X Layer\":\"0xYOUR_XLAYER_USDT_CONTRACT\"', '\"X Layer\":\"0x779Ded0c9e1022225f8E0630b35a9b54bE713736\"') WHERE key = 'usdt_contracts' AND value LIKE '%0xYOUR_XLAYER_USDT_CONTRACT%'").run();
   } }
 ];
 // 执行待迁移：先建基表（空库首次迁移），再逐个版本 apply，成功才标记版本；任一失败抛错（带版本号与原因），不得伪装成功。
@@ -424,7 +436,8 @@ async function getRequiredConfirmations(env, chain) {
   return (isFinite(d) && d >= 1) ? Math.floor(d) : 1;
 }
 // ---- 第四轮：链上扫描游标 ----
-// 每链已扫描到的区块高度。RPC 失败不推进，重启可恢复。游标只在整页扫描成功后推进。
+// 游标 key：第九轮起为“链|地址”（如 'BEP20|0xabc...'），按地址独立存储，地址变更/多地址时互不跳过。
+// 旧按链游标行（如 key='X Layer'）保留在库不再使用。游标只在整页扫描成功后推进；RPC 失败不推进，重启可恢复。
 async function getScanCursor(env, chain) {
   var row = await env.DB.prepare('SELECT last_block FROM scan_cursors WHERE chain = ?').bind(chain || '').first().catch(function () { return null; });
   return row ? Number(row.last_block) || 0 : 0;
@@ -777,6 +790,47 @@ async function pollUpstreamActivations(env, ctx, opts) {
 function parseJsonSafe(s, fallback) { try { return JSON.parse(s || ''); } catch (e) { return fallback; } }
 function fmtTsPlusMinutes(min) { return new Date(Date.now() + min * 60000).toISOString().replace('T', ' ').slice(0, 19); }
 function amountsEqual(a, b) { return Math.abs(Number(a) - Number(b)) < 0.000001; }
+// ---- 第九轮：代币精度（按合约实际 decimals，不得硬编码）----
+// USDT 在不同链精度不同：X Layer USDT0 = 6，BEP20 Binance-Peg USDT = 18，ERC20 原生 USDT = 6。
+// 核验时必须用合约实际 decimals() 换算金额，否则会漏认真实到账（BEP20 按 6 位算永远对不上），
+// 或误认粉尘转账为全额付款（BEP20 按 6 位算，5005700 个最小单位 = 5.0057e-12 USDT 也会被当成 5.0057 USDT）。
+// decimals 通过 eth_call decimals() 读取并缓存（同一 Worker 隔离期内复用）；读取失败时 fail-closed（该 RPC 不认账）。
+var TOKEN_DECIMALS_CACHE = {};
+async function getTokenDecimals(fetchFn, rpcUrl, contract) {
+  var key = String(rpcUrl) + '|' + String(contract).toLowerCase();
+  if (TOKEN_DECIMALS_CACHE[key] !== undefined) return TOKEN_DECIMALS_CACHE[key];
+  try {
+    var res = await rpcCall(fetchFn, rpcUrl, 'eth_call', [{ to: contract, data: '0x313ce567' }, 'latest']);
+    var dec = parseInt(String(res), 16);
+    if (isFinite(dec) && dec >= 0 && dec <= 36) { TOKEN_DECIMALS_CACHE[key] = dec; return dec; }
+  } catch (e) {}
+  return null;
+}
+function isValidEvmAddress(s) { return /^0x[0-9a-fA-F]{40}$/.test(String(s || '')); }
+// 金额（USDT 单位，如 5.0057）→ 原始最小单位（BigInt），按实际 decimals 精确换算，避免 float 精度丢失。
+// 18 位精度时 float 无法精确表示 5.0057e18（超出 2^53），必须用字符串拆分做整数运算。
+// 科学计数法（如 1e-7）先经 toFixed 展开为定点字符串再拆分。
+function amountToRaw(amount, decimals) {
+  var s = String(amount);
+  var neg = false;
+  if (s.charAt(0) === '-') { neg = true; s = s.slice(1); }
+  if (/[eE]/.test(s)) {
+    var n = Number(s);
+    if (!isFinite(n)) return 0n;
+    s = n.toFixed(Math.min(decimals, 20));
+  }
+  var parts = s.split('.');
+  var intPart = ((parts[0] || '0').replace(/[^0-9]/g, '')) || '0';
+  var fracPart = (parts[1] || '').replace(/[^0-9]/g, '');
+  if (fracPart.length > decimals) fracPart = fracPart.slice(0, decimals);
+  while (fracPart.length < decimals) fracPart += '0';
+  var raw = BigInt(intPart) * (10n ** BigInt(decimals)) + BigInt(fracPart || '0');
+  return neg ? -raw : raw;
+}
+// 原始最小单位（BigInt）→ 金额（USDT 单位，Number，仅用于账本展示与容差比较；匹配一律用 BigInt）。
+function rawToAmount(raw, decimals) {
+  return Number(raw) / Math.pow(10, decimals);
+}
 async function genActualAmount(env, baseTotal, payAddress) {
   // 随机尾数 0.0001-0.0099。SELECT 查重是尽力而为（仍有 TOCTOU 窗口），真正的原子保障是
   // v8 部分唯一索引 idx_orders_amount_claim + 下单 INSERT 冲突重试（见下单逻辑）。
@@ -852,14 +906,18 @@ async function checkTrc20Payment(fetchFn, payAddress, actualAmount, createdAtISO
 // EVM/X Layer：eth_getLogs 查 USDT Transfer，至少 requiredConfirmations 确认（各链策略，见 DEFAULT_CHAIN_CONFIRMATIONS）。
 // opts: { requiredConfirmations, fromBlockOverride }。fromBlockOverride 用于游标扫描；未传时回溯 200 区块（兼容旧口径）。
 async function checkEvmPayment(fetchFn, rpcUrls, contract, payAddress, actualAmount, opts) {
-  if (!contract || !contract.startsWith('0x')) return null;
+  // 第九轮：严格核验。合约地址格式非法 → 不认账；decimals 读取失败 → 该 RPC 不认账（fail-closed）；
+  // 日志 address 必须与配置合约严格一致（不得只信 RPC 的 address 过滤）；金额按合约实际 decimals 精确 BigInt 比较。
+  if (!isValidEvmAddress(contract) || !isValidEvmAddress(payAddress)) return null;
   opts = opts || {};
   var requiredConf = Number(opts.requiredConfirmations) || 1;
-  var expected = BigInt(Math.round(Number(actualAmount) * 1000000));
   var toTopic = padAddressTopic(payAddress);
   for (var ri = 0; ri < rpcUrls.length; ri++) {
     try {
       var rpc = rpcUrls[ri];
+      var decimals = await getTokenDecimals(fetchFn, rpc, contract);
+      if (decimals === null) continue; // 合约精度读不到：该 RPC 不认账，换下一个 RPC
+      var expected = amountToRaw(actualAmount, decimals);
       var latestHex = await rpcCall(fetchFn, rpc, 'eth_blockNumber', []);
       var latest = parseInt(latestHex, 16);
       if (!isFinite(latest) || latest <= 0) continue;
@@ -872,11 +930,15 @@ async function checkEvmPayment(fetchFn, rpcUrls, contract, payAddress, actualAmo
       if (!Array.isArray(logs)) continue;
       for (var i = 0; i < logs.length; i++) {
         var lg = logs[i];
+        // 严格匹配合约地址：RPC 可能忽略 address 过滤返回无关日志，不得仅凭 topics 认账。
+        if (String(lg.address || '').toLowerCase() !== String(contract).toLowerCase()) continue;
         var topics = lg.topics || [];
         if (topics.length < 3 || String(topics[0]).toLowerCase() !== TRANSFER_TOPIC0) continue;
         if (String(topics[2]).toLowerCase() !== toTopic) continue;
         var blk = parseInt(lg.blockNumber, 16);
         if (!isFinite(blk)) continue;
+        // 区块范围校验：不得只信 RPC 的 fromBlock/toBlock 过滤（RPC 可能返回范围外日志，如未达确认数的区块）。
+        if (blk < fromBlock || blk > toBlock) continue;
         var val = 0n;
         try { val = BigInt(lg.data || '0x0'); } catch (e) { continue; }
         if (val !== expected) continue;
@@ -896,22 +958,31 @@ async function scanEvmChain(env, fetchFn, ctx, chain, pendingOrders) {
   var contract = contracts[chain] || DEFAULT_USDT_CONTRACTS[chain] || '';
   var rpcMap = parseJsonSafe(settings.rpc_urls, {});
   var rpcs = rpcMap[chain] || DEFAULT_RPC_URLS[chain] || [];
-  if (!contract || !contract.startsWith('0x') || !rpcs.length || !pendingOrders.length) return { scanned: 0, matched: 0, fulfilled: 0 };
+  if (!isValidEvmAddress(contract) || !rpcs.length || !pendingOrders.length) return { scanned: 0, matched: 0, fulfilled: 0 };
   var requiredConf = await getRequiredConfirmations(env, chain);
-  var cursor = await getScanCursor(env, chain);
   var out = { scanned: 0, matched: 0, fulfilled: 0 };
-  // 按待付款订单的收款地址去重，只扫有待付款订单的地址，减少 RPC 调用。
+  // 按待付款订单的收款地址去重，只扫有待付款订单的地址，减少 RPC 调用。地址格式非法时跳过（不认账）。
   var addrSet = {};
-  pendingOrders.forEach(function (o) { var a = String(o.pay_address || o.wallet_address || '').toLowerCase(); if (a) addrSet[a] = o.pay_address || o.wallet_address; });
+  pendingOrders.forEach(function (o) { var rawAddr = o.pay_address || o.wallet_address || ''; var a = String(rawAddr).toLowerCase(); if (a && isValidEvmAddress(rawAddr)) addrSet[a] = rawAddr; });
   var addrs = Object.keys(addrSet);
   for (var ai = 0; ai < addrs.length; ai++) {
     var addr = addrSet[addrs[ai]];
     var toTopic = padAddressTopic(addr);
+    // 第九轮：游标按“链|地址”独立存储，不再多地址共享一个链游标。
+    // 旧按链游标的风险：地址 A 的扫描把链游标推到 1000 后，地址 B 的首笔订单（创建于 990 区块、付款在 995 区块）
+    // 若沿用链游标会从 1000 开始扫，漏掉 B 在 995 区块的到账。按地址独立游标后，B 首扫从 latest-200 开始，不漏。
+    // 旧链游标行（如 key='X Layer'）保留在库不再使用，不删除。
+    var cursorKey = chain + '|' + addrs[ai];
+    var cursor = await getScanCursor(env, cursorKey);
     // 本地址的待付款订单（按金额索引，便于匹配）
-    var byAmount = {};
-    pendingOrders.forEach(function (o) { if (String(o.pay_address || o.wallet_address || '').toLowerCase() === addrs[ai]) byAmount[String(Number(o.actual_amount || o.total_usdt))] = o; });
+    var addrOrders = pendingOrders.filter(function (o) { return String(o.pay_address || o.wallet_address || '').toLowerCase() === addrs[ai]; });
     for (var ri = 0; ri < rpcs.length; ri++) {
       try {
+        var decimals = await getTokenDecimals(fetchFn, rpcs[ri], contract);
+        if (decimals === null) continue; // 合约精度读不到：该 RPC 不认账，换下一个 RPC
+        // 按合约实际 decimals 精确换算待匹配金额（BigInt），避免 float 精度丢失（BEP20 18 位时 float 无法精确表示）。
+        var byRaw = {};
+        addrOrders.forEach(function (o) { byRaw[String(amountToRaw(o.actual_amount || o.total_usdt, decimals))] = o; });
         var latestHex = await rpcCall(fetchFn, rpcs[ri], 'eth_blockNumber', []);
         var latest = parseInt(latestHex, 16);
         if (!isFinite(latest) || latest <= 0) continue;
@@ -928,16 +999,20 @@ async function scanEvmChain(env, fetchFn, ctx, chain, pendingOrders) {
           if (!Array.isArray(logs)) break; // 本 RPC 异常，停在本页，不推进游标，下次重试
           for (var li = 0; li < logs.length; li++) {
             var lg = logs[li];
+            // 严格匹配合约地址：RPC 可能忽略 address 过滤返回无关日志，不得仅凭 topics 认账。
+            if (String(lg.address || '').toLowerCase() !== String(contract).toLowerCase()) continue;
             var topics = lg.topics || [];
             if (topics.length < 3 || String(topics[0]).toLowerCase() !== TRANSFER_TOPIC0) continue;
             if (String(topics[2]).toLowerCase() !== toTopic) continue;
             var blk = parseInt(lg.blockNumber, 16);
             if (!isFinite(blk)) continue;
+            // 区块范围校验：不得只信 RPC 的 fromBlock/toBlock 过滤（RPC 可能返回范围外日志，如未达确认数的区块）。
+            if (blk < pageFrom || blk > pageTo) continue;
             var val = 0n;
             try { val = BigInt(lg.data || '0x0'); } catch (e) { continue; }
-            var amt = Number(val) / 1000000;
+            var amt = rawToAmount(val, decimals);
             out.scanned++;
-            var matchedOrder = byAmount[String(Number(amt))];
+            var matchedOrder = byRaw[String(val)];
             if (!matchedOrder) {
               // 无法归属订单：记 unmatched，供人工对账（不得静默丢弃）。
               try { await recordPayment(env, { order_id: null, chain: chain, pay_address: addr, tx_hash: String(lg.transactionHash || ''), event_key: lg.logIndex != null ? String(lg.logIndex) : '', amount: amt, block_number: blk, confirmations: latest - blk, status: 'unmatched', reconcile_status: 'pending', reconcile_note: '全局扫描发现，无法归属订单' }); } catch (e) {}
@@ -950,7 +1025,7 @@ async function scanEvmChain(env, fetchFn, ctx, chain, pendingOrders) {
             var payRow = rec && rec.payment ? rec.payment : null;
             if (payRow && payRow.status === 'posted') continue; // 已入账，跳过（防重复发货）
             if (payRow) { try { await updatePayment(env, payRow.id, { status: 'confirmed', confirmations: latest - blk }); } catch (e) {} }
-            // 金额必须与订单预期精确匹配（amountsEqual），否则记 mismatch，不得履约。
+            // 金额必须与订单预期精确匹配（amountsEqual），否则记 mismatch，不得履约（BigInt 已精确匹配，此处为二次防御）。
             if (!amountsEqual(amt, matchedOrder.actual_amount || matchedOrder.total_usdt)) {
               if (payRow) { try { await updatePayment(env, payRow.id, { status: 'mismatch', reconcile_status: 'pending', reconcile_note: '金额与订单预期不符，需人工对账' }); } catch (e) {} }
               continue;
@@ -964,10 +1039,10 @@ async function scanEvmChain(env, fetchFn, ctx, chain, pendingOrders) {
           scannedTo = pageTo + 1;
           pageFrom = pageTo + 1;
         }
-        // 整页成功后推进游标（只推进本地址本 RPC 的成功扫描；多地址共享游标时取最大值，避免回退）。
+        // 整页成功后推进本地址游标（只推进，不回退；RPC 失败不推进，下次重试）。
         if (scannedTo > startBlock) {
-          var curNow = await getScanCursor(env, chain);
-          if (scannedTo > curNow) await setScanCursor(env, chain, scannedTo);
+          var curNow = await getScanCursor(env, cursorKey);
+          if (scannedTo > curNow) await setScanCursor(env, cursorKey, scannedTo);
         }
         break; // 本地址用第一个可用 RPC 扫完即停，不重复扫其他 RPC
       } catch (e) { continue; }
@@ -1014,10 +1089,14 @@ async function checkTxidPayment(env, fetchFn, order, txid) {
     var contract = contracts[order.pay_chain] || DEFAULT_USDT_CONTRACTS[order.pay_chain] || '';
     var rpcMap = parseJsonSafe(settings.rpc_urls, {});
     var rpcs = rpcMap[order.pay_chain] || DEFAULT_RPC_URLS[order.pay_chain] || [];
-    var expected = BigInt(Math.round(Number(order.actual_amount || order.total_usdt) * 1000000));
+    if (!isValidEvmAddress(contract) || !isValidEvmAddress(order.pay_address || order.wallet_address)) return null;
     var toTopic = padAddressTopic(order.pay_address || order.wallet_address);
     for (var ri = 0; ri < rpcs.length; ri++) {
       try {
+        // 第九轮：按合约实际 decimals 精确换算金额；decimals 读不到时该 RPC 不认账。
+        var decimalsTx = await getTokenDecimals(fetchFn, rpcs[ri], contract);
+        if (decimalsTx === null) continue;
+        var expected = amountToRaw(order.actual_amount || order.total_usdt, decimalsTx);
         var receipt = await rpcCall(fetchFn, rpcs[ri], 'eth_getTransactionReceipt', [txid]);
         if (!receipt || receipt.status !== '0x1') continue;
         // 确认数：按该链确认策略（不再全链 1 确认）。收据区块号必须 <= 最新区块 - requiredConf，否则确认不足，跳过（防链重组导致已发货但付款失效）。
@@ -1503,8 +1582,12 @@ function parseJsonBody(req) {
 function validPayMethod(m) { return PAY_METHODS.indexOf(m) !== -1; }
 function validPayChain(c) { return PAY_CHAINS.indexOf(c) !== -1; }
 function validPayCombo(method, chain) {
-  if (method === 'BinanceUID') return chain === '站内转账';
-  return chain !== '站内转账';
+  // 第九轮：严格白名单。新订单仅允许 OKX|X Layer、Binance|BEP20。
+  // 拒绝：OKX+BEP20、Binance+X Layer、任意+TRC20/ERC20、BinanceUID+站内转账、未知组合。
+  for (var i = 0; i < PAY_WHITELIST.length; i++) {
+    if (PAY_WHITELIST[i][0] === method && PAY_WHITELIST[i][1] === chain) return true;
+  }
+  return false;
 }
 
 async function handleApi(req, env, url, ctx) {
@@ -1576,7 +1659,7 @@ async function handleApi(req, env, url, ctx) {
     var productId = Number(body.product_id || 0);
     var qty = Number(body.quantity || 1);
     if (!productId || qty < 1 || qty > 99 || !Number.isInteger(qty)) return err('商品或数量无效');
-    if (!validPayMethod(body.pay_method) || !validPayChain(body.pay_chain) || !validPayCombo(body.pay_method, body.pay_chain)) return err('支付方式或链无效（币安 UID 只能配站内转账）');
+    if (!validPayMethod(body.pay_method) || !validPayChain(body.pay_chain) || !validPayCombo(body.pay_method, body.pay_chain)) return err('支付方式或链无效（仅支持：欧易 USDT0 · X Layer、币安 USDT · BEP20）');
     // 人机验证：Turnstile 开启时服务端校验 Turnstile token（fail-closed）；未开启时走 SVG 验证码（一次性、5 分钟过期、最多试 3 次）。
     // Turnstile 密钥缺失时 verifyTurnstile 返回错误，绝不静默降级为无验证。
     var settingsForCaptcha = await getAllSettings(env);
@@ -1670,6 +1753,10 @@ async function handleApi(req, env, url, ctx) {
     } else {
       wallet = addrMap[body.pay_method + '|' + body.pay_chain] || '';
     }
+    // 第九轮：所选方式没有有效收款地址时拒绝创建订单，不得生成无收款地址却显示下单成功的订单。
+    // EVM 收款地址格式：0x + 40 位十六进制。历史订单不受影响（创建时不重校验旧订单）。
+    wallet = String(wallet || '').trim();
+    if (!/^0x[0-9a-fA-F]{40}$/.test(wallet)) return err('该支付方式暂未配置有效收款地址，请联系管理员配置后再下单');
     var orderNo = genOrderNo();
     // 新订单不再生成可用的明文六位查询密码：query_password 写空值（字段保留兼容旧订单）。
     // 查单凭证：高强度不可预测（128 位），只存 SHA-256 哈希，只在创建订单时返回一次；旧订单无此字段，走旧密码兼容路径。
@@ -2386,7 +2473,7 @@ async function handleApi(req, env, url, ctx) {
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return '设置 ' + key + ' 必须是 JSON 对象';
       if (key === 'usdt_addresses') {
         var ak = Object.keys(parsed);
-        for (var i = 0; i < ak.length; i++) { if (ak[i].indexOf('|') === -1) return 'usdt_addresses 的键必须是“支付方式|链”格式，如 Binance|X Layer'; if (typeof parsed[ak[i]] !== 'string' || !parsed[ak[i]].trim()) return 'usdt_addresses 的 ' + ak[i] + ' 地址不能为空'; }
+        for (var i = 0; i < ak.length; i++) { if (ak[i].indexOf('|') === -1) return 'usdt_addresses 的键必须是“支付方式|链”格式，如 OKX|X Layer、Binance|BEP20'; if (typeof parsed[ak[i]] !== 'string' || !parsed[ak[i]].trim()) return 'usdt_addresses 的 ' + ak[i] + ' 地址不能为空'; }
       }
       if (key === 'rpc_urls') {
         var rk = Object.keys(parsed);

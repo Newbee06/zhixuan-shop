@@ -511,3 +511,73 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 | G. 是否可以启用 ProdSeller 自动采购与履约 | BLOCKED | 真实 ProdSeller 行为未验证，门禁保持关闭 |
 
 
+## 第九轮：智选商城双链支付收口与收款安全修复（2026-10-17）
+
+### 目标（用户明确授权范围）
+
+新订单只允许两个支付组合：
+
+1. `pay_method=OKX` + `pay_chain=X Layer`（USDT0）
+2. `pay_method=Binance` + `pay_chain=BEP20`（Binance-Peg USDT）
+
+明确禁止新订单：Plasma、OKX+BEP20、Binance+X Layer、TRC20、ERC20、`BinanceUID`+站内转账、未知方式/链/缺失字段。
+
+历史订单、支付账本、旧设置不得删除或篡改；历史订单恢复能力保留。
+
+本轮禁止：部署生产、合并 PR、访问/修改生产 D1、发起真实链上转账；不开启 `poll_enabled`/`prodseller_enabled`；不调用真实 ProdSeller 采购接口；不删除历史订单；不用修改历史数据绕过测试。
+
+### 本轮发现的真实代码问题（修复前）
+
+1. 服务端支付白名单过宽：`validPayCombo()` 只限制 `BinanceUID` 配站内转账，其他渠道可配任意非站内链；前端只显示 X Layer/BEP20，但可绕过前端直接 API 创建其他组合。
+2. 无收款地址也能成功创建订单：下单读取 `addrMap[method|chain]` 未校验为空/格式非法。
+3. 所有 EVM 链硬编码 6 位精度：BEP20 合约实际 18 位，原核验会漏认真实到账，并有把按 6 位构造的极小粉尘误当足额付款的风险。
+4. 全局 EVM 游标仅按链保存：一条链多地址时，地址 A 推进的游标可能让地址 B 跳过较早区块，造成漏账。
+5. 日志合约地址缺少二次严格校验：依赖 `eth_getLogs` 的 `address` 参数，未在遍历返回日志时再次比较 `log.address`。
+6. 种子 `usdt_contracts` 的 X Layer 为占位符 `0xYOUR_XLAYER_USDT_CONTRACT`，会覆盖代码默认值且格式非法，导致 X Layer 核验 fail-closed。
+7. Worker 完全信任 RPC 的 `fromBlock/toBlock` 过滤，未校验返回日志的区块是否在请求范围内（mock 不过滤时暴露）。
+
+### 改动
+
+**`src/worker.js`**
+- 新增严格白名单 `PAY_WHITELIST = [['OKX','X Layer'], ['Binance','BEP20']]`；`PAY_METHODS`/`PAY_CHAINS` 从白名单派生；`validPayCombo()` 改为组合级明确白名单；API 拒绝文案仅支持“欧易 USDT0 · X Layer、币安 USDT · BEP20”。
+- 下单时强制收款地址符合 `^0x[0-9a-fA-F]{40}$`，为空或非法直接拒绝，不创建订单。
+- X Layer 默认合约改为 USDT0 `0x779Ded0c9e1022225f8E0630b35a9b54bE713736`（旧版 `0x1e4a...` 仅注释说明，不作为自动接受资产）。
+- 新增 `getTokenDecimals()`（`eth_call decimals()`，失败 fail-closed）、`isValidEvmAddress()`、`amountToRaw()`/`rawToAmount()`（BigInt 精确换算）。
+- `checkEvmPayment()`：合约/收款地址合法性、实际 decimals、BigInt 金额比较、`log.address` 二次校验、Transfer topic 与收款地址 topic 校验、确认数、区块范围校验、RPC 失败不认账。
+- `checkTxidPayment()`：同上实际精度核验（receipt 路径已有确认数校验）。
+- `scanEvmChain()`：同上收紧；游标键改为 `链|地址`（旧按链游标不删除、不再用于新扫描）；日志区块范围校验。
+- 迁移 v10：仅替换 `usdt_contracts` 中精确占位符 `0xYOUR_XLAYER_USDT_CONTRACT` 为核实的 USDT0 合约；管理员已显式配置的任何其他合约一律不动。
+- 设置校验提示更新为 `OKX|X Layer`、`Binance|BEP20`。
+
+**`src/frontend.html`**
+- X Layer 按钮改为“USDT0 · X Layer”；新增 `payTokenLabel()`；成功页新增防误转警告（X Layer 收款为 USDT0，旧版 USDT 与 USDT0 是不同资产，误转不自动发货）。
+- 删除“币安 UID 站内转账填订单 ID”提示；后台设置说明更新为仅支持两个组合、旧键保留但新订单不使用、`binance_uid` 标记为历史订单恢复用途；后台新增 `chain_confirmations` 输入项；前端 JSON 校验加入 `chain_confirmations`；管理员确认付款示例不再用币安 UID 文案。
+
+**`schema.sql`**
+- `usdt_contracts` 种子 X Layer 改为核实的 USDT0 合约；`schema_migrations` 预置版本增至 10。
+
+### 合约核实（证据等级说明）
+
+- X Layer USDT0 `0x779Ded0c9e1022225f8E0630b35a9b54bE713736`、6 位精度：来自 2025-09-09 起 OKX/Tether 公开资料与多份二级报道/文档的交叉核对（搜索结果摘要、GitHub 文档）。尚未完成“直接打开 OKX/Tether/USDT0 官方资料 + X Layer RPC 只读查询 `chainId/decimals()/symbol()/name()`”的最终核对，文档结论标记为资料核验中，不得夸大为真实提币验证。
+- BEP20 `0x55d398326f99059fF775485246999027B3197955`、18 位精度：BscScan 合约源码 `_decimals = 18`，名称/符号对应 Binance-Peg USDT / BSC-USD 体系。建议补做 BNB Smart Chain RPC 只读核验（Chain ID 56、`decimals()=18`），不发送交易。
+- 真实链上验证（真实转账）仍 BLOCKED / NOT VERIFIED，只能安排在独立 Staging；本轮未部署 Staging。
+
+### 测试（全部本地真实执行）
+
+- 新测试 `tests/payment-whitelist-test.mjs`：65/65 PASS。覆盖：两个白名单组合下单、14 种非白名单组合拒绝、缺/畸形收款地址拒单、X Layer 只接受 USDT0（旧版不履约）、BEP20 错合约/粉尘/错地址/错金额不履约、管理员覆盖合约、未达确认数不发货、RPC 故障不推进游标、重复扫描不重复发卡/记账、游标按地址隔离、历史 TRC20/BinanceUID 订单恢复、前端 USDT0/BEP20 展示一致。
+- 旧测试迁移（不削弱断言）：新订单组合改为白名单；需历史订单的 TRC20/ERC20/BinanceUID 场景改为直接插库历史订单；EVM mock 补 `eth_call`；mock-test 补 EVM mock（eth_call/eth_blockNumber/eth_getLogs，交易哈希按订单唯一，避免去重误杀）；浏览器测试在脚本开头经 HTTP 配置有效收款地址；d1-local 与各测试的版本断言由 v9 更新为 v10。
+- 全量：`npm run test:static` PASS；`npm run test:regression` 全绿（mock 53、stock 17、security 98、concurrency 114、release-readiness 90、payment-whitelist 65）；`bash tests/d1-local-test.sh` PASS（旧库迁移 v10、去重、失败不标记、空库迁移）；`npm run test:browser` 64/64（本地 wrangler dev，`BASE=http://127.0.0.1:8791`）。
+- `package.json` 的 `test:regression` 与 `.github/workflows/ci.yml` 已加入新测试。
+
+### 决策矩阵（本轮真实证据）
+
+| 项 | 判定 | 依据 |
+| --- | --- | --- |
+| A. staging 是否已实际部署并可访问 | BLOCKED | 本轮未部署 staging（代码与本地测试已通过，staging 部署待用户明确授权后独立进行） |
+| B. staging 是否通过部署后验收 | BLOCKED | 未部署 staging |
+| C. PR 是否具备提交人工审查的条件 | PASS（待 CI 验证） | 代码已提交至功能分支，CI 结果见 PR 页面；仅代表可进入人工审查，不代表自动合并 |
+| D. 是否已经获得生产部署批准 | BLOCKED | 未获得生产部署批准，本轮不部署生产 |
+| E. 是否可以开放真实客户销售 | BLOCKED | 真实链上收款未验证 |
+| F. 是否可以启用真实链上收款 | BLOCKED | 真实链上测试未执行（仅 mock 核验） |
+| G. 是否可以启用 ProdSeller 自动采购与履约 | BLOCKED | 真实 ProdSeller 行为未验证，门禁保持关闭 |
+

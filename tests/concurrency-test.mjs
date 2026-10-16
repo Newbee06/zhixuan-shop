@@ -11,6 +11,11 @@ const db = new DatabaseSync(':memory:');
 db.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
 // ProdSeller 门禁：测试环境用 Mock 上游，显式开启门禁（模拟“已提供上游验证证据”的环境；生产默认关闭）。
 db.prepare("UPDATE settings SET value='1' WHERE key='prodseller_enabled'").run();
+// 支付白名单：新订单只允许 OKX|X Layer、Binance|BEP20；下单需有效收款地址。
+// 并发测试的 OKX|X Layer 订单走 API 创建，故此处配置有效 EVM 收款地址。
+// TRC20 场景（§3 cron 抢跑、§5b TXID 认领）测的是抢跑/认领逻辑而非下单，
+// 故用直接插库的方式创建历史 TRC20 订单（不走 API），保留原逻辑断言。
+db.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111', 'Binance|BEP20': '0x2222222222222222222222222222222222222222' }));
 // 计数器：统计 PRAGMA / ALTER（验证常规请求不跑完整迁移）与上游调用
 let pragmaCount = 0, alterCount = 0, upstreamCalls = 0, upstreamCreates = 0;
 let upstreamDelayMs = 0; // 测试屏障：上游创建延迟，放大竞态窗口
@@ -150,9 +155,15 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
 {
   // 补一张卡供本测试
   await call('POST', '/api/admin/cards/import', { product_id: pCard.id, codes: 'CONC-CARD-CRON-1' }, cookie);
-  r = await orderCall({ product_id: pCard.id, quantity: 1, pay_method: 'Binance', pay_chain: 'TRC20', customer_fields: { contact_email: 'conc-cron@test.example', delivery_email: 'conc-cron@test.example' } });
-  check('cron-test order created', r.json && r.json.ok === true, JSON.stringify(r.json));
-  const ord = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  // 历史 TRC20 订单（白名单生效前已存在）：直接插库，不走 API（新订单已禁止 TRC20）。
+  // 抢跑逻辑（cron 与管理员 confirm 争抢同一订单）与支付方式无关，故保留原断言。
+  const cronOrderNo = 'AISCONCCRON1';
+  const cronActual = 5.0037;
+  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 5, 5, ?, 'TXYZCRONPAY', datetime('now','+30 minutes'), ?, 'conc-cron@test.example', 'Binance', 'TRC20', 'TXYZCRONPAY', 'pending_payment', datetime('now'))").run(cronOrderNo, pCard.id, cronActual, JSON.stringify({ contact_email: 'conc-cron@test.example', delivery_email: 'conc-cron@test.example' }));
+  const ord = q('SELECT * FROM orders WHERE order_no=?', cronOrderNo);
+  // 下单时预留卡：手动将该卡预留给本历史订单（等价于下单时的 reserveCards）
+  db.prepare("UPDATE cards SET reserved_order_id=? WHERE code='CONC-CARD-CRON-1'").run(ord.id);
+  check('cron-test order created', !!ord, JSON.stringify(ord));
   // 该订单实际预留的卡（预留按 id 取最早可用卡，不写死卡号）
   const reservedCard = q('SELECT * FROM cards WHERE reserved_order_id=?', ord.id);
   check('cron-test: card reserved for this order', !!reservedCard, JSON.stringify(reservedCard));
@@ -227,16 +238,18 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
 {
   const pTx = q("SELECT * FROM products WHERE title='TXID测试商品'");
   const txHash3 = 'c'.repeat(64);
-  // 订单 C1：TRC20，经 /pay 提交（Tronscan 返回匹配到账）→ 认领
-  r = await orderCall({ product_id: pTx.id, quantity: 1, pay_method: 'Binance', pay_chain: 'TRC20', customer_fields: { contact_email: 'tx-c1@test.example' } });
-  const ordC1 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  // 订单 C1：历史 TRC20 订单（直接插库，新订单已禁止 TRC20），经 /pay 提交（Tronscan 返回匹配到账）→ 认领
+  const c1No = 'AISCONCTXID1';
+  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0021, 'TXYZTXIDPAY1', datetime('now','+30 minutes'), ?, 'tx-c1@test.example', 'Binance', 'TRC20', 'TXYZTXIDPAY1', 'pending_payment', datetime('now'))").run(c1No, pTx.id, JSON.stringify({ contact_email: 'tx-c1@test.example' }));
+  const ordC1 = q('SELECT * FROM orders WHERE order_no=?', c1No);
   tronscanTransfer = { to: ordC1.pay_address, amount: ordC1.actual_amount, hash: txHash3 };
   r = await call('POST', '/api/orders/' + ordC1.order_no + '/pay', { txid: txHash3 });
   check('order C1 claims txid via /pay', r.json && r.json.ok === true, JSON.stringify(r.json));
   check('txid claimed by order C1', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txHash3).order_id === ordC1.id);
-  // 订单 C2：TRC20，Tronscan 返回匹配到账（同一 tx 哈希）
-  r = await orderCall({ product_id: pTx.id, quantity: 1, pay_method: 'Binance', pay_chain: 'TRC20', customer_fields: { contact_email: 'tx-c2@test.example' } });
-  const ordC2 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  // 订单 C2：历史 TRC20 订单（直接插库），Tronscan 返回匹配到账（同一 tx 哈希）
+  const c2No = 'AISCONCTXID2';
+  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0029, 'TXYZTXIDPAY2', datetime('now','+30 minutes'), ?, 'tx-c2@test.example', 'Binance', 'TRC20', 'TXYZTXIDPAY2', 'pending_payment', datetime('now'))").run(c2No, pTx.id, JSON.stringify({ contact_email: 'tx-c2@test.example' }));
+  const ordC2 = q('SELECT * FROM orders WHERE order_no=?', c2No);
   tronscanTransfer = { to: ordC2.pay_address, amount: ordC2.actual_amount, hash: txHash3 };
   r = await call('POST', '/api/orders/' + ordC2.order_no + '/pay', { txid: txHash3 });
   check('pay with stolen txid -> 409, not silently accepted', r.status === 409 && r.json && /已用于其他订单/.test(r.json.error || ''), 'status=' + r.status + ' body=' + JSON.stringify(r.json));
@@ -403,7 +416,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
     .replace(/-- TXID 原子认领[\s\S]*?CREATE INDEX IF NOT EXISTS idx_lookup_rate_ip ON lookup_rate\(ip, created_at\);\n/, '')
     .replace(/-- 上游轮询租约[^\n]*\n  upstream_lock TEXT NOT NULL DEFAULT '',\n  upstream_lock_expires_at TEXT,\n/, '')
     .replace(/CREATE UNIQUE INDEX IF NOT EXISTS idx_upstream_orders_order_unique ON upstream_orders\(order_id\);\n/, '')
-    .replace(/-- 数据库迁移版本[\s\S]*?INSERT OR IGNORE INTO schema_migrations \(version\) VALUES \(1\), \(2\), \(3\), \(4\), \(5\), \(6\), \(7\), \(8\), \(9\);\n/, '')
+    .replace(/-- 数据库迁移版本[\s\S]*?INSERT OR IGNORE INTO schema_migrations \(version\) VALUES \(1\), \(2\), \(3\), \(4\), \(5\), \(6\), \(7\), \(8\), \(9\), \(10\);\n/, '')
     // 剥离 v8（第四轮）：payments / scan_cursors / pay_rate / 金额与联系人部分唯一索引，模拟 v7 旧库
     .replace(/-- 第四轮（Release Readiness）[\s\S]*$/, '');
   dbOld.exec(oldSchema);
@@ -436,7 +449,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const cp = await callOld('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'old-db-pass-123' }, ocookie);
   check('old-db change-password ok', cp.json && cp.json.ok === true, JSON.stringify(cp.json));
   const mg = await callOld('GET', '/api/admin/migrate', null, ocookie);
-  check('old-db migrated to v9', mg.json && mg.json.ok === true && mg.json.current_version === 9, JSON.stringify(mg.json));
+  check('old-db migrated to v10', mg.json && mg.json.ok === true && mg.json.current_version === 10, JSON.stringify(mg.json));
   check('old-db: old order preserved', !!dbOld.prepare("SELECT * FROM orders WHERE order_no='AISOLD001'").get());
   check('old-db: old card preserved', !!dbOld.prepare("SELECT * FROM cards WHERE code='OLD-CARD-1'").get());
   check('old-db: old product preserved', !!dbOld.prepare("SELECT * FROM products WHERE slug='old-prod'").get());
@@ -478,6 +491,8 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const dbNoAudit = new DatabaseSync(':memory:');
   dbNoAudit.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
   dbNoAudit.exec('DROP TABLE admin_audit');
+  // 审计测试的订单走 OKX|X Layer，需有效收款地址（schema 种子为占位符，会拒单）
+  dbNoAudit.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111' }));
   const envNoAudit = { DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbNoAudit.prepare(sql); const rr = st.get(...params); return rr === undefined ? null : rr; } catch (e) { throw e; } }, async all() { const st = dbNoAudit.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbNoAudit.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; } }; return api; }, async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
   async function callNoAudit(method, p, body, ck) {
     const ctx = makeCtx();
@@ -547,8 +562,10 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const pTx3 = q("SELECT * FROM products WHERE title='TXID测试商品'");
   const txOld = 'd'.repeat(64);
   const txNew = 'e'.repeat(64);
-  r = await orderCall({ product_id: pTx3.id, quantity: 1, pay_method: 'Binance', pay_chain: 'TRC20', customer_fields: { contact_email: 'a03@test.example' } });
-  const ordA03 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  // 历史 TRC20 订单（直接插库，新订单已禁止 TRC20）；测的是租约接管/旧 TXID 释放逻辑
+  const a03No = 'AISCONCA03';
+  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0033, 'TXYZTXIDPAY3', datetime('now','+30 minutes'), ?, 'a03@test.example', 'Binance', 'TRC20', 'TXYZTXIDPAY3', 'pending_payment', datetime('now'))").run(a03No, pTx3.id, JSON.stringify({ contact_email: 'a03@test.example' }));
+  const ordA03 = q('SELECT * FROM orders WHERE order_no=?', a03No);
   // 模拟：订单已认领旧 TXID（链上核验路径），但处理崩溃，租约过期
   db.prepare('INSERT INTO txid_claims (tx_hash, order_id) VALUES (?, ?)').run(txOld, ordA03.id);
   db.prepare("UPDATE orders SET tx_hash=?, claim_token='STALE-TOKEN', claimed_at=datetime('now','-10 minutes') WHERE id=?").run(txOld, ordA03.id);
@@ -565,8 +582,10 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
 // C-02：Tronscan 分页——匹配到账在第 2 页（第 1 页 50 笔均不匹配），轮询仍能找到
 {
   const pTxC02 = q("SELECT * FROM products WHERE title='TXID测试商品'");
-  r = await orderCall({ product_id: pTxC02.id, quantity: 1, pay_method: 'Binance', pay_chain: 'TRC20', customer_fields: { contact_email: 'c02@test.example' } });
-  const ordC02 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  // 历史 TRC20 订单（直接插库，新订单已禁止 TRC20）；测的是 Tronscan 分页逻辑
+  const c02No = 'AISCONCC02';
+  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0041, 'TXYZTXIDPAY4', datetime('now','+30 minutes'), ?, 'c02@test.example', 'Binance', 'TRC20', 'TXYZTXIDPAY4', 'pending_payment', datetime('now'))").run(c02No, pTxC02.id, JSON.stringify({ contact_email: 'c02@test.example' }));
+  const ordC02 = q('SELECT * FROM orders WHERE order_no=?', c02No);
   const txC02 = 'f'.repeat(64);
   // 临时替换 fetch：Tronscan transfers 按 start 分页；其他请求走原 mock
   const origFetch = env.__fetch;
@@ -602,8 +621,10 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const txA04 = '1'.repeat(64); // 唯一 TXID（§4 用 'a'*64、§5 用 'b'*64、A-03 用 'd'/'e'、C-02 用 'f'，不得撞）
   const ERC20_USDT = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
   const TRANSFER0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
-  r = await orderCall({ product_id: pTxA04.id, quantity: 1, pay_method: 'OKX', pay_chain: 'ERC20', customer_fields: { contact_email: 'a04@test.example' } });
-  const ordA04 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  // 历史 ERC20 订单（直接插库，新订单已禁止 ERC20）；测的是 /pay 按各链确认策略（ERC20 需 12 确认）
+  const a04No = 'AISCONCA04';
+  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0055, '0x3333333333333333333333333333333333333333', datetime('now','+30 minutes'), ?, 'a04@test.example', 'OKX', 'ERC20', '0x3333333333333333333333333333333333333333', 'pending_payment', datetime('now'))").run(a04No, pTxA04.id, JSON.stringify({ contact_email: 'a04@test.example' }));
+  const ordA04 = q('SELECT * FROM orders WHERE order_no=?', a04No);
   const toTopic = '0x' + '000000000000000000000000' + String(ordA04.pay_address).slice(2).toLowerCase();
   const amtHex = '0x' + BigInt(Math.round(Number(ordA04.actual_amount) * 1e6)).toString(16).padStart(64, '0');
   let evmLatest = 100; // 最新区块（可推进，模拟确认数增长）
@@ -612,6 +633,10 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
     const u = String(url);
     if (u.includes('llamarpc.com') || u.includes('ankr.com')) {
       const body = JSON.parse(opts.body || '{}');
+      // ERC20 USDT 为 6 位精度（新 Worker 需 eth_call 读 decimals 才能核验）
+      if (body.method === 'eth_call') {
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + (6).toString(16).padStart(64, '0') }), { status: 200 });
+      }
       if (body.method === 'eth_getTransactionReceipt') {
         return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {
           status: '0x1', blockNumber: '0x64', // 收据区块 100

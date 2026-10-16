@@ -30,6 +30,32 @@ async function waitForServer(maxMs = 60000) {
 const serverOk = await waitForServer();
 if (!serverOk) { console.error('FAIL: dev server not reachable at ' + BASE + ' after 60s'); process.exit(1); }
 
+// ===== 0. 前置：配置有效收款地址（支付白名单要求）=====
+// 下单需有效收款地址（种子为占位符会拒单）。经 HTTP 管理员接口配置：
+// 登录默认密码 → 改密为临时密码（首登强制改密）→ 配地址。
+// 注意：改密要求新密码 ≥8 位，无法改回 5 位的默认密码 'admin'；
+// 故浏览器内管理员登录改用临时密码登录并继续改密为 'browser-ci-admin-123'（仍测改密流程）。
+{
+  const jar = [];
+  async function api(method, path, body, cookie) {
+    const headers = { 'content-type': 'application/json', 'X-Admin-API': '1' };
+    if (cookie) headers.Cookie = cookie;
+    const res = await fetch(BASE + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    const sc = res.headers.get('set-cookie');
+    if (sc) jar.push(sc.split(';')[0]);
+    let j = null; try { j = await res.json(); } catch {}
+    return { status: res.status, json: j };
+  }
+  const login = await api('POST', '/api/admin/login', { password: 'admin' });
+  if (!login.json || !login.json.ok) { console.error('FATAL: setup admin login failed'); process.exit(1); }
+  const ck = jar[jar.length - 1] || '';
+  const chg1 = await api('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'browser-ci-setup-temp-123' }, ck);
+  if (!chg1.json || !chg1.json.ok) { console.error('FATAL: setup change-password failed'); process.exit(1); }
+  const setAddr = await api('POST', '/api/admin/settings', { settings: { usdt_addresses: JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111', 'Binance|BEP20': '0x2222222222222222222222222222222222222222' }) } }, ck);
+  if (!setAddr.json || !setAddr.json.ok) { console.error('FATAL: setup usdt_addresses failed', JSON.stringify(setAddr.json)); process.exit(1); }
+  console.log('SETUP: usdt_addresses configured');
+}
+
 const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
 const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
 const page = await ctx.newPage();
@@ -96,7 +122,7 @@ const orderRes = await page.evaluate(async () => {
   const qty = parseInt((document.getElementById('qty') || {}).value || '1', 10);
   const capCode = (document.getElementById('captchaCode') || {}).value || '';
   const contact = (document.getElementById('contact') || {}).value || '';
-  const r = await fetch('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: pid, quantity: qty, customer_fields: cust, contact, pay_method: 'Binance', pay_chain: 'X Layer', captcha_id: window._captchaId || '', captcha_code: capCode }) });
+  const r = await fetch('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: pid, quantity: qty, customer_fields: cust, contact, pay_method: 'Binance', pay_chain: 'BEP20', captcha_id: window._captchaId || '', captcha_code: capCode }) });
   return await r.json();
 });
 check('order created via API-in-page', orderRes.ok === true, JSON.stringify(orderRes).slice(0, 300));
@@ -153,11 +179,11 @@ check('lookup missing order: error shown (not blank)',
 // ===== 5. 后台：登录 → 全部菜单渲染 =====
 await page.goto(BASE + '/#/admin', { waitUntil: 'networkidle' });
 await page.waitForTimeout(500);
-await page.fill('#apwd', 'admin');
+await page.fill('#apwd', 'browser-ci-setup-temp-123');
 await page.click('#loginBtn');
 await page.waitForTimeout(800);
 if (await page.locator('#oldpw').count()) {
-  await page.fill('#oldpw', 'admin');
+  await page.fill('#oldpw', 'browser-ci-setup-temp-123');
   await page.fill('#newpw', 'browser-ci-admin-123');
   await page.click('#changePwBtn');
   await page.waitForTimeout(800);

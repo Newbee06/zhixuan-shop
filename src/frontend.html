@@ -465,7 +465,7 @@ async function renderProduct(id){
   window._curProduct = p;
   window._payMethod = 'OKX';
   window._payChain = 'X Layer';
-  var payOpts = '<button type="button" class="pill pay-opt on" data-pm="OKX" data-pc="X Layer" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="2.5" y="13" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="13" width="8.5" height="8.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>USDT · X Layer</button><button type="button" class="pill pay-opt" data-pm="Binance" data-pc="BEP20" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.6 22.4 12 12 22.4 1.6 12Z" fill="#F0B90B"/><path d="M12 7.2 16.8 12 12 16.8 7.2 12Z" fill="#fff"/></svg>USDT · BEP20</button>';
+  var payOpts = '<button type="button" class="pill pay-opt on" data-pm="OKX" data-pc="X Layer" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="2.5" y="13" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="13" width="8.5" height="8.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>USDT0 · X Layer</button><button type="button" class="pill pay-opt" data-pm="Binance" data-pc="BEP20" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.6 22.4 12 12 22.4 1.6 12Z" fill="#F0B90B"/><path d="M12 7.2 16.8 12 12 16.8 7.2 12Z" fill="#fff"/></svg>USDT · BEP20</button>';
   var fh = '';
   for (var i = 0; i < p.form_fields.length; i++){ var f = p.form_fields[i]; if (isLegacyContactField(f)) continue; fh += '<label>' + escH(f.label) + (f.required ? ' *' : '') + '</label><input data-k="' + escH(f.key) + '" placeholder="' + escH(f.placeholder || '') + '">'; }
   var inSt = Number(p.in_stock == null ? 1 : p.in_stock);
@@ -519,6 +519,8 @@ async function renderProduct(id){
   window.scrollTo(0,0);
 }
 function selectPayOption(btn){ var all = document.querySelectorAll('#payOptions .pay-opt'); for (var i=0;i<all.length;i++) all[i].classList.remove('on'); btn.classList.add('on'); window._payMethod = btn.getAttribute('data-pm'); window._payChain = btn.getAttribute('data-pc'); }
+// 用户可见的代币名称必须与实际到账合约一致：X Layer 收 USDT0（非旧版 X Layer USDT），BEP20 收 USDT。
+function payTokenLabel(chain){ if (chain === 'X Layer') return 'USDT0 · X Layer'; if (chain === 'BEP20') return 'USDT · BEP20'; return chain || ''; }
 function changeQty(d){ var q = el('qty'); if (!q) return; var v = parseInt(q.value||'1',10) + d; if (v < 1) v = 1; if (v > 99) v = 99; q.value = v; updateTotal(); }
 function updateTotal(){ var p = window._curProduct; if (!p) return; var qty = parseInt(el('qty').value||'1',10); if (!qty || qty < 1) qty = 1; if (qty > 99) qty = 99; var totalUsdt = Number(p.price_usdt||0) * qty; var t1 = el('totalPrice'); if (t1) t1.textContent = fmtCNY(totalUsdt); var t2 = el('totalUsdt'); if (t2) t2.textContent = '约 ' + totalUsdt.toFixed(2) + ' USDT'; var st = el('stickyTotal'); if (st) st.innerHTML = fmtCNY(totalUsdt); var sq = el('stickyQty'); if (sq) sq.textContent = qty; }
 async function loadCaptcha(){
@@ -588,7 +590,8 @@ async function renderSuccess(no){
   } else {
     html += '<p class="muted">查询订单：用订单号 + 查单凭证在“查询订单”页查询（凭证在下单成功时只展示一次，刷新页面后不再恢复，请使用事先保存的凭证）。</p>';
   }
-  html += '<p>应付：<b>' + fmtCNY(actual) + '</b> <span class="muted">（实际按 ' + actual + ' USDT 精确金额付款，请一分不差）</span>（' + escH(o ? o.pay_method : '') + ' · ' + escH(o ? o.pay_chain : '') + '）</p>';
+  html += '<p>应付：<b>' + fmtCNY(actual) + '</b> <span class="muted">（实际按 ' + actual + ' USDT 精确金额付款，请一分不差）</span>（' + escH(o ? o.pay_method : '') + ' · ' + escH(payTokenLabel(o ? o.pay_chain : '')) + '）</p>';
+  if (o && o.pay_chain === 'X Layer') html += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' X Layer 收款为 USDT0</b><p class="muted" style="margin:6px 0 0">请从欧易提币时选择 USDT0（X Layer 网络）转入上方地址。旧版 X Layer USDT 与 USDT0 是不同资产，转入旧版代币不会到账、无法自动发货。</p></div>';
   html += '<p>收款地址：</p><div class="codebox" id="addrBox">' + escH(addr) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(document.getElementById(\'addrBox\').textContent)">复制地址</button>';
   // 地址为空（刷新后内存凭证已清空）时不渲染二维码图片：空 data 会让 qrserver 返回 400，
   // 浏览器记一条控制台错误，且图片本身是坏图。地址存在时才加载二维码。
@@ -596,7 +599,7 @@ async function renderSuccess(no){
   html += '<p>剩余支付时间：<b id="countdown">' + fmtCountdown(o ? o.expires_at : '') + '</b>（20 分钟锁定，超时订单自动取消）</p>';
   html += '<p class="muted">付完不用做任何事，等 1-3 分钟自动发货。系统按精确金额自动匹配到账，金额差 1 分钱都匹配不上。</p>';
   html += '<p class="muted">教程：<a href="' + escH(tut) + '" target="_blank">支付教程</a></p>';
-  html += '<label>TXID（可选兜底：自动发货未到账时再提交，币安 UID 站内转账填订单 ID）</label><input id="txid" placeholder="粘贴交易哈希（可选）"><div style="margin-top:10px"><button class="btn" data-no="' + escH(no) + '" onclick="submitTxid(this.dataset.no)">提交 TXID（可选）</button> <a class="btn ghost" href="#/query">去查询订单</a></div></div>';
+  html += '<label>TXID（可选兜底：自动发货未到账时再提交）</label><input id="txid" placeholder="粘贴交易哈希（可选）"><div style="margin-top:10px"><button class="btn" data-no="' + escH(no) + '" onclick="submitTxid(this.dataset.no)">提交 TXID（可选）</button> <a class="btn ghost" href="#/query">去查询订单</a></div></div>';
   el('app').innerHTML = html;
   if (o && o.expires_at) { clearInterval(window._cdTimer); window._cdTimer = setInterval(function(){ var c = el('countdown'); if (!c){ clearInterval(window._cdTimer); return; } c.textContent = fmtCountdown(o.expires_at); }, 1000); }
 }
@@ -859,7 +862,7 @@ async function adminOrderDetail(id){
   showDrawer('订单详情', h);
 }
 async function adminConfirm(id){
-  showModal({ title: '确认收款（人工操作）', bodyHTML: '<p>你正在手动确认该订单已收款。确认后系统将按正常流程发货（自营卡密自动发 / 上游走 ProdSeller）。<b>请确保已在收款地址核对到账</b>，误确认无法自动撤销。</p>', confirmText: '确认已收款', showInput: true, inputLabel: '操作原因（必填，记入审计）', inputPlaceholder: '如：币安 UID 站内转账已核对，订单 ID xxx', onConfirm: async function(reason){
+  showModal({ title: '确认收款（人工操作）', bodyHTML: '<p>你正在手动确认该订单已收款。确认后系统将按正常流程发货（自营卡密自动发 / 上游走 ProdSeller）。<b>请确保已在收款地址核对到账</b>，误确认无法自动撤销。</p>', confirmText: '确认已收款', showInput: true, inputLabel: '操作原因（必填，记入审计）', inputPlaceholder: '如：已在收款地址核对到账，TXID xxx', onConfirm: async function(reason){
     if (!reason || !reason.trim()){ toast('请填写操作原因', 'error'); return false; }
     var r = await api('/api/admin/orders/' + id + '/confirm-payment', 'POST', { reason: reason.trim() });
     if (!r.ok){ toast(r.error, 'error'); return false; }
@@ -1284,8 +1287,8 @@ async function renderAdminSettings(){
   var h = '<div class="admin-page"><div class="admin-page-head"><h2>系统设置</h2></div>';
   h += '<p class="muted">JSON 配置保存前会校验结构与字段，错误时会指出具体字段，不会静默保存无效配置。未修改的配置不会因界面未展示字段而被清空。敏感密钥请走 Secrets，不要写进设置。</p>';
   h += '<div class="adm-card"><h3>基础设置</h3>' + adminSettingInput(sv, 'site_name', '站点名称', '前台显示的站名') + adminSettingField(sv, 'announcement', '公告', 2, '前台顶部公告') + adminSettingField(sv, 'order_notice', '下单须知', 3, '显示在商品详情页') + adminSettingInput(sv, 'tg_link', '客服 / TG 链接', '必须是 http(s) 开头的 URL') + '</div>';
-  h += '<div class="adm-card"><h3>收款设置</h3>' + adminSettingField(sv, 'usdt_addresses', '收款地址 JSON', 4, '键必须是“支付方式|链”格式，如 Binance|X Layer，值是收款地址') + adminSettingInput(sv, 'binance_uid', '币安 UID', '纯数字，币安 UID 站内转账的收款 UID') + adminSettingField(sv, 'pay_tutorials', '支付教程 JSON', 2, '键是支付方式，值是教程 URL') + '</div>';
-  h += '<div class="adm-card"><h3>链上到账轮询</h3>' + adminSettingInput(sv, 'poll_enabled', '轮询开关', '1 开 / 0 关（关了只走手动 TXID / 管理员确认）') + adminSettingField(sv, 'rpc_urls', 'RPC 地址 JSON', 3, '键是链，值是 URL 数组，如 {"X Layer":["https://xlayerrpc.okx.com"]}') + adminSettingField(sv, 'usdt_contracts', 'USDT 合约 JSON', 3, '键是链，值是合约地址') + '</div>';
+  h += '<div class="adm-card"><h3>收款设置</h3>' + adminSettingField(sv, 'usdt_addresses', '收款地址 JSON', 4, '键必须是“支付方式|链”格式，仅支持 OKX|X Layer、Binance|BEP20，如 {"OKX|X Layer":"0x…","Binance|BEP20":"0x…"}；旧键保留在库但新订单不再使用') + adminSettingInput(sv, 'binance_uid', '币安 UID', '历史订单恢复用，新订单不再支持币安 UID 站内转账') + adminSettingField(sv, 'pay_tutorials', '支付教程 JSON', 2, '键是支付方式，值是教程 URL') + '</div>';
+  h += '<div class="adm-card"><h3>链上到账轮询</h3>' + adminSettingInput(sv, 'poll_enabled', '轮询开关', '1 开 / 0 关（关了只走手动 TXID / 管理员确认）') + adminSettingField(sv, 'rpc_urls', 'RPC 地址 JSON', 3, '键是链，值是 URL 数组，如 {"X Layer":["https://xlayerrpc.okx.com"],"BEP20":["https://bsc-dataseed.binance.org"]}') + adminSettingField(sv, 'usdt_contracts', 'USDT 合约 JSON', 3, '键是链，值是合约地址；X Layer 默认 USDT0，BEP20 默认 Binance-Peg USDT（18 位精度）') + adminSettingField(sv, 'chain_confirmations', '确认数 JSON', 2, '键是链，值是确认数，如 {"X Layer":1,"BEP20":15}；未达确认数不入账、不履约') + '</div>';
   h += '<div class="adm-card"><h3>上游与汇率</h3>' + adminSettingInput(sv, 'prodseller_base_url', '上游 Base URL', 'Env 优先于此设置') + adminSettingInput(sv, 'upstream_markup', '上游加价倍率', '导入售价 = cost × markup + fixed，默认 1.2', 'number') + adminSettingInput(sv, 'upstream_fixed', '上游固定加价', '默认 0', 'number') + adminSettingInput(sv, 'cny_rate', 'CNY 汇率', '前台 CNY 展示汇率，当前 7.2', 'number') + '</div>';
   h += '<div><button class="btn" id="saveSettingsBtn" onclick="adminSaveSettings()">保存设置</button></div></div>';
   el('adminBody').innerHTML = h;
@@ -1295,7 +1298,7 @@ async function adminSaveSettings(){
   var tas = document.querySelectorAll('[data-sk]');
   for (var i = 0; i < tas.length; i++) obj[tas[i].getAttribute('data-sk')] = tas[i].value;
   // 前端先做一层 JSON 校验，错误时指出字段，不发请求
-  var jsonKeys = ['usdt_addresses', 'pay_tutorials', 'rpc_urls', 'usdt_contracts'];
+  var jsonKeys = ['usdt_addresses', 'pay_tutorials', 'rpc_urls', 'usdt_contracts', 'chain_confirmations'];
   for (var j = 0; j < jsonKeys.length; j++){
     var k = jsonKeys[j];
     if (obj[k] !== undefined) { try { var parsed = JSON.parse(obj[k] || '{}'); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('x'); } catch (e) { toast('设置 ' + k + ' 不是合法 JSON 对象', 'error'); return; } }

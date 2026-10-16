@@ -21,6 +21,16 @@ const env = { DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const 
 const sentEmails = [];
 const upstreamCalls = [];
 let getCountPSORD1 = 0;
+// EVM mock 用：按合约 decimals 精确转 raw 金额（BigInt，避免 float 精度丢失）
+function amountToRawMock(amount, decimals) {
+  const s = String(amount);
+  const parts = s.split('.');
+  const intPart = parts[0] || '0';
+  let fracPart = parts[1] || '';
+  if (fracPart.length > decimals) fracPart = fracPart.slice(0, decimals);
+  while (fracPart.length < decimals) fracPart += '0';
+  return BigInt(intPart) * (10n ** BigInt(decimals)) + BigInt(fracPart || '0');
+}
 async function mockFetch(url, opts = {}) {
   const u = String(url);
   const method = (opts.method || 'GET').toUpperCase();
@@ -49,6 +59,41 @@ async function mockFetch(url, opts = {}) {
     const o = rows[0];
     if (!o) return new Response(JSON.stringify({ data: [] }), { status: 200 });
     return new Response(JSON.stringify({ data: [{ to_address: toAddr, tokenInfo: { tokenId: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', tokenAbbr: 'USDT', tokenDecimal: 6 }, quant: Math.round(Number(o.actual_amount) * 1e6), block_ts: Date.now(), confirmed: true, transactionHash: 'TXHASH-' + o.order_no }] }), { status: 200 });
+  }
+  // EVM RPC mock（第九轮白名单路径：X Layer USDT0 6 位、BEP20 USDT 18 位）：
+  // eth_call 返回合约 decimals；eth_blockNumber 返回固定最新块；eth_getLogs 按收款地址返回待付款订单的匹配转账。
+  // 日志区块 9980（最新 10000，20 确认），满足 BEP20 默认 15 确认与 X Layer 1 确认。
+  if (u.includes('mock-xlayer') || u.includes('mock-bsc')) {
+    const evmBody = opts.body ? JSON.parse(opts.body) : null;
+    const EVM_DEC = { '0x779ded0c9e1022225f8e0630b35a9b54be713736': 6, '0x55d398326f99059ff775485246999027b3197955': 18 };
+    if (evmBody && evmBody.method === 'eth_call') {
+      const to = String((evmBody.params && evmBody.params[0] && evmBody.params[0].to) || '').toLowerCase();
+      const dec = EVM_DEC[to];
+      if (dec === undefined) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + (0).toString(16).padStart(64, '0') }), { status: 200 });
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + dec.toString(16).padStart(64, '0') }), { status: 200 });
+    }
+    if (evmBody && evmBody.method === 'eth_blockNumber') {
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + (10000).toString(16) }), { status: 200 });
+    }
+    if (evmBody && evmBody.method === 'eth_getLogs') {
+      const f = (evmBody.params && evmBody.params[0]) || {};
+      const contract = String(f.address || '').toLowerCase();
+      const dec = EVM_DEC[contract];
+      if (dec === undefined) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: [] }), { status: 200 });
+      const toTopic = String((f.topics && f.topics[2]) || '');
+      const toAddr = '0x' + toTopic.slice(-40).toLowerCase();
+      const rows = db.prepare("SELECT * FROM orders WHERE LOWER(pay_address)=? AND status='pending_payment'").all(toAddr);
+      const logs = rows.map((o, i) => {
+        const raw = amountToRawMock(Number(o.actual_amount), dec);
+        // 交易哈希必须每笔唯一（Worker 按 (chain, tx_hash, event_key) 去重；全用同一哈希会被当成重复付款）
+        const txHash = '0x' + createHash('sha256').update('evm-' + o.order_no).digest('hex');
+        return { address: contract, blockNumber: '0x' + (9980).toString(16), transactionHash: txHash, logIndex: '0x' + i.toString(16), topics: ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', '0x' + '0'.repeat(64), toTopic], data: '0x' + raw.toString(16).padStart(64, '0') };
+      });
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: logs }), { status: 200 });
+    }
+    if (evmBody && evmBody.method === 'eth_getTransactionReceipt') {
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }), { status: 200 });
+    }
   }
   throw new Error('Unexpected fetch: ' + u);
 }
@@ -91,7 +136,8 @@ function qa(sql, ...a) { return db.prepare(sql).all(...a); }
 // settings
 db.prepare("UPDATE settings SET value='1' WHERE key='email_enabled'").run();
 db.prepare("UPDATE settings SET value='noreply@test.example' WHERE key='email_from'").run();
-db.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'Binance|TRC20': 'TXYZPAYADDRESS' }));
+db.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111', 'Binance|BEP20': '0x2222222222222222222222222222222222222222' }));
+db.prepare("UPDATE settings SET value=? WHERE key='rpc_urls'").run(JSON.stringify({ 'X Layer': ['https://mock-xlayer'], 'BEP20': ['https://mock-bsc'] }));
 // ProdSeller 门禁：测试环境用 Mock 上游，显式开启门禁（模拟“已提供上游验证证据”的环境；生产默认关闭）。
 db.prepare("UPDATE settings SET value='1' WHERE key='prodseller_enabled'").run();
 // admin login + 首次改密（新规则：未改密的会话不能调其他管理接口）
@@ -135,7 +181,7 @@ await call('POST', '/api/admin/products', { slug: 'ps-409', title: 'P409', categ
 const p402 = q('SELECT * FROM products WHERE slug=?', 'ps-402');
 const p409 = q('SELECT * FROM products WHERE slug=?', 'ps-409');
 // Test A: self card via polling
-r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer1@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer1@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer1@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer1@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
 assert(r.json.ok, 'self order created');
 const ctxA = makeCtx();
 await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxA); await ctxA.drain();
@@ -149,22 +195,22 @@ oA = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
 assert(oA.status === 'completed', 'A duplicate polling stays completed');
 assert(sentEmails.length === emailsBefore, 'A duplicate polling sends no email');
 // Test B: upstream normal via polling
-r = await orderCall({ product_id: up100.id, quantity: 1, customer_fields: { contact_email: 'buyer2@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer2@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+r = await orderCall({ product_id: up100.id, quantity: 1, customer_fields: { contact_email: 'buyer2@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer2@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
 assert(r.json.ok, 'upstream order created');
 const ctxB = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxB); await ctxB.drain();
 let oB = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
 assert(oB.status === 'completed' && oB.delivery_content === 'UP-KEY-ABC', 'B upstream polling -> delivered, got ' + oB.status + '/' + oB.delivery_content);
 assert(sentEmails.length === 0, 'B email removed: no email sent');
 // Test G: admin confirm-payment on upstream (fresh order, no polling)
-r = await orderCall({ product_id: up100.id, quantity: 1, customer_fields: { contact_email: 'buyer3@test.example' }, contact: 'buyer3@test.example', pay_method: 'BinanceUID', pay_chain: '站内转账' });
-assert(r.json.ok, 'G upstream BinanceUID order created');
+r = await orderCall({ product_id: up100.id, quantity: 1, customer_fields: { contact_email: 'buyer3@test.example' }, contact: 'buyer3@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
+assert(r.json.ok, 'G upstream BEP20 order created');
 let oG = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
 r = await call('POST', '/api/admin/orders/' + oG.id + '/confirm-payment', {}, cookie);
 assert(r.json.ok, 'G admin confirm-payment ok: ' + JSON.stringify(r.json));
 oG = q('SELECT * FROM orders WHERE id=?', oG.id);
 assert(oG.status === 'completed' && oG.delivery_content === 'UP-KEY-ABC', 'G admin confirm -> ProdSeller delivered, got ' + oG.status);
 // Test C: activation paid -> poll -> delivered
-r = await orderCall({ product_id: up200.id, quantity: 1, customer_fields: { contact_email: 'buyer4@test.example', activation_email: 'act@test.example', activation_email_confirm: 'act@test.example' }, contact: 'buyer4@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+r = await orderCall({ product_id: up200.id, quantity: 1, customer_fields: { contact_email: 'buyer4@test.example', activation_email: 'act@test.example', activation_email_confirm: 'act@test.example' }, contact: 'buyer4@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
 assert(r.json.ok, 'C activation order created: ' + JSON.stringify(r.json));
 const ctxC1 = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxC1); await ctxC1.drain();
 let oC = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
@@ -175,7 +221,7 @@ const ctxC2 = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ct
 oC = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
 assert(oC.status === 'completed' && oC.delivery_content === 'UP-ACT-KEY', 'C poll -> delivered, got ' + oC.status + '/' + oC.delivery_content);
 // Test D: 402
-r = await orderCall({ product_id: p402.id, quantity: 1, customer_fields: { contact_email: 'buyer5@test.example' }, contact: 'buyer5@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+r = await orderCall({ product_id: p402.id, quantity: 1, customer_fields: { contact_email: 'buyer5@test.example' }, contact: 'buyer5@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
 assert(r.json.ok, 'D 402 order created');
 const ctxD = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxD); await ctxD.drain();
 let oD = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
@@ -183,13 +229,13 @@ assert(oD.status === 'pending_upstream' && oD.delivery_content === '', 'D 402 ->
 r = await call('GET', '/api/admin/upstream/alerts', null, cookie);
 assert(r.json.alerts.some((a) => a.order_no === oD.order_no), 'D alert listed in upstream/alerts');
 // Test 409
-r = await orderCall({ product_id: p409.id, quantity: 1, customer_fields: { contact_email: 'buyer6@test.example' }, contact: 'buyer6@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+r = await orderCall({ product_id: p409.id, quantity: 1, customer_fields: { contact_email: 'buyer6@test.example' }, contact: 'buyer6@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
 assert(r.json.ok, '409 order created');
 const ctxE = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxE); await ctxE.drain();
 let oE = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
 assert(oE.status === 'pending_upstream', '409 -> pending_upstream, got ' + oE.status);
 // Test E: timeout cancel
-r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer7@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer7@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer7@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer7@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
 assert(r.json.ok, 'timeout order created');
 // remove its tronscan match by expiring it (mock only returns pending_payment rows; expiry check runs before chain check, so it cancels)
 db.prepare("UPDATE orders SET expires_at=datetime('now','-1 minute') WHERE order_no=?").run(r.json.order.order_no);
@@ -202,30 +248,30 @@ assert(upstreamCalls.every((c) => c.idem && c.idem.startsWith('AIS')), 'Idempote
 r = await call('GET', '/api/captcha');
 assert(r.json.ok && r.json.captcha_id && r.json.svg.includes('<svg'), 'captcha GET returns svg');
 assert(q('SELECT * FROM captcha_codes WHERE id=?', r.json.captcha_id), 'captcha row stored (hash only, no plaintext)');
-r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
 assert(!r.json.ok && r.json.error.includes('验证码'), 'order without captcha rejected: ' + JSON.stringify(r.json));
 const badCap = mkCaptcha('ZZ99');
-r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'TRC20', captcha_id: badCap, captcha_code: 'WRONG' });
+r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'BEP20', captcha_id: badCap, captcha_code: 'WRONG' });
 assert(!r.json.ok && r.json.error.includes('验证码错误'), 'wrong captcha rejected: ' + JSON.stringify(r.json));
 assert(q('SELECT attempts FROM captcha_codes WHERE id=?', badCap).attempts === 1, 'wrong attempt counted');
 const goodCap = mkCaptcha('AB12');
-r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'TRC20', captcha_id: goodCap, captcha_code: 'AB12' });
+r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'BEP20', captcha_id: goodCap, captcha_code: 'AB12' });
 assert(r.json.ok, 'order with correct captcha created: ' + JSON.stringify(r.json));
-r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'TRC20', captcha_id: goodCap, captcha_code: 'AB12' });
+r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'BEP20', captcha_id: goodCap, captcha_code: 'AB12' });
 assert(!r.json.ok && r.json.error.includes('验证码'), 'used captcha cannot be replayed: ' + JSON.stringify(r.json));
 // Duplicate pending order: same contact, one pending only
-r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'dup@test.example', delivery_email: 'dup@test.example' }, contact: 'dup@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'dup@test.example', delivery_email: 'dup@test.example' }, contact: 'dup@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
 assert(r.json.ok, 'dup first order created: ' + JSON.stringify(r.json));
 const dupNo = r.json.order.order_no;
-r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'dup@test.example', delivery_email: 'dup@test.example' }, contact: 'dup@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'dup@test.example', delivery_email: 'dup@test.example' }, contact: 'dup@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
 assert(!r.json.ok && r.json.error.includes('待付款'), 'dup second order blocked: ' + JSON.stringify(r.json));
 const dupOrder = q('SELECT * FROM orders WHERE order_no=?', dupNo);
 r = await call('POST', '/api/admin/orders/' + dupOrder.id + '/cancel', {}, cookie);
 assert(r.json.ok, 'dup order cancelled: ' + JSON.stringify(r.json));
-r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'dup@test.example', delivery_email: 'dup@test.example' }, contact: 'dup@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'dup@test.example', delivery_email: 'dup@test.example' }, contact: 'dup@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
 assert(r.json.ok, 'dup contact can order again after cancel: ' + JSON.stringify(r.json));
 for (let i = 0; i < 10; i++) db.prepare("INSERT INTO order_rate (ip, created_at) VALUES ('unknown', datetime('now'))").run();
-r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer-rate@test.example', delivery_email: 'buyer-rate@test.example' }, contact: 'buyer-rate@test.example', pay_method: 'Binance', pay_chain: 'TRC20' });
+r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer-rate@test.example', delivery_email: 'buyer-rate@test.example' }, contact: 'buyer-rate@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
 assert(!r.json.ok && r.json.error.includes('频繁'), 'rate limit blocks 11th order: ' + JSON.stringify(r.json));
 // image_data validation (admin PUT)
 r = await call('GET', '/api/admin/products', null, cookie);

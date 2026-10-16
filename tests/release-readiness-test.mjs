@@ -46,6 +46,12 @@ async function mockFetch(url, opts = {}) {
   if (u.includes('xlayerrpc.okx.com') || u.includes('llamarpc.com') || u.includes('ankr.com') || u.includes('bsc-dataseed')) {
     if (evmFailNext > 0) { evmFailNext--; throw new Error('mock RPC timeout'); }
     const body = JSON.parse(opts.body || '{}');
+    // eth_call 读合约 decimals（新 Worker 需实际精度核验）：X Layer 测试合约与 ERC20 为 6 位，BEP20 为 18 位
+    if (body.method === 'eth_call') {
+      const to = String((body.params && body.params[0] && body.params[0].to) || '').toLowerCase();
+      const dec = to === '0x55d398326f99059ff775485246999027b3197955' ? 18 : 6;
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + dec.toString(16).padStart(64, '0') }), { status: 200 });
+    }
     if (body.method === 'eth_blockNumber') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + evmLatest.toString(16) }), { status: 200 });
     if (body.method === 'eth_getLogs') {
       const p = body.params[0] || {};
@@ -104,7 +110,7 @@ async function callRaw(method, p, body, headers) {
   return { status: res.status, json: j, txt };
 }
 // settings
-db.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'Binance|TRC20': 'TXYZPAY', 'OKX|X Layer': '0x0000000000000000000000000000000000000001', 'Binance|X Layer': '0x0000000000000000000000000000000000000001' }));
+db.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'Binance|BEP20': '0x2222222222222222222222222222222222222222', 'OKX|X Layer': '0x0000000000000000000000000000000000000001' }));
 db.prepare("UPDATE settings SET value=? WHERE key='usdt_contracts'").run(JSON.stringify({ 'X Layer': '0x00000000000000000000000000000000000000aa', 'ERC20': '0xdAC17F958D2ee523a2206206994597C13D831ec7' }));
 db.prepare("UPDATE settings SET value=? WHERE key='rpc_urls'").run(JSON.stringify({ 'X Layer': ['https://xlayerrpc.okx.com'], 'ERC20': ['https://eth.llamarpc.com'] }));
 // admin
@@ -132,14 +138,23 @@ async function newCaptcha() {
 }
 async function orderCall(prod, contact, method, chain) {
   const cid = await newCaptcha();
-  return call('POST', '/api/orders', { product_id: prod.id, quantity: 1, customer_fields: { contact_email: contact, delivery_email: contact }, contact, pay_method: method || 'Binance', pay_chain: chain || 'TRC20', captcha_id: cid, captcha_code: 'AB12' });
+  return call('POST', '/api/orders', { product_id: prod.id, quantity: 1, customer_fields: { contact_email: contact, delivery_email: contact }, contact, pay_method: method || 'Binance', pay_chain: chain || 'BEP20', captcha_id: cid, captcha_code: 'AB12' });
+}
+
+// 历史 TRC20 订单（白名单生效前已存在）：直接插库，不走 API（新订单已禁止 TRC20）。
+// 账本测试（§1–§3）测的是 /pay 账本/去重/对账逻辑，与下单方式无关，故保留原断言。
+// 需预留一张卡（等价于下单时的 reserveCards），否则 /pay 履约时无卡可发。
+function insertHistTRC20Order(orderNo, actualAmount, contact, cardCode) {
+  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 10, 10, ?, 'TXYZPAY', datetime('now','+30 minutes'), ?, ?, 'Binance', 'TRC20', 'TXYZPAY', 'pending_payment', datetime('now'))").run(orderNo, selfProd.id, actualAmount, JSON.stringify({ contact_email: contact, delivery_email: contact }), contact);
+  const ord = q('SELECT * FROM orders WHERE order_no=?', orderNo);
+  if (cardCode) db.prepare('UPDATE cards SET reserved_order_id=? WHERE code=?').run(ord.id, cardCode);
+  return ord;
 }
 
 // ===== 1. 付款账本：/pay 提交记 submitted，核验通过记 posted =====
 {
-  r = await orderCall(selfProd, 'pay1@test.example');
-  check('1. order created', r.json && r.json.ok === true, JSON.stringify(r.json));
-  const ord = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const ord = insertHistTRC20Order('AISRRPAY1', 10.0011, 'pay1@test.example', 'R4-KEY-1');
+  check('1. order created', !!ord, JSON.stringify(ord));
   // 模拟 TRC20 到账（金额精确匹配）
   trc20Transfers.push({ to_address: 'TXYZPAY', quant: Math.round(Number(ord.actual_amount) * 1e6), transactionHash: 'a'.repeat(64), block_ts: Date.now(), confirmed: true });
   // /pay 提交 TXID（核验通过 → 自动发货 → posted）
@@ -168,9 +183,8 @@ async function orderCall(prod, contact, method, chain) {
 
 // ===== 3. 同一订单第二笔真实付款保留独立记录 =====
 {
-  r = await orderCall(selfProd, 'pay3@test.example');
-  check('3. order2 created', r.json && r.json.ok === true, JSON.stringify(r.json));
-  const ord = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const ord = insertHistTRC20Order('AISRRPAY3', 10.0033, 'pay3@test.example', 'R4-KEY-2');
+  check('3. order2 created', !!ord, JSON.stringify(ord));
   // 第一笔付款（TRC20）
   trc20Transfers.push({ to_address: 'TXYZPAY', quant: Math.round(Number(ord.actual_amount) * 1e6), transactionHash: 'b'.repeat(64), block_ts: Date.now(), confirmed: true });
   r = await call('POST', '/api/orders/' + ord.order_no + '/pay', { txid: 'b'.repeat(64) });
@@ -247,7 +261,7 @@ async function orderCall(prod, contact, method, chain) {
 {
   r = await call('GET', '/api/admin/schema-check', null, cookie);
   check('7. schema-check ok', r.json && r.json.ok === true && r.json.precheck && r.json.precheck.ok === true, JSON.stringify(r.json));
-  check('7. schema-check version 9', r.json && r.json.precheck && r.json.precheck.current_version === 9, JSON.stringify(r.json));
+  check('7. schema-check version 10', r.json && r.json.precheck && r.json.precheck.current_version === 10, JSON.stringify(r.json));
   // 模拟缺表：删 payments 表后预检应报告问题（随后重建）
   db.exec('DROP TABLE payments');
   r = await call('GET', '/api/admin/schema-check', null, cookie);
@@ -275,16 +289,16 @@ async function orderCall(prod, contact, method, chain) {
   db.prepare("UPDATE settings SET value='test-site-key' WHERE key='turnstile_site_key'").run();
   // siteverify 成功 → 下单成功
   turnstileVerifyResult = true; turnstileFailNetwork = false;
-  r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'ts1@test.example', delivery_email: 'ts1@test.example' }, contact: 'ts1@test.example', pay_method: 'Binance', pay_chain: 'TRC20', turnstile_token: 'valid-token' });
+  r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'ts1@test.example', delivery_email: 'ts1@test.example' }, contact: 'ts1@test.example', pay_method: 'Binance', pay_chain: 'BEP20', turnstile_token: 'valid-token' });
   check('9. turnstile success -> order created', r.json && r.json.ok === true, JSON.stringify(r.json));
   // siteverify 失败 → 拒绝
   turnstileVerifyResult = false;
-  r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'ts2@test.example', delivery_email: 'ts2@test.example' }, contact: 'ts2@test.example', pay_method: 'Binance', pay_chain: 'TRC20', turnstile_token: 'bad-token' });
+  r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'ts2@test.example', delivery_email: 'ts2@test.example' }, contact: 'ts2@test.example', pay_method: 'Binance', pay_chain: 'BEP20', turnstile_token: 'bad-token' });
   check('9. turnstile failure -> rejected', r.json && !r.json.ok && /反机器人/.test(r.json.error || ''), JSON.stringify(r.json));
   // 密钥缺失 → fail-closed（绝不降级为无验证）
   const envNoSecret = { ...env, TURNSTILE_SECRET_KEY: '' };
   const ctx2 = makeCtx();
-  const reqNoSecret = new Request('http://test/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'ts3@test.example', delivery_email: 'ts3@test.example' }, contact: 'ts3@test.example', pay_method: 'Binance', pay_chain: 'TRC20', turnstile_token: 'any-token' }) });
+  const reqNoSecret = new Request('http://test/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'ts3@test.example', delivery_email: 'ts3@test.example' }, contact: 'ts3@test.example', pay_method: 'Binance', pay_chain: 'BEP20', turnstile_token: 'any-token' }) });
   const resNoSecret = await worker.fetch(reqNoSecret, envNoSecret, ctx2);
   await ctx2.drain();
   const txtNoSecret = await resNoSecret.text();
@@ -332,11 +346,11 @@ db.prepare('DELETE FROM order_rate').run();
 {
   // 默认关闭（schema.sql 默认 0）
   check('12. gate default closed', q("SELECT value FROM settings WHERE key='prodseller_enabled'").value === '0');
-  r = await orderCall(psProd, 'gate1@test.example', 'Binance', 'X Layer');
+  r = await orderCall(psProd, 'gate1@test.example', 'Binance', 'BEP20');
   check('12. gate closed -> 403', r.status === 403 && r.json && !r.json.ok && /暂未开放购买/.test(r.json.error || ''), JSON.stringify(r.json));
   // 开启后可下单（Mock 上游）
   db.prepare("UPDATE settings SET value='1' WHERE key='prodseller_enabled'").run();
-  r = await orderCall(psProd, 'gate2@test.example', 'Binance', 'X Layer');
+  r = await orderCall(psProd, 'gate2@test.example', 'Binance', 'BEP20');
   check('12. gate open -> order created', r.json && r.json.ok === true, JSON.stringify(r.json));
   db.prepare("UPDATE settings SET value='0' WHERE key='prodseller_enabled'").run();
 }
@@ -345,8 +359,8 @@ db.prepare('DELETE FROM order_rate').run();
 db.prepare('DELETE FROM order_rate').run();
 {
   const cid = await newCaptcha();
-  const body1 = { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'replay1@test.example', delivery_email: 'replay1@test.example' }, contact: 'replay1@test.example', pay_method: 'Binance', pay_chain: 'TRC20', captcha_id: cid, captcha_code: 'AB12' };
-  const body2 = { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'replay2@test.example', delivery_email: 'replay2@test.example' }, contact: 'replay2@test.example', pay_method: 'Binance', pay_chain: 'TRC20', captcha_id: cid, captcha_code: 'AB12' };
+  const body1 = { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'replay1@test.example', delivery_email: 'replay1@test.example' }, contact: 'replay1@test.example', pay_method: 'Binance', pay_chain: 'BEP20', captcha_id: cid, captcha_code: 'AB12' };
+  const body2 = { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'replay2@test.example', delivery_email: 'replay2@test.example' }, contact: 'replay2@test.example', pay_method: 'Binance', pay_chain: 'BEP20', captcha_id: cid, captcha_code: 'AB12' };
   const [r1, r2] = await Promise.all([call('POST', '/api/orders', body1), call('POST', '/api/orders', body2)]);
   const okCount = [r1, r2].filter((x) => x.json && x.json.ok).length;
   check('13. concurrent same captcha: exactly one succeeds', okCount === 1, JSON.stringify([r1.json, r2.json]));
@@ -355,9 +369,8 @@ db.prepare('DELETE FROM order_rate').run();
 // ===== 14. 故障：同一付款事件并发进入（两个 /pay 同时提交同一 TXID）=====
 db.prepare('DELETE FROM order_rate').run();
 {
-  r = await orderCall(selfProd, 'race1@test.example');
-  check('14. order created', r.json && r.json.ok === true, JSON.stringify(r.json));
-  const ord = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const ord = insertHistTRC20Order('AISRRRACE1', 10.0055, 'race1@test.example', 'R4-KEY-3');
+  check('14. order created', !!ord, JSON.stringify(ord));
   trc20Transfers.push({ to_address: 'TXYZPAY', quant: Math.round(Number(ord.actual_amount) * 1e6), transactionHash: 'f'.repeat(64), block_ts: Date.now(), confirmed: true });
   const [p1, p2] = await Promise.all([
     call('POST', '/api/orders/' + ord.order_no + '/pay', { txid: 'f'.repeat(64) }),
@@ -400,17 +413,21 @@ db.prepare('DELETE FROM order_rate').run();
     let j = null; try { j = JSON.parse(txt); } catch {}
     return { status: res.status, json: j, txt };
   }
-  // 触发迁移（首次请求自动跑 v9）
+  // 触发迁移（首次请求自动跑 v9 + v10）
   const migV9 = await callV9('GET', '/api/config');
-  check('15. v9 migration applied (config ok)', migV9.json && migV9.json.ok === true, migV9.txt.slice(0, 200));
+  check('15. v9/v10 migration applied (config ok)', migV9.json && migV9.json.ok === true, migV9.txt.slice(0, 200));
   const verV9 = dbV9.prepare('SELECT MAX(version) AS v FROM schema_migrations').get();
-  check('15. v9 version marked', verV9 && verV9.v === 9, JSON.stringify(verV9));
+  check('15. v9+v10 version marked', verV9 && verV9.v === 10, JSON.stringify(verV9));
   const idxV9 = dbV9.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_orders_amount_claim'").get();
   check('15. v9 index excludes BinanceUID', idxV9 && /pay_method != 'BinanceUID'/.test(idxV9.sql || ''), (idxV9 && idxV9.sql) || '');
-  // 第二笔同金额 BinanceUID 订单（不同联系方式）：v8 旧索引下会 500，v9 下应成功
-  dbV9.prepare("INSERT INTO captcha_codes (id, code_hash, expires_at, attempts) VALUES ('v9-cap', ?, datetime('now','+5 minutes'), 0)").run(hashV9('AB12'));
-  const ordV9 = await callV9('POST', '/api/orders', { product_id: v9Prod.id, quantity: 1, customer_fields: { contact_email: 'v9-second@test.example', delivery_email: 'v9-second@test.example' }, contact: 'v9-second@test.example', pay_method: 'BinanceUID', pay_chain: '站内转账', captcha_id: 'v9-cap', captcha_code: 'AB12' });
-  check('15. second BinanceUID same-amount order succeeds (no 500)', ordV9.json && ordV9.json.ok === true, ordV9.txt.slice(0, 300));
+  // 第二笔同金额 BinanceUID 订单（不同联系方式）：v8 旧索引下会 500，v9 下应成功。
+  // 白名单禁止新 BinanceUID 订单走 API，故直接 INSERT 测索引本身（索引不区分下单途径）。
+  let ordV9Inserted = false;
+  try {
+    dbV9.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES ('AISV9SECOND001', '', ?, ?, '{}', 1, 10, 10, 10, '', datetime('now','+30 minutes'), ?, 'v9-second@test.example', 'BinanceUID', '站内转账', '', 'pending_payment', datetime('now'))").run(hashV9('v9-token-2'), v9Prod.id, JSON.stringify({ delivery_email: 'v9-second@test.example' }));
+    ordV9Inserted = true;
+  } catch (e) { ordV9Inserted = false; }
+  check('15. second BinanceUID same-amount order succeeds (no 500)', ordV9Inserted);
 }
 
 // ===== 16. 第七轮：统一邮箱输入框 + 交付邮箱映射 + 旧联系方式字段兼容 =====
@@ -427,7 +444,7 @@ db.prepare('DELETE FROM order_rate').run();
   check('16. import cards for legacy product', r.json && r.json.added === 5, JSON.stringify(r.json));
   async function orderLegacy(cf, contact) {
     const cid = await newCaptcha();
-    return call('POST', '/api/orders', { product_id: legacyProd.id, quantity: 1, customer_fields: cf, contact, pay_method: 'Binance', pay_chain: 'TRC20', captcha_id: cid, captcha_code: 'AB12' });
+    return call('POST', '/api/orders', { product_id: legacyProd.id, quantity: 1, customer_fields: cf, contact, pay_method: 'Binance', pay_chain: 'BEP20', captcha_id: cid, captcha_code: 'AB12' });
   }
   function persisted(no) { const row = q('SELECT * FROM orders WHERE order_no=?', no); let cf = {}; try { cf = JSON.parse(row.customer_fields || '{}'); } catch {} return { row, cf }; }
   // 16a. 旧客户端：只传顶层 contact，不传 delivery_email → 兼容回填后下单成功
@@ -476,7 +493,7 @@ db.prepare('DELETE FROM order_rate').run();
   check('16h. create manual product', r.json && r.json.ok === true, JSON.stringify(r.json));
   const manualProd = q("SELECT * FROM products WHERE slug='r7-manual'");
   const cidH = await newCaptcha();
-  r = await call('POST', '/api/orders', { product_id: manualProd.id, quantity: 1, customer_fields: {}, contact: 'r7-manual@test.example', pay_method: 'Binance', pay_chain: 'TRC20', captcha_id: cidH, captcha_code: 'AB12' });
+  r = await call('POST', '/api/orders', { product_id: manualProd.id, quantity: 1, customer_fields: {}, contact: 'r7-manual@test.example', pay_method: 'Binance', pay_chain: 'BEP20', captcha_id: cidH, captcha_code: 'AB12' });
   check('16h. manual product without delivery_email succeeds', r.json && r.json.ok === true, JSON.stringify(r.json).slice(0, 300));
   if (r.json && r.json.ok) {
     const { cf } = persisted(r.json.order.order_no);
@@ -490,7 +507,7 @@ db.prepare('DELETE FROM order_rate').run();
   check('16i. import card for activation product', r.json && r.json.added === 1, JSON.stringify(r.json));
   async function orderAct(cf, contact) {
     const cid = await newCaptcha();
-    return call('POST', '/api/orders', { product_id: actProd.id, quantity: 1, customer_fields: cf, contact, pay_method: 'Binance', pay_chain: 'TRC20', captcha_id: cid, captcha_code: 'AB12' });
+    return call('POST', '/api/orders', { product_id: actProd.id, quantity: 1, customer_fields: cf, contact, pay_method: 'Binance', pay_chain: 'BEP20', captcha_id: cid, captcha_code: 'AB12' });
   }
   r = await orderAct({ contact_email: 'r7-act@test.example', delivery_email: 'r7-act@test.example' }, 'r7-act@test.example');
   check('16i. activation product without activation_email rejected', r.json && !r.json.ok && /activation_email/.test(r.json.error || ''), JSON.stringify(r.json).slice(0, 300));

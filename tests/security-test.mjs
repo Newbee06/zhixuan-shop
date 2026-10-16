@@ -131,6 +131,8 @@ cookie = (r.headers.get('set-cookie') || '').split(';')[0];
 
 // ===== 4. 种子商品 =====
 // 卡密商品（1 张卡）、人工商品（有货）、人工商品（缺货）、上游商品（缺货）
+// 支付白名单：下单需有效 OKX|X Layer 收款地址（schema 种子为占位符，会拒单）
+db.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111' }));
 db.prepare("INSERT INTO products (slug,title,category,price_usdt,sell_price,source,stock_type,is_active,in_stock) VALUES ('sec-card','安全测试卡密','card',5,5,'self','card',1,1)").run();
 db.prepare("INSERT INTO products (slug,title,category,price_usdt,sell_price,source,stock_type,is_active,in_stock) VALUES ('sec-manual','安全测试代充','recharge',5,5,'self','manual',1,1)").run();
 db.prepare("INSERT INTO products (slug,title,category,price_usdt,sell_price,source,stock_type,is_active,in_stock) VALUES ('sec-manual-out','安全测试代充缺货','recharge',5,5,'self','manual',1,0)").run();
@@ -306,7 +308,7 @@ check('exception_reason cleared after fulfill', q('SELECT exception_reason FROM 
 
 // ===== 8d. 迁移状态端点 =====
 r = await call('GET', '/api/admin/migrate', null, cookie);
-check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 9, JSON.stringify(r.json));
+check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 10, JSON.stringify(r.json));
 r = await call('POST', '/api/admin/migrate', {}, cookie);
 check('migrate POST idempotent', r.json && r.json.ok === true && r.json.applied.length === 0, JSON.stringify(r.json));
 

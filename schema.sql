@@ -143,7 +143,7 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('poll_enabled', '1'),
   ('poll_lock_minutes', '20'),
   ('rpc_urls', '{"X Layer":["https://xlayerrpc.okx.com"],"ERC20":["https://eth.llamarpc.com","https://rpc.ankr.com/eth"],"BEP20":["https://bsc-dataseed.binance.org","https://bsc-dataseed1.defibit.io"]}'),
-  ('usdt_contracts', '{"X Layer":"0xYOUR_XLAYER_USDT_CONTRACT","ERC20":"0xdAC17F958D2ee523a2206206994597C13D831ec7","BEP20":"0x55d398326f99059fF775485246999027B3197955","TRC20":"TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}'),
+  ('usdt_contracts', '{"X Layer":"0x779Ded0c9e1022225f8E0630b35a9b54bE713736","ERC20":"0xdAC17F958D2ee523a2206206994597C13D831ec7","BEP20":"0x55d398326f99059fF775485246999027B3197955","TRC20":"TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}'),
   ('upstream_markup', '1.2'),
   ('upstream_fixed', '0'),
   ('prodseller_base_url', 'https://prodseller.com/v1'),
@@ -222,7 +222,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-INSERT OR IGNORE INTO schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9);
+INSERT OR IGNORE INTO schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8), (9), (10);
 
 -- 第四轮（Release Readiness）：付款账本 payments —— 独立记录每一笔链上付款事件，与订单分离。
 -- 状态机：submitted → discovered → verified → confirmed → posted；异常：duplicate / mismatch / unmatched / reconciled。

@@ -64,6 +64,8 @@ let pass = 0, fail = 0;
 function check(name, cond, extra = '') { if (cond) { pass++; console.log('PASS:', name); } else { fail++; console.log('FAIL:', name, extra); } }
 
 // seed: self card product (in_stock column=1, 0 cards), self card product #2 (2 cards), self manual (in_stock=0), prodseller (in_stock=0)
+// 支付白名单：下单需有效 OKX|X Layer 收款地址（schema 种子为占位符，会拒单）
+db.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111' }));
 db.prepare("INSERT INTO products (slug,title,category,price_usdt,sell_price,source,stock_type,is_active,in_stock) VALUES ('self-card','自营卡密','card',1,1,'self','card',1,1)").run();
 db.prepare("INSERT INTO products (slug,title,category,price_usdt,sell_price,source,stock_type,is_active,in_stock) VALUES ('self-card2','自营卡密2','card',1,1,'self','card',1,1)").run();
 db.prepare("INSERT INTO products (slug,title,category,price_usdt,sell_price,source,stock_type,is_active,in_stock) VALUES ('self-manual','自营代充','recharge',1,1,'self','manual',1,0)").run();
