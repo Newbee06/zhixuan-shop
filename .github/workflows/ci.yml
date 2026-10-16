@@ -84,12 +84,14 @@ jobs:
         run: node tests/security-test.mjs
       - name: Concurrency / failure-recovery / migration test
         run: node tests/concurrency-test.mjs
+      - name: Release readiness test (payments ledger, scan cursor, gate, Turnstile, rate limits, sanitization)
+        run: node tests/release-readiness-test.mjs
       - name: Job summary
         if: always()
         run: |
           {
             echo "## Business regression — ${{ job.status }}"
-            echo "- mock-test / stock-test / security-test / concurrency-test: see logs for counts"
+            echo "- mock-test / stock-test / security-test / concurrency-test / release-readiness-test: see logs for counts"
           } >> "$GITHUB_STEP_SUMMARY"
 
   migration:
@@ -111,7 +113,7 @@ jobs:
         run: |
           {
             echo "## D1 migration — ${{ job.status }}"
-            echo "- old DB → v7, duplicate upstream_orders dedup, unique index, idempotency, failure recovery, fresh DB: see logs"
+            echo "- old DB → v8, duplicate upstream_orders dedup, unique index, idempotency, failure recovery, fresh DB: see logs"
             echo "- Local only (--local). No production D1 touched."
           } >> "$GITHUB_STEP_SUMMARY"
 

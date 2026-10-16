@@ -150,7 +150,12 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('email_from', 'noreply@your-domain.example'),
   ('email_enabled', '0'),
   ('delivery_mode', 'both'),
-  ('cny_rate', '7.2');
+  ('cny_rate', '7.2'),
+  -- 第四轮：ProdSeller 门禁默认关闭（0）；Turnstile 默认关闭（0）；各链确认数默认见代码 DEFAULT_CHAIN_CONFIRMATIONS。
+  ('prodseller_enabled', '0'),
+  ('turnstile_enabled', '0'),
+  ('turnstile_site_key', ''),
+  ('chain_confirmations', '{"X Layer":1,"ERC20":12,"BEP20":15,"TRC20":19}');
 
 -- 种子商品：4 个示例，价格/说明均为占位，请替换为自己真实商品/价格/收款地址
 INSERT OR IGNORE INTO products (slug, title, category, price_usdt, stock_type, description, notice, form_fields, image_emoji, sort, is_active) VALUES
@@ -217,4 +222,50 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-INSERT OR IGNORE INTO schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7);
+INSERT OR IGNORE INTO schema_migrations (version) VALUES (1), (2), (3), (4), (5), (6), (7), (8);
+
+-- 第四轮（Release Readiness）：付款账本 payments —— 独立记录每一笔链上付款事件，与订单分离。
+-- 状态机：submitted → discovered → verified → confirmed → posted；异常：duplicate / mismatch / unmatched / reconciled。
+-- 唯一键 (chain, tx_hash, event_key)：同一链上事件只能入账一次；order_id 不唯一（同一订单可有多笔付款）。
+CREATE TABLE IF NOT EXISTS payments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_id INTEGER,
+  chain TEXT NOT NULL DEFAULT '',
+  asset TEXT NOT NULL DEFAULT 'USDT',
+  pay_address TEXT NOT NULL DEFAULT '',
+  tx_hash TEXT NOT NULL DEFAULT '',
+  event_key TEXT NOT NULL DEFAULT '',
+  amount REAL NOT NULL DEFAULT 0,
+  amount_unit TEXT NOT NULL DEFAULT 'USDT',
+  block_number INTEGER,
+  confirmations INTEGER NOT NULL DEFAULT 0,
+  first_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+  status TEXT NOT NULL DEFAULT 'submitted',
+  reconcile_status TEXT NOT NULL DEFAULT '',
+  reconcile_note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_event_unique ON payments(chain, tx_hash, event_key);
+CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(order_id);
+CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
+CREATE INDEX IF NOT EXISTS idx_payments_txhash ON payments(tx_hash);
+
+-- 链上扫描游标：每链已扫描到的区块高度，持久化；RPC 失败不推进，重启可恢复。
+CREATE TABLE IF NOT EXISTS scan_cursors (
+  chain TEXT PRIMARY KEY,
+  last_block INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- /pay 独立限流：key 为 order:<订单号> 或 ip:<IP>。
+CREATE TABLE IF NOT EXISTS pay_rate (
+  key TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pay_rate_key ON pay_rate(key, created_at);
+
+-- 金额唯一性：部分唯一索引，仅约束待付款订单（过期未取消的仍占位，轮询自动取消后释放）。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_amount_claim ON orders(pay_address, actual_amount) WHERE status = 'pending_payment';
+-- 同联系方式去重原子化：部分唯一索引，仅约束待付款且 contact 非空的订单。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_contact_pending ON orders(contact, product_id) WHERE status = 'pending_payment' AND contact != '';

@@ -144,8 +144,13 @@ db.prepare('INSERT INTO cards (product_id, code) VALUES (?,?)').run(pCard, 'SEC-
 // ===== 5. 库存：人工缺货 / 上游缺货服务端阻止下单 =====
 r = await orderCall({ product_id: pManualOut, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'm1@test.example' } });
 check('manual out-of-stock blocked', r.json && !r.json.ok && /缺货/.test(r.json.error || ''), JSON.stringify(r.json));
+// 上游商品：门禁关闭时先被门禁拦截（403）；开启门禁后，缺货检查仍拦截。
 r = await orderCall({ product_id: pPsOut, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'm2@test.example' } });
-check('prodseller out-of-stock blocked', r.json && !r.json.ok && /缺货/.test(r.json.error || ''), JSON.stringify(r.json));
+check('prodseller gate closed blocks order', r.json && !r.json.ok && r.status === 403 && /暂未开放购买/.test(r.json.error || ''), JSON.stringify(r.json));
+db.prepare("UPDATE settings SET value='1' WHERE key='prodseller_enabled'").run();
+r = await orderCall({ product_id: pPsOut, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'm2@test.example' } });
+check('prodseller out-of-stock blocked (gate open)', r.json && !r.json.ok && /缺货/.test(r.json.error || ''), JSON.stringify(r.json));
+db.prepare("UPDATE settings SET value='0' WHERE key='prodseller_enabled'").run();
 
 // ===== 6. 库存预留：两单争 1 张卡，第二单被拒；取消第一单后释放，第二单可下 =====
 r = await orderCall({ product_id: pCard, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'c1@test.example', delivery_email: 'c1@test.example' } });
@@ -211,9 +216,9 @@ r = await call('POST', '/api/orders/' + ordB.order_no + '/lookup', { credential:
 check('legacy password rejected for new order', r.status === 401);
 // 新订单不再保存可用的明文六位查询密码
 check('new order query_password is empty', ordB.query_password === '', JSON.stringify({ qp: ordB.query_password }));
-// 按邮箱查 -> 只返回概要，无交付内容、无客户隐私字段
+// 邮箱查单已关闭（第四轮 P0，E-02）：仅凭邮箱即可枚举购买历史属隐私泄露。统一入口为订单号 + 查单凭证。
 r = await call('GET', '/api/orders?contact=c2@test.example');
-check('email lookup returns summaries only', r.json && r.json.ok === true && r.json.orders.length === 1 && !r.json.orders[0].delivery_content && !r.json.orders[0].customer_fields && !r.json.orders[0].contact, JSON.stringify(r.json));
+check('email lookup closed -> 410', r.status === 410 && r.json && r.json.ok === false, JSON.stringify(r.json));
 // 旧订单兼容：直接插入一个无凭证哈希的旧订单，旧密码只返回概要（无交付内容）
 db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at, delivery_content, fulfilled_at) VALUES ('AISLEGACY001','123456','',?, '{}', 1, 5, 5, 5, '', '2099-01-01 00:00:00', '{}', 'legacy@test.example', 'OKX', 'X Layer', '', 'completed', datetime('now'), 'LEGACY-SECRET-KEY', datetime('now'))").run(pManual);
 r = await call('POST', '/api/orders/AISLEGACY001/lookup', { credential: '' });
@@ -301,7 +306,7 @@ check('exception_reason cleared after fulfill', q('SELECT exception_reason FROM 
 
 // ===== 8d. 迁移状态端点 =====
 r = await call('GET', '/api/admin/migrate', null, cookie);
-check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 7, JSON.stringify(r.json));
+check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 8, JSON.stringify(r.json));
 r = await call('POST', '/api/admin/migrate', {}, cookie);
 check('migrate POST idempotent', r.json && r.json.ok === true && r.json.applied.length === 0, JSON.stringify(r.json));
 

@@ -92,6 +92,8 @@ function qa(sql, ...a) { return db.prepare(sql).all(...a); }
 db.prepare("UPDATE settings SET value='1' WHERE key='email_enabled'").run();
 db.prepare("UPDATE settings SET value='noreply@test.example' WHERE key='email_from'").run();
 db.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'Binance|TRC20': 'TXYZPAYADDRESS' }));
+// ProdSeller 门禁：测试环境用 Mock 上游，显式开启门禁（模拟“已提供上游验证证据”的环境；生产默认关闭）。
+db.prepare("UPDATE settings SET value='1' WHERE key='prodseller_enabled'").run();
 // admin login + 首次改密（新规则：未改密的会话不能调其他管理接口）
 let r = await call('POST', '/api/admin/login', { password: 'admin' });
 assert(r.json.ok, 'admin login');

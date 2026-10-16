@@ -9,6 +9,8 @@ import { createHash } from 'node:crypto';
 const dir = path.dirname(fileURLToPath(import.meta.url)) + '/..';
 const db = new DatabaseSync(':memory:');
 db.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
+// ProdSeller 门禁：测试环境用 Mock 上游，显式开启门禁（模拟“已提供上游验证证据”的环境；生产默认关闭）。
+db.prepare("UPDATE settings SET value='1' WHERE key='prodseller_enabled'").run();
 // 计数器：统计 PRAGMA / ALTER（验证常规请求不跑完整迁移）与上游调用
 let pragmaCount = 0, alterCount = 0, upstreamCalls = 0, upstreamCreates = 0;
 let upstreamDelayMs = 0; // 测试屏障：上游创建延迟，放大竞态窗口
@@ -401,7 +403,9 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
     .replace(/-- TXID 原子认领[\s\S]*?CREATE INDEX IF NOT EXISTS idx_lookup_rate_ip ON lookup_rate\(ip, created_at\);\n/, '')
     .replace(/-- 上游轮询租约[^\n]*\n  upstream_lock TEXT NOT NULL DEFAULT '',\n  upstream_lock_expires_at TEXT,\n/, '')
     .replace(/CREATE UNIQUE INDEX IF NOT EXISTS idx_upstream_orders_order_unique ON upstream_orders\(order_id\);\n/, '')
-    .replace(/-- 数据库迁移版本[\s\S]*?INSERT OR IGNORE INTO schema_migrations \(version\) VALUES \(1\), \(2\), \(3\), \(4\), \(5\), \(6\), \(7\);\n/, '');
+    .replace(/-- 数据库迁移版本[\s\S]*?INSERT OR IGNORE INTO schema_migrations \(version\) VALUES \(1\), \(2\), \(3\), \(4\), \(5\), \(6\), \(7\), \(8\);\n/, '')
+    // 剥离 v8（第四轮）：payments / scan_cursors / pay_rate / 金额与联系人部分唯一索引，模拟 v7 旧库
+    .replace(/-- 第四轮（Release Readiness）[\s\S]*$/, '');
   dbOld.exec(oldSchema);
   // 旧数据：1 个商品 + 1 笔旧订单 + 1 张卡
   dbOld.prepare("INSERT INTO products (slug, title, category, price_usdt, stock_type) VALUES ('old-prod', '旧商品', 'card', 5, 'card')").run();
@@ -432,7 +436,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const cp = await callOld('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'old-db-pass-123' }, ocookie);
   check('old-db change-password ok', cp.json && cp.json.ok === true, JSON.stringify(cp.json));
   const mg = await callOld('GET', '/api/admin/migrate', null, ocookie);
-  check('old-db migrated to v7', mg.json && mg.json.ok === true && mg.json.current_version === 7, JSON.stringify(mg.json));
+  check('old-db migrated to v8', mg.json && mg.json.ok === true && mg.json.current_version === 8, JSON.stringify(mg.json));
   check('old-db: old order preserved', !!dbOld.prepare("SELECT * FROM orders WHERE order_no='AISOLD001'").get());
   check('old-db: old card preserved', !!dbOld.prepare("SELECT * FROM cards WHERE code='OLD-CARD-1'").get());
   check('old-db: old product preserved', !!dbOld.prepare("SELECT * FROM products WHERE slug='old-prod'").get());
@@ -440,6 +444,11 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   check('old-db: txid_claims table exists', (() => { try { dbOld.prepare('SELECT 1 FROM txid_claims LIMIT 1').get(); return true; } catch { return false; } })());
   check('old-db: upstream_orders deduped to latest row', (() => { const rows = dbOld.prepare('SELECT * FROM upstream_orders WHERE order_id=?').all(oldOid); return rows.length === 1 && rows[0].prodseller_order_id === 'PS-OLD-2'; })());
   check('old-db: upstream_lock columns added', (() => { const cols = dbOld.prepare('PRAGMA table_info(orders)').all().map((c) => c.name); return cols.includes('upstream_lock') && cols.includes('upstream_lock_expires_at'); })());
+  check('old-db: payments table exists (v8)', (() => { try { dbOld.prepare('SELECT 1 FROM payments LIMIT 1').get(); return true; } catch { return false; } })());
+  check('old-db: scan_cursors table exists (v8)', (() => { try { dbOld.prepare('SELECT 1 FROM scan_cursors LIMIT 1').get(); return true; } catch { return false; } })());
+  check('old-db: pay_rate table exists (v8)', (() => { try { dbOld.prepare('SELECT 1 FROM pay_rate LIMIT 1').get(); return true; } catch { return false; } })());
+  check('old-db: payments event unique index exists (v8)', (() => { const idx = dbOld.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='payments'").all().map((r) => r.name); return idx.includes('idx_payments_event_unique'); })());
+  check('old-db: amount claim index exists (v8)', (() => { const idx = dbOld.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='orders'").all().map((r) => r.name); return idx.includes('idx_orders_amount_claim'); })());
   check('old-db: upstream_orders unique index exists', (() => { const idx = dbOld.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='upstream_orders'").all().map((r) => r.name); return idx.includes('idx_upstream_orders_order_unique'); })());
   // 重复执行迁移：幂等，数据不丢
   const mg2 = await callOld('POST', '/api/admin/migrate', {}, ocookie);
@@ -459,7 +468,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   await ctx.drain();
   const txt = await res.text();
   let j = null; try { j = JSON.parse(txt); } catch {}
-  check('migration failure -> 500 with version', res.status === 500 && /迁移失败.*v1/.test((j && j.error) || txt), 'status=' + res.status + ' body=' + txt.slice(0, 300));
+  check('migration failure -> 500 sanitized (generic + request_id, no DB leak)', res.status === 500 && /服务器内部错误/.test((j && j.error) || txt) && /关联 ID/.test((j && j.error) || txt) && !/数据库迁移失败/.test((j && j.error) || txt) && !/no such table/.test((j && j.error) || txt), 'status=' + res.status + ' body=' + txt.slice(0, 300));
   check('migration failure: version not marked', dbBad.prepare('SELECT COUNT(*) AS c FROM schema_migrations WHERE version=1').get().c === 0);
 }
 
@@ -586,7 +595,8 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   check('C-02: txid claimed from page 2', q('SELECT tx_hash FROM orders WHERE id=?', ordC02.id).tx_hash === txC02);
 }
 
-// A-04：EVM /pay 要求至少 1 确认（收据区块 == 最新区块 → 0 确认，拒绝；收据区块 <= 最新-1 → 接受）
+// A-04（第四轮更新）：EVM /pay 按各链确认策略（ERC20 需 12 确认，不再全链 1 确认）。
+// 收据区块 100：最新 100 → 0 确认，拒绝；最新 111 → 11 确认，仍拒绝；最新 112 → 12 确认，接受。
 {
   const pTxA04 = q("SELECT * FROM products WHERE title='TXID测试商品'");
   const txA04 = '1'.repeat(64); // 唯一 TXID（§4 用 'a'*64、§5 用 'b'*64、A-03 用 'd'/'e'、C-02 用 'f'，不得撞）
@@ -621,11 +631,16 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   check('A-04: EVM /pay 0-confirmation deferred (auto:false)', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
   check('A-04: order still pending_payment after 0-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_payment');
   check('A-04: 0-conf TXID NOT claimed', !q('SELECT * FROM txid_claims WHERE tx_hash=?', txA04));
-  // 1 确认：最新区块推进到 101，收据区块 100 <= 100 → 接受
-  evmLatest = 101;
+  // 11 确认（ERC20 需 12）：仍延迟，不接受
+  evmLatest = 111;
   r = await call('POST', '/api/orders/' + ordA04.order_no + '/pay', { txid: txA04 });
-  check('A-04: EVM /pay 1-confirmation accepted', r.json && r.json.ok === true, JSON.stringify(r.json));
-  check('A-04: order paid after 1-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_fulfill');
+  check('A-04: EVM /pay 11-confirmation still deferred (ERC20 needs 12)', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
+  check('A-04: order still pending_payment after 11-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_payment');
+  // 12 确认：最新区块推进到 112，收据区块 100 <= 100 → 接受
+  evmLatest = 112;
+  r = await call('POST', '/api/orders/' + ordA04.order_no + '/pay', { txid: txA04 });
+  check('A-04: EVM /pay 12-confirmation accepted', r.json && r.json.ok === true, JSON.stringify(r.json));
+  check('A-04: order paid after 12-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_fulfill');
   env.__fetch = origFetch2;
   globalThis.fetch = origFetch2;
 }

@@ -58,6 +58,22 @@ var POLL_LOCK_MINUTES = 20;
 var TRANSFER_TOPIC0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 var USDT_TRC20_ID = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
 var DEFAULT_RPC_URLS = { 'X Layer': ['https://xlayerrpc.okx.com'], 'ERC20': ['https://eth.llamarpc.com', 'https://rpc.ankr.com/eth'], 'BEP20': ['https://bsc-dataseed.binance.org', 'https://bsc-dataseed1.defibit.io'] };
+// ---- 第四轮（Release Readiness）新增常量 ----
+// 各链确认数策略（可经 settings.chain_confirmations 以 JSON 覆盖）：未达确认数不入账、不履约，防链重组导致已发货但付款失效。
+// X Layer 出块快且重组概率低，1 确认；ERC20 12 确认（约 2.5 分钟）；BEP20 15 确认（约 45 秒）；TRC20 19 确认（约 1 分钟）。
+var DEFAULT_CHAIN_CONFIRMATIONS = { 'X Layer': 1, 'ERC20': 12, 'BEP20': 15, 'TRC20': 19 };
+// /pay 独立限流：同一订单 10 分钟最多 5 次提交；同一 IP 10 分钟最多 20 次提交。受限不影响后台轮询继续处理。
+var PAY_RATE_PER_ORDER = 5;
+var PAY_RATE_PER_IP = 20;
+var PAY_RATE_WINDOW_MS = 10 * 60 * 1000;
+// 登录全局限流（防换 IP 分布式暴力破解）：全站 15 分钟内失败超 30 次时，全部登录拒绝 5 分钟。
+var LOGIN_GLOBAL_MAX_FAIL = 30;
+var LOGIN_GLOBAL_WINDOW_MS = 15 * 60 * 1000;
+var LOGIN_GLOBAL_BLOCK_MS = 5 * 60 * 1000;
+// EVM 扫描分页：每次 eth_getLogs 最多覆盖的区块数，避免单次 RPC 超时。
+var EVM_SCAN_PAGE_BLOCKS = 1000;
+// Tronscan 分页：每页 50 笔，最多页数（评估见 RELEASE_READINESS；命中上限时记警告，不得静默漏账）。
+var TRONSCAN_MAX_PAGES = 20;
 var DEFAULT_USDT_CONTRACTS = { 'X Layer': '', 'ERC20': '0xdAC17F958D2ee523a2206206994597C13D831ec7', 'BEP20': '0x55d398326f99059fF775485246999027B3197955', 'TRC20': 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t' };
 
 function json(data, status) {
@@ -264,6 +280,29 @@ var MIGRATIONS = [
     await env.DB.prepare('DELETE FROM upstream_orders WHERE id NOT IN (SELECT MAX(id) FROM upstream_orders GROUP BY order_id)').run();
     await env.DB.prepare('DROP INDEX IF EXISTS idx_upstream_orders_order').run();
     await createIndexIfMissing(env, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_upstream_orders_order_unique ON upstream_orders(order_id)');
+  } },
+  { version: 8, name: '第四轮：付款账本 + 扫描游标 + /pay 限流 + 金额/联系人唯一性', up: async function (env) {
+    // 付款账本 payments：独立记录每一笔链上付款事件（提交/发现/核验/确认/入账/异常），与订单分离。
+    // 唯一键 (chain, tx_hash, event_key)：同一链上事件（同一交易内同一笔转账）只能入账一次，防重复轮询/并发重复入账。
+    // event_key：EVM 为日志索引（logIndex），TRC20 为区块时间:金额（区分同交易内多笔转账）；/pay 提交时未知先为空，核验后回填。
+    // order_id 不唯一：同一订单可有多笔付款（重复付款/部分付款/超额付款各留独立记录）。
+    await createTableIfMissing(env, "CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, chain TEXT NOT NULL DEFAULT '', asset TEXT NOT NULL DEFAULT 'USDT', pay_address TEXT NOT NULL DEFAULT '', tx_hash TEXT NOT NULL DEFAULT '', event_key TEXT NOT NULL DEFAULT '', amount REAL NOT NULL DEFAULT 0, amount_unit TEXT NOT NULL DEFAULT 'USDT', block_number INTEGER, confirmations INTEGER NOT NULL DEFAULT 0, first_seen_at TEXT NOT NULL DEFAULT (datetime('now')), status TEXT NOT NULL DEFAULT 'submitted', reconcile_status TEXT NOT NULL DEFAULT '', reconcile_note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')))");
+    await createIndexIfMissing(env, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_event_unique ON payments(chain, tx_hash, event_key)');
+    await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(order_id)');
+    await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status)');
+    await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_payments_txhash ON payments(tx_hash)');
+    // 链上扫描游标：每链已扫描到的区块高度，持久化；RPC 失败不推进，重启可恢复。
+    await createTableIfMissing(env, "CREATE TABLE IF NOT EXISTS scan_cursors (chain TEXT PRIMARY KEY, last_block INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now')))");
+    // /pay 独立限流：key 为 order:<订单号> 或 ip:<IP>，计数窗口内条数即提交次数。
+    await createTableIfMissing(env, 'CREATE TABLE IF NOT EXISTS pay_rate (key TEXT NOT NULL, created_at TEXT NOT NULL)');
+    await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_pay_rate_key ON pay_rate(key, created_at)');
+    // 金额唯一性：部分唯一索引，仅约束待付款订单。过期未取消的待付款订单仍占位（轮询 1 分钟内自动取消后释放），
+    // 冲突时下单流程捕获唯一约束错误并重新生成金额，不得静默复用。
+    // 若已有重复待付款金额，建索引会失败，迁移不标记版本，需先手动处理重复订单（见 RELEASE_READINESS 预检）。
+    await createIndexIfMissing(env, "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_amount_claim ON orders(pay_address, actual_amount) WHERE status = 'pending_payment'");
+    // 同联系方式去重原子化：部分唯一索引，仅约束待付款且 contact 非空的订单。同一联系方式 + 同一商品只能有一笔待付款订单，
+    // 与下单时的 SELECT 查重逻辑一致，但由数据库原子保证，消除 TOCTOU 窗口。
+    await createIndexIfMissing(env, "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_contact_pending ON orders(contact, product_id) WHERE status = 'pending_payment' AND contact != ''");
   } }
 ];
 // 执行待迁移：逐个版本 apply，成功才标记版本；任一失败抛错（带版本号与原因），不得伪装成功。
@@ -281,7 +320,7 @@ async function runMigrations(env) {
     } catch (e) {
       throw new Error('数据库迁移失败 v' + m.version + '（' + m.name + '）：' + (e && e.message ? e.message : String(e)) + '。版本未标记，请检查 D1 后重试；数据未被破坏。');
     }
-    await env.DB.prepare('INSERT INTO schema_migrations (version) VALUES (?)').bind(m.version).run();
+    await env.DB.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').bind(m.version).run();
     done.push(m.version);
   }
   return { ok: true, applied: done, current_version: MIGRATIONS.length };
@@ -296,6 +335,173 @@ async function ensureMigrated(env) {
   return await runMigrations(env);
 }
 // 兼容：旧函数名保留为 ensureMigrated 的别名（测试与外部调用仍可使用），不再执行逐请求完整迁移。
+// ---- 第四轮：付款账本（payments）----
+// 状态机：submitted（用户提交 TXID，待核验）→ discovered（轮询发现，待核验）→ verified（链上核验通过）
+//   → confirmed（达到该链确认数）→ posted（已入账，订单履约已触发）。
+// 异常状态：duplicate（同一事件已入账，拒绝重复）、mismatch（金额与订单预期不符，需人工对账）、
+//   unmatched（无法归属订单，需人工对账）。reconciled 由管理员手动标记已处理。
+// 关键：同一链上事件（chain, tx_hash, event_key）唯一，重复轮询/并发提交不得重复入账。
+//   同一订单可有多笔付款（order_id 不唯一），重复/部分/超额付款各留独立记录。
+async function recordPayment(env, p) {
+  // 幂等写入：同一事件已存在时不重复建行，返回现有行。调用方用返回的行决定后续动作。
+  // p: { order_id, chain, asset, pay_address, tx_hash, event_key, amount, block_number, confirmations, status, reconcile_note }
+  var now = nowISO();
+  var row = await env.DB.prepare('SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(p.chain || '', p.tx_hash || '', p.event_key || '').first().catch(function () { return null; });
+  if (row) return { ok: true, payment: row, created: false };
+  var ins = await env.DB.prepare('INSERT INTO payments (order_id, chain, asset, pay_address, tx_hash, event_key, amount, amount_unit, block_number, confirmations, first_seen_at, status, reconcile_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(
+    p.order_id != null ? Number(p.order_id) : null, p.chain || '', p.asset || 'USDT', p.pay_address || '', p.tx_hash || '', p.event_key || '', Number(p.amount) || 0, p.amount_unit || 'USDT',
+    p.block_number != null ? Number(p.block_number) : null, Number(p.confirmations) || 0, now, p.status || 'submitted', p.reconcile_note || '', now, now).run().catch(function () { return null; });
+  if (ins && ins.meta && ins.meta.changes === 1) {
+    var created = await env.DB.prepare('SELECT * FROM payments WHERE id = ?').bind(Number(ins.meta.last_row_id)).first();
+    return { ok: true, payment: created, created: true };
+  }
+  // 并发下唯一冲突：重新读，确认归属
+  var again = await env.DB.prepare('SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(p.chain || '', p.tx_hash || '', p.event_key || '').first().catch(function () { return null; });
+  if (again) return { ok: true, payment: again, created: false };
+  return { ok: false, reason: '付款记录写入失败' };
+}
+async function updatePayment(env, paymentId, fields) {
+  // fields: { status, confirmations, block_number, event_key, order_id, reconcile_status, reconcile_note, amount }
+  var sets = [], binds = [];
+  var allowed = ['status', 'confirmations', 'block_number', 'event_key', 'order_id', 'reconcile_status', 'reconcile_note', 'amount', 'pay_address', 'chain'];
+  for (var i = 0; i < allowed.length; i++) {
+    if (fields[allowed[i]] !== undefined) { sets.push(allowed[i] + ' = ?'); binds.push(fields[allowed[i]]); }
+  }
+  if (!sets.length) return { ok: true };
+  sets.push('updated_at = ?'); binds.push(nowISO());
+  binds.push(Number(paymentId));
+  var stmt = env.DB.prepare('UPDATE payments SET ' + sets.join(', ') + ' WHERE id = ?');
+  var r = await stmt.bind.apply(stmt, binds).run().catch(function () { return null; });
+  if (r && r.meta && r.meta.changes === 1) return { ok: true };
+  return { ok: false, reason: '付款记录更新失败' };
+}
+async function getPaymentByEvent(env, chain, txHash, eventKey) {
+  return await env.DB.prepare('SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(chain || '', txHash || '', eventKey || '').first().catch(function () { return null; });
+}
+async function getRequiredConfirmations(env, chain) {
+  try {
+    var settings = await getAllSettings(env);
+    var map = parseJsonSafe(settings.chain_confirmations, {});
+    var v = Number(map[chain]);
+    if (isFinite(v) && v >= 1) return Math.floor(v);
+  } catch (e) {}
+  var d = Number(DEFAULT_CHAIN_CONFIRMATIONS[chain]);
+  return (isFinite(d) && d >= 1) ? Math.floor(d) : 1;
+}
+// ---- 第四轮：链上扫描游标 ----
+// 每链已扫描到的区块高度。RPC 失败不推进，重启可恢复。游标只在整页扫描成功后推进。
+async function getScanCursor(env, chain) {
+  var row = await env.DB.prepare('SELECT last_block FROM scan_cursors WHERE chain = ?').bind(chain || '').first().catch(function () { return null; });
+  return row ? Number(row.last_block) || 0 : 0;
+}
+async function setScanCursor(env, chain, block) {
+  await env.DB.prepare('INSERT INTO scan_cursors (chain, last_block, updated_at) VALUES (?, ?, ?) ON CONFLICT(chain) DO UPDATE SET last_block = excluded.last_block, updated_at = excluded.updated_at').bind(chain || '', Number(block) || 0, nowISO()).run().catch(function () {});
+}
+// ---- 第四轮：/pay 独立限流 ----
+// key: 'order:<订单号>' 或 'ip:<IP>'。窗口内超限返回 true（应拒绝），否则记一条并返回 false。
+async function checkPayRateLimit(env, req, orderNo) {
+  try {
+    var ip = getClientIp(req);
+    var winStart = new Date(Date.now() - PAY_RATE_WINDOW_MS).toISOString().replace('T', ' ').slice(0, 19);
+    await env.DB.prepare('DELETE FROM pay_rate WHERE created_at < ?').bind(winStart).run().catch(function () {});
+    var oc = await env.DB.prepare('SELECT COUNT(*) as n FROM pay_rate WHERE key = ?').bind('order:' + orderNo).first();
+    if (oc && Number(oc.n) >= PAY_RATE_PER_ORDER) return '该订单提交 TXID 过于频繁，请稍后再试（后台轮询仍会继续核验）';
+    var ic = await env.DB.prepare('SELECT COUNT(*) as n FROM pay_rate WHERE key = ?').bind('ip:' + ip).first();
+    if (ic && Number(ic.n) >= PAY_RATE_PER_IP) return '提交过于频繁，请稍后再试';
+    await env.DB.prepare('INSERT INTO pay_rate (key, created_at) VALUES (?, ?), (?, ?)').bind('order:' + orderNo, nowISO(), 'ip:' + ip, nowISO()).run().catch(function () {});
+    return null;
+  } catch (e) { return null; }
+}
+// ---- 第四轮：登录全局限流（防换 IP 分布式暴力破解）----
+async function checkLoginGlobalRateLimit(env) {
+  try {
+    var winStart = new Date(Date.now() - LOGIN_GLOBAL_WINDOW_MS).toISOString().replace('T', ' ').slice(0, 19);
+    var blockedUntil = await getAdminMeta(env, 'login_global_blocked_until');
+    if (blockedUntil && new Date(String(blockedUntil).replace(' ', 'T') + 'Z').getTime() > Date.now()) return '登录尝试过多，全站登录已临时锁定，请 5 分钟后再试';
+    var row = await env.DB.prepare('SELECT COUNT(*) as n FROM login_attempts WHERE updated_at >= ?').bind(winStart).first();
+    // login_attempts 只记最新一次失败/封禁，无法精确计数全站失败总数；用 admin_meta 累计窗口失败数（recordLoginFail 维护）。
+    var cnt = parseInt(await getAdminMeta(env, 'login_global_fail_count') || '0', 10) || 0;
+    var win = parseInt(await getAdminMeta(env, 'login_global_fail_window') || '0', 10) || 0;
+    if (win && Date.now() - win > LOGIN_GLOBAL_WINDOW_MS) { cnt = 0; }
+    if (cnt >= LOGIN_GLOBAL_MAX_FAIL) {
+      await setAdminMeta(env, 'login_global_blocked_until', new Date(Date.now() + LOGIN_GLOBAL_BLOCK_MS).toISOString().replace('T', ' ').slice(0, 19));
+      return '登录尝试过多，全站登录已临时锁定，请 5 分钟后再试';
+    }
+    return null;
+  } catch (e) { return null; }
+}
+async function recordLoginFailGlobal(env) {
+  try {
+    var win = parseInt(await getAdminMeta(env, 'login_global_fail_window') || '0', 10) || 0;
+    var cnt = parseInt(await getAdminMeta(env, 'login_global_fail_count') || '0', 10) || 0;
+    if (!win || Date.now() - win > LOGIN_GLOBAL_WINDOW_MS) { win = Date.now(); cnt = 0; }
+    await setAdminMeta(env, 'login_global_fail_window', String(win));
+    await setAdminMeta(env, 'login_global_fail_count', String(cnt + 1));
+  } catch (e) {}
+}
+// ---- 第四轮：Schema 预检（只读，不改数据）----
+// 校验实际 Schema 是否与目标版本一致：表、列、索引、关键唯一约束。版本号与 Schema 内容不一致时报告差异，不得静默放行。
+// 返回 { ok, current_version, latest_version, issues: [..], checks: { tables, columns, indexes } }。
+async function precheckSchema(env) {
+  var issues = [];
+  var checks = { tables: [], columns: [], indexes: [] };
+  var expectedTables = {
+    products: ['id', 'slug', 'title', 'category', 'price_usdt', 'source', 'prodseller_id', 'cost_price', 'sell_price', 'requires_email_activation', 'delivery_method', 'stock_type', 'description', 'notice', 'form_fields', 'image_emoji', 'image_data', 'sort', 'is_active', 'in_stock', 'created_at'],
+    cards: ['id', 'product_id', 'code', 'is_used', 'is_disabled', 'order_id', 'reserved_order_id', 'reserved_at', 'created_at'],
+    orders: ['id', 'order_no', 'query_password', 'query_token_hash', 'claim_token', 'claimed_at', 'exception_reason', 'refund_status', 'refund_ref', 'upstream_lock', 'upstream_lock_expires_at', 'product_id', 'product_snapshot', 'quantity', 'price_usdt', 'total_usdt', 'actual_amount', 'pay_address', 'expires_at', 'last_checked_at', 'tx_hash', 'customer_fields', 'contact', 'pay_method', 'pay_chain', 'wallet_address', 'txid', 'status', 'delivery_content', 'admin_note', 'data_expired', 'created_at', 'paid_at', 'fulfilled_at'],
+    settings: ['key', 'value'],
+    admin_meta: ['key', 'value'],
+    upstream_orders: ['id', 'order_id', 'prodseller_order_id', 'status', 'amount', 'delivered_keys', 'created_at'],
+    upstream_cache: ['key', 'payload', 'fetched_at'],
+    sessions: ['token', 'created_at', 'expires_at'],
+    captcha_codes: ['id', 'code_hash', 'expires_at', 'attempts'],
+    order_rate: ['ip', 'created_at'],
+    admin_audit: ['id', 'order_id', 'action', 'before_status', 'after_status', 'note', 'created_at'],
+    login_attempts: ['ip', 'attempts', 'blocked_until', 'updated_at'],
+    txid_claims: ['tx_hash', 'order_id', 'claimed_at'],
+    lookup_rate: ['ip', 'created_at'],
+    schema_migrations: ['version', 'applied_at'],
+    payments: ['id', 'order_id', 'chain', 'asset', 'pay_address', 'tx_hash', 'event_key', 'amount', 'amount_unit', 'block_number', 'confirmations', 'first_seen_at', 'status', 'reconcile_status', 'reconcile_note', 'created_at', 'updated_at'],
+    scan_cursors: ['chain', 'last_block', 'updated_at'],
+    pay_rate: ['key', 'created_at']
+  };
+  var expectedIndexes = [
+    { name: 'idx_upstream_orders_order_unique', unique: 1 },
+    { name: 'idx_payments_event_unique', unique: 1 },
+    { name: 'idx_orders_amount_claim', unique: 1 },
+    { name: 'idx_orders_contact_pending', unique: 1 }
+  ];
+  var curRow = await env.DB.prepare('SELECT MAX(version) AS v FROM schema_migrations').first().catch(function () { return null; });
+  var curV = curRow ? Number(curRow.v || 0) : 0;
+  for (var t in expectedTables) {
+    try {
+      var info = await env.DB.prepare('PRAGMA table_info(' + t + ')').all();
+      var cols = (info.results || []).map(function (r) { return r.name; });
+      if (!cols.length) { issues.push('缺表：' + t); checks.tables.push({ table: t, ok: false, missing: 'table' }); continue; }
+      checks.tables.push({ table: t, ok: true });
+      var missing = [];
+      expectedTables[t].forEach(function (c) { if (cols.indexOf(c) === -1) missing.push(c); });
+      if (missing.length) { issues.push('表 ' + t + ' 缺列：' + missing.join(', ')); checks.columns.push({ table: t, ok: false, missing: missing }); }
+      else checks.columns.push({ table: t, ok: true });
+    } catch (e) { issues.push('预检表 ' + t + ' 失败：' + (e && e.message ? e.message : String(e))); }
+  }
+  try {
+    var idxRows = await env.DB.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL").all();
+    var idxMap = {};
+    (idxRows.results || []).forEach(function (r) { idxMap[r.name] = String(r.sql || ''); });
+    expectedIndexes.forEach(function (ei) {
+      if (!idxMap[ei.name]) { issues.push('缺唯一索引：' + ei.name); checks.indexes.push({ index: ei.name, ok: false, missing: 'index' }); return; }
+      if (ei.unique && idxMap[ei.name].toUpperCase().indexOf('UNIQUE') === -1) { issues.push('索引 ' + ei.name + ' 不是唯一索引'); checks.indexes.push({ index: ei.name, ok: false, missing: 'unique' }); return; }
+      checks.indexes.push({ index: ei.name, ok: true });
+    });
+  } catch (e) { issues.push('预检索引失败：' + (e && e.message ? e.message : String(e))); }
+  // 重复待付款金额检查（会影响 v8 唯一索引建立）
+  try {
+    var dup = await env.DB.prepare("SELECT pay_address, actual_amount, COUNT(*) as c FROM orders WHERE status = 'pending_payment' GROUP BY pay_address, actual_amount HAVING c > 1 LIMIT 5").all();
+    (dup.results || []).forEach(function (r) { issues.push('重复待付款金额：地址 ' + r.pay_address + ' 金额 ' + r.actual_amount + ' 有 ' + r.c + ' 笔'); });
+  } catch (e) {}
+  return { ok: issues.length === 0, current_version: curV, latest_version: MIGRATIONS.length, up_to_date: curV >= MIGRATIONS.length, issues: issues, checks: checks };
+}
 async function logAudit(env, orderId, action, beforeStatus, afterStatus, note) {
   // 返回 true=写入成功，false=写入失败。关键操作调用方必须检查返回值，审计失败不得宣称操作完全成功。
   try {
@@ -393,6 +599,9 @@ async function prodsellerFetch(env, settings, path, opts) {
   return { status: res.status, ok: res.ok, data: data, text: text };
 }
 async function prodsellerCreateOrder(env, settings, order, product, customerFields) {
+  // 履约调用限流（第四轮 P0）：与同步共享 300/15min 计数。超限返回 429 语义，调用方按 pending_upstream + 下次轮询重试，
+  // 不得因限流而误判为上游失败或重复采购。
+  if (!(await checkUpstreamRateLimit(env))) return { status: 429, ok: false, data: null, text: '', error: '上游调用限流（300/15min），下次轮询重试' };
   var body = { productId: product.prodseller_id || product.slug, quantity: order.quantity, email: String(customerFields.contact_email || customerFields.delivery_email || order.contact || '').trim() };
   if (Number(product.requires_email_activation) === 1) {
     body.email = String(customerFields.activation_email || '').trim();
@@ -402,6 +611,7 @@ async function prodsellerCreateOrder(env, settings, order, product, customerFiel
   return r;
 }
 async function prodsellerGetOrder(env, settings, psId) {
+  if (!(await checkUpstreamRateLimit(env))) return { status: 429, ok: false, data: null, text: '', error: '上游调用限流（300/15min），下次轮询重试' };
   return await prodsellerFetch(env, settings, '/orders/' + encodeURIComponent(psId), { method: 'GET' });
 }
 function upstreamStatusOf(data) {
@@ -421,7 +631,10 @@ function upstreamDiscountOf(data) { if (!data) return 0; return Number(data.disc
 async function upsertUpstreamOrder(env, orderId, psId, status, amount, keys) {
   // SQLite UPSERT（ON CONFLICT）：单条语句原子写入，并发下不会产生重复行。
   // 依赖迁移 v7 的唯一索引 idx_upstream_orders_order_unique（upstream_orders.order_id 唯一）。
-  await env.DB.prepare('INSERT INTO upstream_orders (order_id, prodseller_order_id, status, amount, delivered_keys) VALUES (?, ?, ?, ?, ?) ON CONFLICT(order_id) DO UPDATE SET prodseller_order_id=excluded.prodseller_order_id, status=excluded.status, amount=excluded.amount, delivered_keys=excluded.delivered_keys').bind(orderId, psId || '', status || '', Number(amount) || 0, keys || '').run();
+  // 空值保护（第四轮 P0）：已有非空上游订单号 / 已交付 keys 时，空字符串不得覆盖。
+  // 原因：占位行（insufficient_balance / upstream_error 等）传入空 psId；若无条件覆盖，会把已成功的上游单号抹掉，
+  // 导致后续轮询误判为“无上游单号”而重复创建采购。状态与金额仍可更新（状态流转是正常业务）。
+  await env.DB.prepare('INSERT INTO upstream_orders (order_id, prodseller_order_id, status, amount, delivered_keys) VALUES (?, ?, ?, ?, ?) ON CONFLICT(order_id) DO UPDATE SET prodseller_order_id=CASE WHEN excluded.prodseller_order_id = \'\' THEN upstream_orders.prodseller_order_id ELSE excluded.prodseller_order_id END, status=excluded.status, amount=excluded.amount, delivered_keys=CASE WHEN excluded.delivered_keys = \'\' THEN upstream_orders.delivered_keys ELSE excluded.delivered_keys END').bind(orderId, psId || '', status || '', Number(amount) || 0, keys || '').run();
 }
 // ---- Resend 邮件（Workers 用 fetch，不用 SMTP）----
 async function sendEmail(env, to, subject, html) {
@@ -530,13 +743,16 @@ function parseJsonSafe(s, fallback) { try { return JSON.parse(s || ''); } catch 
 function fmtTsPlusMinutes(min) { return new Date(Date.now() + min * 60000).toISOString().replace('T', ' ').slice(0, 19); }
 function amountsEqual(a, b) { return Math.abs(Number(a) - Number(b)) < 0.000001; }
 async function genActualAmount(env, baseTotal, payAddress) {
-  for (var attempt = 0; attempt < 20; attempt++) {
+  // 随机尾数 0.0001-0.0099。SELECT 查重是尽力而为（仍有 TOCTOU 窗口），真正的原子保障是
+  // v8 部分唯一索引 idx_orders_amount_claim + 下单 INSERT 冲突重试（见下单逻辑）。
+  for (var attempt = 0; attempt < 50; attempt++) {
     var tail = (1 + Math.floor(Math.random() * 99)) / 10000;
     var actual = Math.round((Number(baseTotal) + tail) * 10000) / 10000;
     var clash = await env.DB.prepare("SELECT id FROM orders WHERE pay_address = ? AND ABS(actual_amount - ?) < 0.000001 AND status = 'pending_payment' AND expires_at > datetime('now') LIMIT 1").bind(payAddress, actual).first().catch(function () { return null; });
     if (!clash) return actual;
   }
-  // 极小概率 20 次都冲突：用毫秒尾数兜底
+  // 50 次都冲突（极小概率，地址繁忙）：返回毫秒尾数候选，仍由 INSERT 唯一约束做最终裁决；
+  // 若 INSERT 也冲突，下单逻辑会重新生成并重试，不得静默复用冲突金额。
   return Math.round((Number(baseTotal) + (Date.now() % 100) / 10000) * 10000) / 10000;
 }
 function padAddressTopic(addr) { return '0x' + '000000000000000000000000' + String(addr).slice(2).toLowerCase(); }
@@ -549,13 +765,15 @@ async function rpcCall(fetchFn, rpcUrl, method, params) {
   return j.result;
 }
 // TRC20：Tronscan token_trc20/transfers，匹配 to + 金额 + token + 时间。
-// 分页：共享收款地址在忙时 1 分钟内可收到 >50 笔，单页 limit=50 会漏到账。按 start 偏移逐页取，最多 10 页（500 笔）；
+// 分页：共享收款地址在忙时 1 分钟内可收到 >50 笔，单页 limit=50 会漏到账。按 start 偏移逐页取，最多 TRONSCAN_MAX_PAGES 页（20 页 = 1000 笔）；
 // 某页已全部早于订单创建时间（减 1 分钟缓冲）时停止（后续页只会更早，不会含本订单的到账）。
+// 分页上限评估（第四轮 P0）：20 页基于 Tronscan 单地址高频收款场景（1 分钟内 >1000 笔 USDT 转账的地址极少）；
+// 若命中上限且未找到本订单付款，记 console 警告（不得静默漏账），运营需人工在 Tronscan 核查该地址的转账并手动对账。
 async function checkTrc20Payment(fetchFn, payAddress, actualAmount, createdAtISO) {
   var createdMs = Date.parse(String(createdAtISO).replace(' ', 'T') + 'Z') || 0;
   var start = 0;
   var pageSize = 50;
-  for (var page = 0; page < 10; page++) {
+  for (var page = 0; page < TRONSCAN_MAX_PAGES; page++) {
     var url = 'https://apilist.tronscanapi.com/api/token_trc20/transfers?limit=' + pageSize + '&start=' + start + '&toAddress=' + encodeURIComponent(payAddress);
     var res = await fetchFn(url);
     if (!res.ok) throw new Error('Tronscan HTTP ' + res.status);
@@ -589,12 +807,19 @@ async function checkTrc20Payment(fetchFn, payAddress, actualAmount, createdAtISO
     if (list.length < pageSize) break; // 最后一页
     if (oldestTsInPage !== Infinity && oldestTsInPage < createdMs - 60000) break; // 本页已全部早于订单创建时间
     start += pageSize;
+    if (page === TRONSCAN_MAX_PAGES - 1) {
+      // 命中分页上限且未找到付款：不得静默漏账，记警告供运营人工核查。
+      try { console.warn('Tronscan 分页上限命中（' + TRONSCAN_MAX_PAGES + ' 页），地址 ' + payAddress + ' 可能漏检，请人工核查 Tronscan 转账并对账'); } catch (e) {}
+    }
   }
   return null;
 }
-// EVM/X Layer：eth_getLogs 查 USDT Transfer，至少 1 确认
-async function checkEvmPayment(fetchFn, rpcUrls, contract, payAddress, actualAmount) {
+// EVM/X Layer：eth_getLogs 查 USDT Transfer，至少 requiredConfirmations 确认（各链策略，见 DEFAULT_CHAIN_CONFIRMATIONS）。
+// opts: { requiredConfirmations, fromBlockOverride }。fromBlockOverride 用于游标扫描；未传时回溯 200 区块（兼容旧口径）。
+async function checkEvmPayment(fetchFn, rpcUrls, contract, payAddress, actualAmount, opts) {
   if (!contract || !contract.startsWith('0x')) return null;
+  opts = opts || {};
+  var requiredConf = Number(opts.requiredConfirmations) || 1;
   var expected = BigInt(Math.round(Number(actualAmount) * 1000000));
   var toTopic = padAddressTopic(payAddress);
   for (var ri = 0; ri < rpcUrls.length; ri++) {
@@ -603,8 +828,12 @@ async function checkEvmPayment(fetchFn, rpcUrls, contract, payAddress, actualAmo
       var latestHex = await rpcCall(fetchFn, rpc, 'eth_blockNumber', []);
       var latest = parseInt(latestHex, 16);
       if (!isFinite(latest) || latest <= 0) continue;
-      var fromBlock = Math.max(0, latest - 200);
-      var logs = await rpcCall(fetchFn, rpc, 'eth_getLogs', [{ address: contract, fromBlock: toHex(fromBlock), toBlock: toHex(latest), topics: [TRANSFER_TOPIC0, null, toTopic] }]);
+      var fromBlock = (opts.fromBlockOverride != null) ? Number(opts.fromBlockOverride) : Math.max(0, latest - 200);
+      if (!isFinite(fromBlock) || fromBlock < 0) fromBlock = Math.max(0, latest - 200);
+      if (fromBlock > latest) continue;
+      var toBlock = latest - requiredConf;
+      if (toBlock < fromBlock) continue; // 未达到确认数的区块不扫描（防重组）
+      var logs = await rpcCall(fetchFn, rpc, 'eth_getLogs', [{ address: contract, fromBlock: toHex(fromBlock), toBlock: toHex(toBlock), topics: [TRANSFER_TOPIC0, null, toTopic] }]);
       if (!Array.isArray(logs)) continue;
       for (var i = 0; i < logs.length; i++) {
         var lg = logs[i];
@@ -612,15 +841,104 @@ async function checkEvmPayment(fetchFn, rpcUrls, contract, payAddress, actualAmo
         if (topics.length < 3 || String(topics[0]).toLowerCase() !== TRANSFER_TOPIC0) continue;
         if (String(topics[2]).toLowerCase() !== toTopic) continue;
         var blk = parseInt(lg.blockNumber, 16);
-        if (isFinite(blk) && blk > latest - 1) continue; // 至少 1 确认
+        if (!isFinite(blk)) continue;
         var val = 0n;
         try { val = BigInt(lg.data || '0x0'); } catch (e) { continue; }
         if (val !== expected) continue;
-        if (lg.transactionHash) return { txHash: String(lg.transactionHash), amount: Number(actualAmount) };
+        if (lg.transactionHash) return { txHash: String(lg.transactionHash), amount: Number(actualAmount), blockNumber: blk, logIndex: lg.logIndex != null ? String(lg.logIndex) : '', confirmations: (latest - blk) };
       }
     } catch (e) { continue; }
   }
   return null;
+}
+// 全局 EVM 扫描（第四轮 P0）：按链游标分页扫描，补扫漏检，重启可恢复。
+// 扫描范围：[cursor, latest - requiredConfirmations]，按 EVM_SCAN_PAGE_BLOCKS 分页；整页成功后才推进游标，RPC 失败不推进。
+// 对每个 Transfer 日志：记付款账本（discovered），按 to + 金额匹配待付款订单，匹配到且确认数足够时触发履约并记 posted。
+// 返回 { scanned: 扫描日志数, matched: 匹配到账数, fulfilled: 履约数 }。游标失败不抛错（下次轮询重试）。
+async function scanEvmChain(env, fetchFn, ctx, chain, pendingOrders) {
+  var settings = await getAllSettings(env);
+  var contracts = parseJsonSafe(settings.usdt_contracts, {});
+  var contract = contracts[chain] || DEFAULT_USDT_CONTRACTS[chain] || '';
+  var rpcMap = parseJsonSafe(settings.rpc_urls, {});
+  var rpcs = rpcMap[chain] || DEFAULT_RPC_URLS[chain] || [];
+  if (!contract || !contract.startsWith('0x') || !rpcs.length || !pendingOrders.length) return { scanned: 0, matched: 0, fulfilled: 0 };
+  var requiredConf = await getRequiredConfirmations(env, chain);
+  var cursor = await getScanCursor(env, chain);
+  var out = { scanned: 0, matched: 0, fulfilled: 0 };
+  // 按待付款订单的收款地址去重，只扫有待付款订单的地址，减少 RPC 调用。
+  var addrSet = {};
+  pendingOrders.forEach(function (o) { var a = String(o.pay_address || o.wallet_address || '').toLowerCase(); if (a) addrSet[a] = o.pay_address || o.wallet_address; });
+  var addrs = Object.keys(addrSet);
+  for (var ai = 0; ai < addrs.length; ai++) {
+    var addr = addrSet[addrs[ai]];
+    var toTopic = padAddressTopic(addr);
+    // 本地址的待付款订单（按金额索引，便于匹配）
+    var byAmount = {};
+    pendingOrders.forEach(function (o) { if (String(o.pay_address || o.wallet_address || '').toLowerCase() === addrs[ai]) byAmount[String(Number(o.actual_amount || o.total_usdt))] = o; });
+    for (var ri = 0; ri < rpcs.length; ri++) {
+      try {
+        var latestHex = await rpcCall(fetchFn, rpcs[ri], 'eth_blockNumber', []);
+        var latest = parseInt(latestHex, 16);
+        if (!isFinite(latest) || latest <= 0) continue;
+        var endBlock = latest - requiredConf;
+        if (endBlock < 0) endBlock = 0;
+        // 首次扫描（游标为 0）时回溯 200 区块（与旧口径一致），避免从创世区块全量扫描。
+        var startBlock = cursor > 0 ? cursor : Math.max(0, latest - 200);
+        if (startBlock > endBlock) continue;
+        var pageFrom = startBlock;
+        var scannedTo = startBlock;
+        while (pageFrom <= endBlock) {
+          var pageTo = Math.min(pageFrom + EVM_SCAN_PAGE_BLOCKS - 1, endBlock);
+          var logs = await rpcCall(fetchFn, rpcs[ri], 'eth_getLogs', [{ address: contract, fromBlock: toHex(pageFrom), toBlock: toHex(pageTo), topics: [TRANSFER_TOPIC0, null, toTopic] }]);
+          if (!Array.isArray(logs)) break; // 本 RPC 异常，停在本页，不推进游标，下次重试
+          for (var li = 0; li < logs.length; li++) {
+            var lg = logs[li];
+            var topics = lg.topics || [];
+            if (topics.length < 3 || String(topics[0]).toLowerCase() !== TRANSFER_TOPIC0) continue;
+            if (String(topics[2]).toLowerCase() !== toTopic) continue;
+            var blk = parseInt(lg.blockNumber, 16);
+            if (!isFinite(blk)) continue;
+            var val = 0n;
+            try { val = BigInt(lg.data || '0x0'); } catch (e) { continue; }
+            var amt = Number(val) / 1000000;
+            out.scanned++;
+            var matchedOrder = byAmount[String(Number(amt))];
+            if (!matchedOrder) {
+              // 无法归属订单：记 unmatched，供人工对账（不得静默丢弃）。
+              try { await recordPayment(env, { order_id: null, chain: chain, pay_address: addr, tx_hash: String(lg.transactionHash || ''), event_key: lg.logIndex != null ? String(lg.logIndex) : '', amount: amt, block_number: blk, confirmations: latest - blk, status: 'unmatched', reconcile_status: 'pending', reconcile_note: '全局扫描发现，无法归属订单' }); } catch (e) {}
+              continue;
+            }
+            out.matched++;
+            // 账本：发现 → 核验通过 → 确认数足够 → 履约 → 入账。同一事件重复扫描时 recordPayment 返回已有行，不重复建行。
+            var evKey = lg.logIndex != null ? String(lg.logIndex) : '';
+            var rec = await recordPayment(env, { order_id: matchedOrder.id, chain: chain, pay_address: addr, tx_hash: String(lg.transactionHash || ''), event_key: evKey, amount: amt, block_number: blk, confirmations: latest - blk, status: 'discovered', reconcile_note: '全局扫描发现' }).catch(function () { return null; });
+            var payRow = rec && rec.payment ? rec.payment : null;
+            if (payRow && payRow.status === 'posted') continue; // 已入账，跳过（防重复发货）
+            if (payRow) { try { await updatePayment(env, payRow.id, { status: 'confirmed', confirmations: latest - blk }); } catch (e) {} }
+            // 金额必须与订单预期精确匹配（amountsEqual），否则记 mismatch，不得履约。
+            if (!amountsEqual(amt, matchedOrder.actual_amount || matchedOrder.total_usdt)) {
+              if (payRow) { try { await updatePayment(env, payRow.id, { status: 'mismatch', reconcile_status: 'pending', reconcile_note: '金额与订单预期不符，需人工对账' }); } catch (e) {} }
+              continue;
+            }
+            var r = await fulfillOrderByPayment(env, matchedOrder, String(lg.transactionHash || ''), ctx, { txVerified: true });
+            if (r.ok && (r.mode === 'completed' || r.mode === 'pending_fulfill' || r.mode === 'out_of_stock' || r.mode === 'pending_activation' || r.mode === 'pending_upstream')) {
+              out.fulfilled++;
+              if (payRow) { try { await updatePayment(env, payRow.id, { status: 'posted' }); } catch (e) {} }
+            }
+          }
+          scannedTo = pageTo + 1;
+          pageFrom = pageTo + 1;
+        }
+        // 整页成功后推进游标（只推进本地址本 RPC 的成功扫描；多地址共享游标时取最大值，避免回退）。
+        if (scannedTo > startBlock) {
+          var curNow = await getScanCursor(env, chain);
+          if (scannedTo > curNow) await setScanCursor(env, chain, scannedTo);
+        }
+        break; // 本地址用第一个可用 RPC 扫完即停，不重复扫其他 RPC
+      } catch (e) { continue; }
+    }
+  }
+  return out;
 }
 async function checkChainPayment(env, fetchFn, order) {
   var settings = await getAllSettings(env);
@@ -630,7 +948,8 @@ async function checkChainPayment(env, fetchFn, order) {
   var rpcMap = parseJsonSafe(settings.rpc_urls, {});
   var rpcs = rpcMap[order.pay_chain] || DEFAULT_RPC_URLS[order.pay_chain] || [];
   if (!rpcs.length) return null;
-  return await checkEvmPayment(fetchFn, rpcs, contract, order.pay_address || order.wallet_address, order.actual_amount || order.total_usdt);
+  var reqConf = await getRequiredConfirmations(env, order.pay_chain);
+  return await checkEvmPayment(fetchFn, rpcs, contract, order.pay_address || order.wallet_address, order.actual_amount || order.total_usdt, { requiredConfirmations: reqConf });
 }
 async function checkTxidPayment(env, fetchFn, order, txid) {
   // 按需核验：用户主动提交 TXID 时复用同一链上核验（TRC20 查单笔，EVM 查 receipt 日志）
@@ -666,12 +985,13 @@ async function checkTxidPayment(env, fetchFn, order, txid) {
       try {
         var receipt = await rpcCall(fetchFn, rpcs[ri], 'eth_getTransactionReceipt', [txid]);
         if (!receipt || receipt.status !== '0x1') continue;
-        // 至少 1 确认（与轮询口径一致）：收据区块号必须 <= 最新区块 - 1，否则为 0 确认，跳过（防链重组导致已发货但付款失效）。
+        // 确认数：按该链确认策略（不再全链 1 确认）。收据区块号必须 <= 最新区块 - requiredConf，否则确认不足，跳过（防链重组导致已发货但付款失效）。
         try {
           var latestHex = await rpcCall(fetchFn, rpcs[ri], 'eth_blockNumber', []);
           var latestBn = parseInt(latestHex, 16);
           var receiptBn = parseInt(receipt.blockNumber, 16);
-          if (!isFinite(latestBn) || !isFinite(receiptBn) || receiptBn > latestBn - 1) continue;
+          var reqConfTxid = await getRequiredConfirmations(env, order.pay_chain);
+          if (!isFinite(latestBn) || !isFinite(receiptBn) || receiptBn > latestBn - reqConfTxid) continue;
         } catch (e) { continue; }
         var logs = receipt.logs || [];
         for (var li = 0; li < logs.length; li++) {
@@ -873,6 +1193,12 @@ async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
       return { ok: true, mode: 'pending_activation' };
     }
     // 无上游单号：创建（Idempotency-Key=order_no，ProdSeller 侧去重；即使上次请求已发出但未保存响应，重试也不会重复扣费）。
+    // ProdSeller 功能门禁（第四轮 P0）：门禁关闭时禁止发起真实采购，转 pending_upstream 等人工处理。
+    if (String(settings.prodseller_enabled || '0') !== '1') {
+      await env.DB.prepare("UPDATE orders SET status='pending_upstream', admin_note=? WHERE id=? AND claim_token=?").bind('上游门禁关闭（prodseller_enabled != 1），未发起真实采购，等待人工处理', o.id, claimToken).run();
+      await upsertUpstreamOrder(env, o.id, '', 'gateway_closed', 0, '');
+      return { ok: true, mode: 'pending_upstream', reason: 'gateway_closed' };
+    }
     var cr = await prodsellerCreateOrder(env, settings, o, prod, cf);
     if (cr.status === 402) {
       await env.DB.prepare("UPDATE orders SET status='pending_upstream', admin_note=? WHERE id=? AND claim_token=?").bind('上游余额不足（402），后台置顶告警，不发货', o.id, claimToken).run();
@@ -972,11 +1298,38 @@ async function runPolling(env, fetchFn, ctx) {
       var hit = null;
       try { hit = await checkChainPayment(env, fetchFn, o); } catch (e) { hit = null; }
       if (hit && hit.txHash) {
+        // 账本：轮询发现 → 核验通过 → 确认数足够（checkChainPayment 已按各链确认策略过滤）→ 履约 → 入账。
+        // event_key：EVM 为 logIndex，TRC20 为 block_ts:quant（区分同交易多笔转账）。
+        var evKey = '';
+        if (hit.logIndex != null && hit.logIndex !== '') evKey = String(hit.logIndex);
+        else if (o.pay_chain === 'TRC20' && hit.blockTs) evKey = String(hit.blockTs) + ':' + String(hit.amount);
+        var prec = await recordPayment(env, { order_id: o.id, chain: o.pay_chain, pay_address: o.pay_address || o.wallet_address, tx_hash: hit.txHash, event_key: evKey, amount: hit.amount != null ? hit.amount : (o.actual_amount || o.total_usdt), block_number: hit.blockNumber != null ? hit.blockNumber : null, confirmations: hit.confirmations != null ? hit.confirmations : 0, status: 'verified', reconcile_note: '轮询发现并核验通过' }).catch(function () { return null; });
+        var payRow = prec && prec.payment ? prec.payment : null;
+        if (payRow && payRow.status === 'posted') continue; // 已入账，跳过（防重复发货）
+        // 金额必须与订单预期精确匹配，否则记 mismatch，不得履约（checkChainPayment 已按金额过滤，此处为二次防御）。
+        if (!amountsEqual(hit.amount != null ? hit.amount : (o.actual_amount || o.total_usdt), o.actual_amount || o.total_usdt)) {
+          if (payRow) { try { await updatePayment(env, payRow.id, { status: 'mismatch', reconcile_status: 'pending', reconcile_note: '金额与订单预期不符，需人工对账' }); } catch (e) {} }
+          continue;
+        }
         var r = await fulfillOrderByPayment(env, o, hit.txHash, ctx, { txVerified: true });
         if (r.ok && r.mode === 'completed') fulfilled++;
+        if (r.ok && (r.mode === 'completed' || r.mode === 'pending_fulfill' || r.mode === 'out_of_stock' || r.mode === 'pending_activation' || r.mode === 'pending_upstream')) {
+          if (payRow) { try { await updatePayment(env, payRow.id, { status: 'posted', confirmations: hit.confirmations != null ? hit.confirmations : 0 }); } catch (e) {} }
+        }
       }
     } catch (e) { continue; }
   }
+  // 全局 EVM 游标扫描（第四轮 P0）：补扫逐单检查可能漏掉的到账（回溯窗口不足 / 停机后恢复 / 延迟到账）。
+  // 按链分组待付款订单，只扫有待付款订单的链与地址；游标持久化，RPC 失败不推进。
+  try {
+    var evmChains = {};
+    list.forEach(function (o) { if (o.pay_chain && o.pay_chain !== 'TRC20' && o.pay_chain !== '站内转账') evmChains[o.pay_chain] = 1; });
+    for (var ch in evmChains) {
+      var chainOrders = list.filter(function (o) { return o.pay_chain === ch; });
+      var scanRes = await scanEvmChain(env, fetchFn, ctx, ch, chainOrders);
+      fulfilled += (scanRes.fulfilled || 0);
+    }
+  } catch (e) { /* 全局扫描失败不影响逐单结果，下次轮询重试 */ }
   return { ok: true, checked: checked, fulfilled: fulfilled, expired: expired };
 }
 function sanitizeOrderForPublic(o, level) {
@@ -1017,7 +1370,36 @@ function sanitizeOrderForPublic(o, level) {
   }
   return out;
 }
-// 验证码校验（一次性、5 分钟过期、最多试 3 次）：通过返回 null，不通过返回错误文案
+// ---- 第四轮：Cloudflare Turnstile 服务端校验（可选开启）----
+// 配置：settings.turnstile_enabled='1' 开启；settings.turnstile_site_key 为公开 site key（可存 settings）；
+// 密钥必须经环境变量 TURNSTILE_SECRET_KEY 注入，绝不写进代码/settings/日志。
+// 安全语义：开启后必须服务端校验 token；密钥缺失时 fail-closed（拒绝请求），绝不静默降级为无验证。
+// 本地测试：经 env.__fetch 注入 mock fetch 拦截 siteverify 请求（生产环境无此 mock）。
+// 服务不可用时：siteverify 返回非 success 或网络异常 → 拒绝请求（fail-closed），用户刷新重试。
+async function verifyTurnstile(env, token, remoteIp) {
+  var settings = await getAllSettings(env);
+  if (String(settings.turnstile_enabled || '0') !== '1') return null; // 未开启：走 SVG 验证码路径（调用方决定）
+  var secret = (env && env.TURNSTILE_SECRET_KEY) || '';
+  if (!secret) return '反机器人验证未配置（Turnstile 密钥缺失），请联系管理员';
+  if (!token) return '请完成反机器人验证';
+  try {
+    var res = await getFetch(env)('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'secret=' + encodeURIComponent(secret) + '&response=' + encodeURIComponent(String(token)) + (remoteIp ? '&remoteip=' + encodeURIComponent(remoteIp) : '')
+    });
+    var j = null;
+    try { j = await res.json(); } catch (e) { j = null; }
+    if (!j || j.success !== true) return '反机器人验证失败，请刷新后重试';
+    return null;
+  } catch (e) {
+    return '反机器人验证服务暂不可用，请稍后重试';
+  }
+}
+// 验证码校验（一次性、5 分钟过期、最多试 3 次）：通过返回 null，不通过返回错误文案。
+// 并发重放修复（第四轮 P0）：成功路径用单条原子 DELETE（WHERE id + code_hash）认领验证码，
+// 两个并发请求同时验同一验证码时，只有一个 DELETE 能命中（changes=1），另一个 changes=0 视为已被消费，拒绝。
+// 失败路径的 attempts 递增仍为尽力而为（并发下可能多获得一次尝试，但成功路径已原子化，无法绕过校验）。
 async function verifyCaptcha(env, capId, capCode) {
   capId = String(capId || '').trim();
   capCode = String(capCode || '').trim().toUpperCase();
@@ -1025,13 +1407,16 @@ async function verifyCaptcha(env, capId, capCode) {
   var capRow = await env.DB.prepare('SELECT * FROM captcha_codes WHERE id = ?').bind(capId).first();
   if (!capRow || String(capRow.expires_at) < nowISO()) { if (capRow) { try { await env.DB.prepare('DELETE FROM captcha_codes WHERE id = ?').bind(capId).run(); } catch (e) {} } return '验证码已过期，请刷新后重试'; }
   if (Number(capRow.attempts) >= CAPTCHA_MAX_ATTEMPTS) { try { await env.DB.prepare('DELETE FROM captcha_codes WHERE id = ?').bind(capId).run(); } catch (e) {} return '验证码尝试次数过多，请刷新后重试'; }
-  if ((await sha256Hex(capCode)) !== String(capRow.code_hash)) {
+  var inputHash = await sha256Hex(capCode);
+  if (inputHash !== String(capRow.code_hash)) {
     var att = Number(capRow.attempts) + 1;
     if (att >= CAPTCHA_MAX_ATTEMPTS) { try { await env.DB.prepare('DELETE FROM captcha_codes WHERE id = ?').bind(capId).run(); } catch (e) {} return '验证码错误次数过多，请刷新后重试'; }
     try { await env.DB.prepare('UPDATE captcha_codes SET attempts = ? WHERE id = ?').bind(att, capId).run(); } catch (e) {}
     return '验证码错误，请重新输入';
   }
-  try { await env.DB.prepare('DELETE FROM captcha_codes WHERE id = ?').bind(capId).run(); } catch (e) {}
+  // 成功：原子认领（DELETE 条件含 code_hash）。并发下只有一个请求能删到行，另一个视为已被消费。
+  var del = await env.DB.prepare('DELETE FROM captcha_codes WHERE id = ? AND code_hash = ?').bind(capId, inputHash).run().catch(function () { return null; });
+  if (!del || !del.meta || del.meta.changes !== 1) return '验证码已被使用，请刷新后重试';
   return null;
 }
 async function cleanupExpired(env) {
@@ -1110,7 +1495,10 @@ async function handleApi(req, env, url, ctx) {
       pay_tutorials: tutorials,
       pay_methods: PAY_METHODS,
       pay_chains: PAY_CHAINS,
-      cny_rate: Number(s.cny_rate || 7.2) || 7.2
+      cny_rate: Number(s.cny_rate || 7.2) || 7.2,
+      // Turnstile：仅暴露开关与公开 site key（密钥绝不经公开接口返回）。
+      turnstile_enabled: String(s.turnstile_enabled || '0') === '1',
+      turnstile_site_key: String(s.turnstile_site_key || '')
     }});
   }
 
@@ -1154,9 +1542,16 @@ async function handleApi(req, env, url, ctx) {
     var qty = Number(body.quantity || 1);
     if (!productId || qty < 1 || qty > 99 || !Number.isInteger(qty)) return err('商品或数量无效');
     if (!validPayMethod(body.pay_method) || !validPayChain(body.pay_chain) || !validPayCombo(body.pay_method, body.pay_chain)) return err('支付方式或链无效（币安 UID 只能配站内转账）');
-    // 人机验证：验证码一次性、5 分钟过期、最多试 3 次
-    var capErrOrder = await verifyCaptcha(env, body.captcha_id, body.captcha_code);
-    if (capErrOrder) return err(capErrOrder);
+    // 人机验证：Turnstile 开启时服务端校验 Turnstile token（fail-closed）；未开启时走 SVG 验证码（一次性、5 分钟过期、最多试 3 次）。
+    // Turnstile 密钥缺失时 verifyTurnstile 返回错误，绝不静默降级为无验证。
+    var settingsForCaptcha = await getAllSettings(env);
+    if (String(settingsForCaptcha.turnstile_enabled || '0') === '1') {
+      var tsErr = await verifyTurnstile(env, body.turnstile_token, getClientIp(req));
+      if (tsErr) return err(tsErr);
+    } else {
+      var capErrOrder = await verifyCaptcha(env, body.captcha_id, body.captcha_code);
+      if (capErrOrder) return err(capErrOrder);
+    }
     // 同一联系方式只能有一笔待付款订单（只算未过期的；过期订单由 cron 取消，不再占位）
     // 放限流前面：被重复下单挡住的尝试不占限流名额，用户重试始终看到明确的重复提示
     var custEarly = body.customer_fields || {};
@@ -1180,6 +1575,12 @@ async function handleApi(req, env, url, ctx) {
 
     var prod = await env.DB.prepare('SELECT * FROM products WHERE id = ? AND is_active = 1').bind(productId).first();
     if (!prod) return err('商品不存在', 404);
+    // ProdSeller 功能门禁（第四轮 P0）：上游真实行为（Idempotency-Key、状态枚举、402/409/429 语义、限速）尚未获得真实服务商证据，
+    // 默认关闭。门禁关闭时，上游商品禁止下单，避免进入真实自动采购流程。解除门禁需在 RELEASE_READINESS 中提供证据并由管理员显式开启。
+    var settingsEarly = await getAllSettings(env);
+    if (prod.source === 'prodseller' && String(settingsEarly.prodseller_enabled || '0') !== '1') {
+      return err('该商品暂未开放购买（上游服务验证中，请联系客服）', 403);
+    }
     var fields = []; try { fields = JSON.parse(prod.form_fields || '[]'); } catch (e) { fields = []; }
     var cust = body.customer_fields || {};
     if (typeof cust !== 'object') return err('客户字段无效');
@@ -1233,7 +1634,29 @@ async function handleApi(req, env, url, ctx) {
       actualAmount = await genActualAmount(env, total, wallet);
     }
     var snapshot = JSON.stringify({ id: prod.id, slug: prod.slug, title: prod.title, category: prod.category, price_usdt: effPrice, source: prod.source || 'self', requires_email_activation: Number(prod.requires_email_activation || 0), delivery_method: prod.delivery_method || 'both' });
-    await env.DB.prepare('INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(orderNo, '', queryTokenHash, productId, snapshot, qty, effPrice, total, actualAmount, wallet, expiresAt, JSON.stringify(cust), contact, body.pay_method, body.pay_chain, wallet, 'pending_payment', nowISO()).run();
+    // INSERT 原子重试（第四轮 P0）：SELECT 查重有 TOCTOU 窗口，真正的原子保障是 v8 唯一索引。
+    // 金额冲突（pay_address + actual_amount）→ 重新生成金额并重试，最多 5 次；联系人冲突（contact + product_id）→ 返回明确重复提示。
+    // 冲突时绝不静默复用冲突金额，也绝不把联系人冲突误判为金额冲突。
+    var insertedOrderNo = null;
+    for (var insAttempt = 0; insAttempt < 5; insAttempt++) {
+      try {
+        await env.DB.prepare('INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(orderNo, '', queryTokenHash, productId, snapshot, qty, effPrice, total, actualAmount, wallet, expiresAt, JSON.stringify(cust), contact, body.pay_method, body.pay_chain, wallet, 'pending_payment', nowISO()).run();
+        insertedOrderNo = orderNo;
+        break;
+      } catch (e) {
+        var emsg = String((e && e.message) || e || '');
+        var isUnique = /UNIQUE constraint/i.test(emsg) || /unique/i.test(emsg);
+        if (!isUnique) throw e;
+        // 联系人冲突：contact + product_id 唯一索引（部分索引，列名含 contact）
+        if (/contact/i.test(emsg)) return err('该联系方式已有一笔待付款订单，请先完成付款或等它超时取消后再下单');
+        // 金额冲突：重新生成金额并重试（非 BinanceUID 才有随机尾数；BinanceUID 金额 = total，无随机尾数，不重试）
+        if (body.pay_method === 'BinanceUID') throw e;
+        if (insAttempt >= 4) return err('系统繁忙，金额分配冲突，请稍后重试');
+        actualAmount = await genActualAmount(env, total, wallet);
+        continue;
+      }
+    }
+    if (!insertedOrderNo) return err('系统繁忙，请稍后重试');
     // 自营卡密/成品号：下单后立即预留卡密；预留失败说明已被别人抢完，删单并报错，绝不静默创建注定无法交付的订单。
     if (prod.source === 'self' && (prod.stock_type === 'card' || prod.category === 'account')) {
       var newOrder = await env.DB.prepare('SELECT id FROM orders WHERE order_no = ?').bind(orderNo).first();
@@ -1258,15 +1681,10 @@ async function handleApi(req, env, url, ctx) {
     try { await env.DB.prepare('INSERT INTO lookup_rate (ip, created_at) VALUES (?, ?)').bind(ip, nowISO()).run(); } catch (e) {}
     return null;
   }
-  // 按邮箱查订单列表：邮箱本身不是身份凭证，只返回订单概要（无交付内容、无客户隐私字段）。
+  // 按邮箱查订单列表：已关闭（第四轮 P0，E-02）。邮箱本身不是身份凭证，仅凭邮箱即可枚举购买历史属隐私泄露。
+  // 统一入口：订单号 + 高强度查单凭证（POST /api/orders/:no/lookup）。无邮箱 OTP 兼容路径（邮件已移除，无法发送 OTP）。
   if (path === '/api/orders' && method === 'GET') {
-    var contactQ = String(url.searchParams.get('contact') || '').trim();
-    if (!contactQ) return err('请填写邮箱地址');
-    var rateErrEmail = await checkLookupRateLimit(env, req);
-    if (rateErrEmail) return err(rateErrEmail, 429);
-    var rows = await env.DB.prepare("SELECT * FROM orders WHERE LOWER(contact) = LOWER(?) OR LOWER(json_extract(customer_fields, '$.contact_email')) = LOWER(?) ORDER BY created_at DESC LIMIT 50").bind(contactQ, contactQ).all();
-    var list = (rows.results || []).map(function (r) { return sanitizeOrderForPublic(r, 'summary'); });
-    return json({ ok: true, orders: list });
+    return err('邮箱查单已关闭，请使用订单号 + 查单凭证查询（下单成功页展示一次）', 410);
   }
   // GET 单订单：仅返回概要（不含交付内容与客户隐私），绝不经 URL 凭证返回敏感数据。
   // 完整详情必须走 POST /api/orders/:no/lookup（凭证在请求体中，不进 URL/日志）。
@@ -1307,6 +1725,16 @@ async function handleApi(req, env, url, ctx) {
     var o2 = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ?').bind(no2).first();
     if (!o2) return err('订单不存在', 404);
     if (o2.status !== 'pending_payment') return err('当前状态不可提交 TXID');
+    // /pay 独立限流（第四轮 P0）：同一订单 10 分钟最多 5 次，同一 IP 10 分钟最多 20 次。
+    // 受限不影响后台轮询继续核验已到账的付款，订单不会因限流永久无法处理。
+    var payRateErr = await checkPayRateLimit(env, req, no2);
+    if (payRateErr) return err(payRateErr, 429);
+    // 付款账本：提交时先记一笔 submitted（event_key 未知为空，核验后回填）。同一 (chain, tx_hash, '') 重复提交不重复建行。
+    // BinanceUID 无链上 TXID，不记链上付款账本（站内转账走管理员手动核对）。
+    var payRec = null;
+    if (o2.pay_method !== 'BinanceUID') {
+      try { var pr = await recordPayment(env, { order_id: o2.id, chain: o2.pay_chain, pay_address: o2.pay_address || o2.wallet_address, tx_hash: txid, event_key: '', amount: o2.actual_amount || o2.total_usdt, status: 'submitted', reconcile_note: '用户经 /pay 提交' }); payRec = pr.payment || null; } catch (e) { payRec = null; }
+    }
     // 币安 UID 站内转账：无链上 TXID，只存内部订单 ID，走手动核对
     if (o2.pay_method === 'BinanceUID') {
       await env.DB.prepare('UPDATE orders SET txid = ?, tx_hash = ? WHERE order_no = ?').bind(txid, txid, no2).run();
@@ -1317,11 +1745,20 @@ async function handleApi(req, env, url, ctx) {
     var hit = null;
     try { hit = await checkTxidPayment(env, fetch, o2, txid); } catch (e) { hit = null; }
     if (hit && hit.txHash) {
+      // 核验通过：账本推进为 verified/confirmed（确认数由 checkTxidPayment 的 1 确认口径保证；全局确认策略见 runPolling）。
+      if (payRec) { try { await updatePayment(env, payRec.id, { status: 'verified', confirmations: 1 }); } catch (e) {} }
       var fr = await fulfillOrderByPayment(env, o2, hit.txHash, ctx, { txVerified: true });
+      if (fr.ok && (fr.mode === 'completed' || fr.mode === 'pending_fulfill' || fr.mode === 'out_of_stock')) {
+        if (payRec) { try { await updatePayment(env, payRec.id, { status: 'posted' }); } catch (e) {} }
+      }
       if (fr.ok && fr.mode === 'completed') return json({ ok: true, message: '核验通过，已自动发货', auto: true });
       if (fr.ok && fr.mode === 'pending_fulfill') return json({ ok: true, message: '核验通过，已自动派单，等待人工代充', auto: true });
       if (fr.ok && fr.mode === 'out_of_stock') return json({ ok: true, message: '核验通过但库存不足，已转人工处理', auto: true });
-      if (fr.reason && /已用于其他订单/.test(fr.reason)) return err('该交易哈希已用于其他订单，请勿重复提交；如确认归属有误请联系客服', 409);
+      if (fr.reason && /已用于其他订单/.test(fr.reason)) {
+        // 账本：该 TXID 已归属其他订单，标记 duplicate（需人工对账，不得静默接受）。
+        if (payRec) { try { await updatePayment(env, payRec.id, { status: 'duplicate', reconcile_status: 'pending', reconcile_note: 'TXID 已用于其他订单' }); } catch (e) {} }
+        return err('该交易哈希已用于其他订单，请勿重复提交；如确认归属有误请联系客服', 409);
+      }
     }
     await env.DB.prepare('UPDATE orders SET txid = ? WHERE order_no = ?').bind(txid, no2).run();
     return json({ ok: true, message: 'TXID 已提交，轮询会在 1-3 分钟内自动核验；若链上还未确认请稍后再查', auto: false });
@@ -1336,15 +1773,18 @@ async function handleApi(req, env, url, ctx) {
     var loginIp = getClientIp(req);
     var rateErr = await checkLoginRateLimit(env, loginIp);
     if (rateErr) return err(rateErr, 429);
+    // 全局限流（第四轮 P0）：全站 15 分钟内失败超 30 次时，全部登录拒绝 5 分钟，防换 IP 分布式暴力破解。
+    var globalRateErr = await checkLoginGlobalRateLimit(env);
+    if (globalRateErr) return err(globalRateErr, 429);
     var storedHash = await getAdminMeta(env, 'password_hash');
     var storedSalt = await getAdminMeta(env, 'password_salt');
     var mustChange = (await getAdminMeta(env, 'must_change_password')) === '1';
     if (!storedHash) {
-      if (pw !== 'admin') { await recordLoginFail(env, loginIp); return err('密码错误', 401); }
+      if (pw !== 'admin') { await recordLoginFail(env, loginIp); await recordLoginFailGlobal(env); return err('密码错误', 401); }
       mustChange = true;
     } else {
       var h = await hashPassword(pw, storedSalt || '');
-      if (h !== storedHash) { await recordLoginFail(env, loginIp); return err('密码错误', 401); }
+      if (h !== storedHash) { await recordLoginFail(env, loginIp); await recordLoginFailGlobal(env); return err('密码错误', 401); }
     }
     await clearLoginAttempts(env, loginIp);
     var token = randomHex(32);
@@ -1919,6 +2359,16 @@ async function handleApi(req, env, url, ctx) {
     if (key === 'poll_enabled') { if (v !== '0' && v !== '1') return 'poll_enabled 只能是 0 或 1'; return null; }
     if (key === 'tg_link') { if (v && v.indexOf('http') !== 0) return 'tg_link 必须是 URL'; return null; }
     if (key === 'prodseller_base_url') { if (v && v.indexOf('https://prodseller.com/') !== 0) return 'prodseller_base_url 仅允许官方域名 https://prodseller.com/（自定义端点请经环境变量 PRODSELLER_BASE_URL 配置，避免 API Key 被发往非官方地址）'; return null; }
+    if (key === 'prodseller_enabled') { if (v !== '0' && v !== '1') return 'prodseller_enabled 只能是 0 或 1（默认 0 关闭；开启前须在 RELEASE_READINESS 中提供上游真实行为验证证据）'; return null; }
+    if (key === 'turnstile_enabled') { if (v !== '0' && v !== '1') return 'turnstile_enabled 只能是 0 或 1'; return null; }
+    if (key === 'turnstile_site_key') { if (v && v.length > 200) return 'turnstile_site_key 过长'; return null; }
+    if (key === 'chain_confirmations') {
+      var cc; try { cc = JSON.parse(v || '{}'); } catch (e) { return '设置 chain_confirmations 不是合法 JSON'; }
+      if (!cc || typeof cc !== 'object' || Array.isArray(cc)) return '设置 chain_confirmations 必须是 JSON 对象';
+      var cck = Object.keys(cc);
+      for (var ci = 0; ci < cck.length; ci++) { var cv = Number(cc[cck[ci]]); if (!isFinite(cv) || cv < 1 || cv > 100 || Math.floor(cv) !== cv) return 'chain_confirmations 的 ' + cck[ci] + ' 必须是 1~100 的整数'; }
+      return null;
+    }
     if (key === 'site_name') { if (!v.trim()) return 'site_name 不能为空'; if (v.length > 100) return 'site_name 过长（最多 100 字符）'; return null; }
     if (key === 'binance_uid') { if (v && !/^[0-9]+$/.test(v.trim())) return 'binance_uid 必须是纯数字'; return null; }
     var lowerKey = key.toLowerCase();
@@ -1949,6 +2399,45 @@ async function handleApi(req, env, url, ctx) {
     await cleanupExpired(env);
     return json({ ok: true, message: '7天清理已执行' });
   }
+  // ---- 管理员：付款账本（第四轮 P0）----
+  // GET /api/admin/payments?status=&order_id=&page= —— 按状态/订单筛选付款记录，含订单号。
+  if (path === '/api/admin/payments' && method === 'GET') {
+    var pStatus = String(url.searchParams.get('status') || '').trim();
+    var pOrderId = String(url.searchParams.get('order_id') || '').trim();
+    var pPage = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1);
+    var pPageSize = Math.min(100, Math.max(1, parseInt(url.searchParams.get('page_size') || '20', 10) || 20));
+    var pOff = (pPage - 1) * pPageSize;
+    var pWhere = [], pBinds = [];
+    if (pStatus) { pWhere.push('p.status = ?'); pBinds.push(pStatus); }
+    if (pOrderId) { pWhere.push('p.order_id = ?'); pBinds.push(Number(pOrderId)); }
+    var pWhereSql = pWhere.length ? ('WHERE ' + pWhere.join(' AND ')) : '';
+    var pStmt = env.DB.prepare('SELECT p.*, o.order_no FROM payments p LEFT JOIN orders o ON o.id = p.order_id ' + pWhereSql + ' ORDER BY p.id DESC LIMIT ? OFFSET ?');
+    var pTotalStmt = env.DB.prepare('SELECT COUNT(*) as c FROM payments p ' + pWhereSql);
+    var pRows = await pStmt.bind.apply(pStmt, pBinds.concat([pPageSize, pOff])).all();
+    var pTotalRow = await pTotalStmt.bind.apply(pTotalStmt, pBinds).first();
+    var pTotal = Number((pTotalRow && pTotalRow.c) || 0);
+    return json({ ok: true, payments: pRows.results || [], total: pTotal, page: pPage, page_size: pPageSize, total_pages: Math.max(1, Math.ceil(pTotal / pPageSize)) });
+  }
+  // POST /api/admin/payments/:id/reconcile —— 人工对账：把 mismatch/unmatched 的付款标记为 reconciled，并写对账备注。
+  // 仅能标记，不得直接把付款改为 posted（posted 必须经链上核验 + 履约流程）。
+  var mPayRecon = path.match(/^\/api\/admin\/payments\/(\d+)\/reconcile$/);
+  if (mPayRecon && method === 'POST') {
+    var rb = await parseJsonBody(req);
+    var rNote = String(rb.note || '').trim();
+    if (!rNote) return err('请填写对账备注');
+    var payId = Number(mPayRecon[1]);
+    var payRow = await env.DB.prepare('SELECT * FROM payments WHERE id = ?').bind(payId).first();
+    if (!payRow) return err('付款记录不存在', 404);
+    if (payRow.status === 'posted') return err('已入账的付款无需对账');
+    await updatePayment(env, payId, { status: 'reconciled', reconcile_status: 'resolved', reconcile_note: rNote });
+    await logAudit(env, payRow.order_id, 'payment_reconcile', payRow.status, 'reconciled', '人工对账付款记录 #' + payId + '：' + rNote);
+    return json({ ok: true });
+  }
+  // GET /api/admin/schema-check —— Schema 预检（只读）：校验实际 Schema 与目标版本是否一致，版本号与内容不一致时报告差异。
+  if (path === '/api/admin/schema-check' && method === 'GET') {
+    var pre = await precheckSchema(env);
+    return json({ ok: true, precheck: pre });
+  }
   // 数据库迁移（显式触发）：返回本次应用的版本列表与当前版本。迁移失败时返回明确的版本号与原因，不伪装成功。
   if (path === '/api/admin/migrate' && method === 'POST') {
     var migRes = await runMigrations(env);
@@ -1971,7 +2460,13 @@ export default {
       return new Response(FRONTEND_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
     }
     if (url.pathname.indexOf('/api/') === 0) {
-      try { return await handleApi(req, env, url, ctx); } catch (e) { return err('服务器错误：' + (e && e.message ? e.message : String(e)), 500); }
+      try { return await handleApi(req, env, url, ctx); } catch (e) {
+        // 错误脱敏（第四轮 P0）：公开接口只返回稳定通用的错误消息 + 关联 ID，绝不返回 SQL、数据库结构、内部路径、堆栈或凭据。
+        // 内部详情只记 Worker 日志（console.error），运营凭 request_id 在日志中关联定位。
+        var reqId = 'req_' + randomHex(8);
+        try { console.error('[' + reqId + '] API 500 ' + req.method + ' ' + url.pathname + ' :: ' + (e && e.stack ? e.stack : (e && e.message ? e.message : String(e)))); } catch (ee) {}
+        return err('服务器内部错误（关联 ID：' + reqId + '，请联系管理员并提供该 ID）', 500);
+      }
     }
     return new Response('Not found', { status: 404 });
   },

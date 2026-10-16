@@ -33,7 +33,8 @@ for pat in [
 s = re.sub(r"-- TXID 原子认领[\s\S]*?CREATE INDEX IF NOT EXISTS idx_lookup_rate_ip ON lookup_rate\(ip, created_at\);\n", '', s)
 s = re.sub(r"-- 上游轮询租约[^\n]*\n  upstream_lock TEXT NOT NULL DEFAULT '',\n  upstream_lock_expires_at TEXT,\n", '', s)
 s = re.sub(r"CREATE UNIQUE INDEX IF NOT EXISTS idx_upstream_orders_order_unique ON upstream_orders\(order_id\);\n", '', s)
-s = re.sub(r"-- 数据库迁移版本[\s\S]*?INSERT OR IGNORE INTO schema_migrations \(version\) VALUES \(1\), \(2\), \(3\), \(4\), \(5\), \(6\), \(7\);\n", '', s)
+s = re.sub(r"-- 数据库迁移版本[\s\S]*?INSERT OR IGNORE INTO schema_migrations \(version\) VALUES \(1\), \(2\), \(3\), \(4\), \(5\), \(6\), \(7\), \(8\);\n", '', s)
+s = re.sub(r"-- 第四轮（Release Readiness）[\s\S]*$", '', s)
 open('/tmp/d1-old-schema.sql', 'w', encoding='utf-8').write(s)
 print('old schema written, has claim_token:', 'claim_token' in s, 'has schema_migrations:', 'schema_migrations' in s)
 PYEOF
@@ -69,8 +70,8 @@ curl -s -b "$COOKIE_JAR_FILE" -X POST "$BASE/api/admin/change-password" -H 'cont
 echo "--- old-db /api/admin/migrate ---"
 MIG=$(curl -s -b "$COOKIE_JAR_FILE" "$BASE/api/admin/migrate")
 echo "$MIG"
-echo "$MIG" | grep -q '"current_version":7' || { echo "FAIL: old-db migrate version != 7"; exit 1; }
-echo "OLD-DB MIGRATION OK: version 7"
+echo "$MIG" | grep -q '"current_version":8' || { echo "FAIL: old-db migrate version != 8"; exit 1; }
+echo "OLD-DB MIGRATION OK: version 8"
 # 旧数据保留（经 D1 直接查）
 $WR d1 execute aisou-lite-db --local --command="SELECT order_no, status FROM orders WHERE order_no='AISOLDD1001';" 2>&1 | grep -q "AISOLDD1001" || { echo "FAIL: old order lost"; exit 1; }
 $WR d1 execute aisou-lite-db --local --command="SELECT code FROM cards WHERE code='OLD-D1-CARD-1';" 2>&1 | grep -q "OLD-D1-CARD-1" || { echo "FAIL: old card lost"; exit 1; }
@@ -88,7 +89,7 @@ echo "UNIQUE INDEX OK: idx_upstream_orders_order_unique"
 for i in 1 2; do
   MIGX=$(curl -s -b "$COOKIE_JAR_FILE" -X POST "$BASE/api/admin/migrate" -H 'X-Admin-API: 1')
   echo "re-migrate $i: $MIGX"
-  echo "$MIGX" | grep -q '"current_version":7' || { echo "FAIL: re-migrate $i version != 7"; exit 1; }
+  echo "$MIGX" | grep -q '"current_version":8' || { echo "FAIL: re-migrate $i version != 8"; exit 1; }
   echo "$MIGX" | grep -q '"ok":true' || { echo "FAIL: re-migrate $i not ok"; exit 1; }
 done
 echo "IDEMPOTENT MIGRATION OK"
@@ -117,19 +118,19 @@ FAIL_BODY=$(curl -s "$BASE/api/config")
 echo "fail body: $(echo "$FAIL_BODY" | head -c 300)"
 echo "$FAIL_BODY" | grep -q '"ok":false' || { echo "FAIL: broken migration did not return ok:false"; exit 1; }
 # 版本未标为 7（经 D1 直接查：schema_migrations 无 7，或表不存在）
-VER7=$($WR d1 execute aisou-lite-db --local --command="SELECT COUNT(*) FROM schema_migrations WHERE version=7;" 2>&1 | grep -o '[0-9]' | head -1)
-if [ "$VER7" = "1" ]; then echo "FAIL: failed migration incorrectly marked version 7"; exit 1; fi
-echo "FAILURE NOT MARKED OK: version 7 not recorded after failed migration"
+VER7=$($WR d1 execute aisou-lite-db --local --command="SELECT COUNT(*) FROM schema_migrations WHERE version=8;" 2>&1 | grep -o '[0-9]' | head -1)
+if [ "$VER7" = "1" ]; then echo "FAIL: failed migration incorrectly marked version 8"; exit 1; fi
+echo "FAILURE NOT MARKED OK: version 8 not recorded after failed migration"
 # 修复：按正确结构重建 upstream_orders（含 id 列）。
-# 注意：v3（建表迁移）已标记为已应用，不会重跑，因此不能只 DROP 表——必须按正确结构重建，否则 v7 仍会因表不存在而失败。
+# 注意：v3（建表迁移）已标记为已应用，不会重跑，因此不能只 DROP 表——必须按正确结构重建，否则 v8 仍会因表不存在而失败。
 # 这是迁移机制的设计假设（已应用的迁移不重跑；表被误删需人工按正确结构重建），此处验证的是“失败不标版本 + 修复后重试成功”。
 $WR d1 execute aisou-lite-db --local --command="DROP TABLE upstream_orders; CREATE TABLE upstream_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER NOT NULL, prodseller_order_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', amount REAL NOT NULL DEFAULT 0, delivered_keys TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY(order_id) REFERENCES orders(id));" > "$TMPDIR_D1/d1-fail-fix.log" 2>&1
 FIX_BODY=$(curl -s "$BASE/api/config")
 echo "fix body: $(echo "$FIX_BODY" | head -c 300)"
 echo "$FIX_BODY" | grep -q '"ok":true' || { echo "FAIL: migration did not recover after fix"; exit 1; }
-FIX_VER=$($WR d1 execute aisou-lite-db --local --command="SELECT MAX(version) FROM schema_migrations;" 2>&1 | grep -o '7' | head -1)
-[ "$FIX_VER" = "7" ] || { echo "FAIL: version != 7 after fix"; exit 1; }
-echo "FAILURE RECOVERY OK: fixed db migrated to v7"
+FIX_VER=$($WR d1 execute aisou-lite-db --local --command="SELECT MAX(version) FROM schema_migrations;" 2>&1 | grep -o '8' | head -1)
+[ "$FIX_VER" = "8" ] || { echo "FAIL: version != 8 after fix"; exit 1; }
+echo "FAILURE RECOVERY OK: fixed db migrated to v8"
 kill $DEV_PID 2>/dev/null; trap - EXIT; wait $DEV_PID 2>/dev/null || true
 
 # --- 新库：当前 schema.sql ---

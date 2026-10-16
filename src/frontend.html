@@ -387,7 +387,12 @@ function productThumb(p){
   if (p && p.image_data && String(p.image_data).indexOf('data:image/') === 0) return '<img src="' + escH(p.image_data) + '" class="prod-img" alt="">';
   return '<div class="prod-img prod-emoji">' + escH((p && p.image_emoji) || '🤖') + '</div>';
 }
-async function load(){ var r = await api('/api/config'); if (r.ok) CFG = r.config; var pr = await api('/api/products'); if (pr.ok) PRODUCTS = pr.products; if (CFG) { el('siteName').textContent = CFG.site_name; el('announce').textContent = CFG.announcement || ''; } route(); }
+async function load(){ var r = await api('/api/config'); if (r.ok) CFG = r.config; var pr = await api('/api/products'); if (pr.ok) PRODUCTS = pr.products; if (CFG) { el('siteName').textContent = CFG.site_name; el('announce').textContent = CFG.announcement || ''; }
+  // Turnstile 开启时动态加载官方 widget 脚本（仅在开启时加载，未开启不加载第三方脚本）。
+  if (CFG && CFG.turnstile_enabled && CFG.turnstile_site_key && !window._turnstileLoaded) { window._turnstileLoaded = true; var s = document.createElement('script'); s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js'; s.async = true; s.defer = true; document.head.appendChild(s); }
+  route(); }
+// Turnstile 回调：widget 验证通过后，token 写入隐藏字段（提交时随订单一起发给服务端校验）。
+function onTurnstileDone(token){ window._turnstileToken = token || ''; }
 function route(){ var h = location.hash || '#/'; if (h.indexOf('#/product/') === 0) { renderProduct(h.split('/')[2]); } else if (h.indexOf('#/success/') === 0) { renderSuccess(h.split('/')[2]); } else if (h === '#/query') { renderQuery(); } else if (h === '#/admin') { renderAdmin(); } else { renderShop(); } }
 window.addEventListener('hashchange', route);
 function renderShop(){
@@ -465,7 +470,12 @@ async function renderProduct(id){
   }
   html += '<label>邮箱地址</label><input id="contact" placeholder="用于查询订单">';
   html += '<label>购买数量</label><div class="qty-row"><button class="qty-btn" onclick="changeQty(-1)">−</button><input id="qty" class="qty-input" type="number" value="1" min="1" max="99" oninput="updateTotal()"><button class="qty-btn" onclick="changeQty(1)">+</button></div>';
-  html += '<label>人机验证</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="captchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="captchaImg" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" onclick="loadCaptcha()"></div><div class="muted" style="margin-top:4px">看不清？点击图片刷新</div>';
+  // 人机验证：Turnstile 开启时渲染 Cloudflare Turnstile widget（服务端校验 token，fail-closed）；未开启时用 SVG 验证码。
+  if (CFG && CFG.turnstile_enabled && CFG.turnstile_site_key) {
+    html += '<label>人机验证</label><div id="turnstileBox"><div class="cf-turnstile" data-sitekey="' + escH(CFG.turnstile_site_key) + '" data-callback="onTurnstileDone"></div></div><div class="muted" style="margin-top:4px">请完成验证后下单</div>';
+  } else {
+    html += '<label>人机验证</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="captchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="captchaImg" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" onclick="loadCaptcha()"></div><div class="muted" style="margin-top:4px">看不清？点击图片刷新</div>';
+  }
   html += '<div class="pay-card"><div class="pay-card-title">🛒 付款</div><div class="pills pay-options" id="payOptions">' + payOpts + '</div></div>';
   html += actHint;
   html += '<div class="total-box"><span>合计 <span id="stickyQty">1</span> 件</span><span><b id="totalPrice" style="font-size:20px">' + fmtCNY(p.price_usdt) + '</b> <span class="muted" id="totalUsdt">约 ' + Number(p.price_usdt||0).toFixed(2) + ' USDT</span></span></div>';
@@ -498,8 +508,17 @@ async function loadCaptcha(){
 }
 async function submitOrder(pid){
   var qty = parseInt(el('qty').value || '1', 10);
-  var capCode = el('captchaCode') ? el('captchaCode').value.trim() : '';
-  if (!capCode){ toast('请填写图形验证码', 'error'); loadCaptcha(); return; }
+  // 人机验证：Turnstile 开启时取 widget token（服务端校验）；未开启时取 SVG 验证码。
+  var useTurnstile = !!(CFG && CFG.turnstile_enabled && CFG.turnstile_site_key);
+  var capCode = '';
+  var tsToken = '';
+  if (useTurnstile) {
+    tsToken = window._turnstileToken || '';
+    if (!tsToken){ toast('请完成反机器人验证', 'error'); return; }
+  } else {
+    capCode = el('captchaCode') ? el('captchaCode').value.trim() : '';
+    if (!capCode){ toast('请填写图形验证码', 'error'); loadCaptcha(); return; }
+  }
   var cust = {}; var ins = document.querySelectorAll('[data-k]');
   for (var i = 0; i < ins.length; i++) cust[ins[i].getAttribute('data-k')] = ins[i].value;
   var p = window._curProduct || {};
@@ -517,7 +536,7 @@ async function submitOrder(pid){
   cust.activation_email = activationEmail; cust.activation_email_confirm = activationConfirm;
   var btn = document.querySelector('[data-pid="' + pid + '"]');
   setBtnLoading(btn, true);
-  var r = await api('/api/orders', 'POST', { product_id: Number(pid), quantity: qty, customer_fields: cust, contact: el('contact').value, pay_method: window._payMethod || (el('payMethod') ? el('payMethod').value : 'Binance'), pay_chain: window._payChain || (el('payChain') ? el('payChain').value : 'X Layer'), captcha_id: window._captchaId || '', captcha_code: capCode });
+  var r = await api('/api/orders', 'POST', { product_id: Number(pid), quantity: qty, customer_fields: cust, contact: el('contact').value, pay_method: window._payMethod || (el('payMethod') ? el('payMethod').value : 'Binance'), pay_chain: window._payChain || (el('payChain') ? el('payChain').value : 'X Layer'), captcha_id: window._captchaId || '', captcha_code: capCode, turnstile_token: tsToken });
   setBtnLoading(btn, false);
   if (!r.ok){ toast(r.error || '下单失败', 'error'); if ((r.error || '').indexOf('验证码') !== -1) loadCaptcha(); return; }
   // 查单凭证只在创建时返回一次：仅存页面运行时内存变量（window._lastOrder / window._lastQueryToken），
@@ -559,7 +578,7 @@ async function submitTxid(no){
   toast(r.message || 'TXID 已提交', 'success');
 }
 function renderQuery(){
-  var html = '<div class="glass"><div class="h2">查询订单</div><p class="muted">凭“订单号 + 查单凭证”查看订单详情与交付内容。查单凭证在下单成功页只展示一次，请妥善保存。旧订单（无查单凭证）可用旧查询密码查看概要，交付内容请联系客服。</p><label>订单编号</label><input id="qno" placeholder="AIS…"><label>查单凭证（新订单）或旧查询密码（旧订单）</label><input id="qtoken" placeholder="查单凭证 / 旧查询密码" autocomplete="off"><div style="margin-top:12px"><button class="btn" onclick="doQuery()">查询</button></div><div style="margin-top:16px;border-top:1px solid rgba(127,127,127,.18);padding-top:14px"><label>或用下单邮箱查看订单概要（仅显示订单号、商品、状态，不含交付内容）</label><input id="qemail" placeholder="下单时填写的邮箱"><div style="margin-top:10px"><button class="btn ghost" onclick="doQueryByEmail()">按邮箱查看概要</button></div></div><div id="qres" style="margin-top:14px"></div></div>';
+  var html = '<div class="glass"><div class="h2">查询订单</div><p class="muted">凭“订单号 + 查单凭证”查看订单详情与交付内容。查单凭证在下单成功页只展示一次，请妥善保存。旧订单（无查单凭证）可用旧查询密码查看概要，交付内容请联系客服。</p><label>订单编号</label><input id="qno" placeholder="AIS…"><label>查单凭证（新订单）或旧查询密码（旧订单）</label><input id="qtoken" placeholder="查单凭证 / 旧查询密码" autocomplete="off"><div style="margin-top:12px"><button class="btn" onclick="doQuery()">查询</button></div><div id="qres" style="margin-top:14px"></div></div>';
   el('app').innerHTML = html;
 }
 function renderQueryOrderDetail(o, legacy){
@@ -584,18 +603,6 @@ async function doQuery(){
   var r = await api('/api/orders/' + encodeURIComponent(no) + '/lookup', 'POST', { credential: cred });
   if (!r.ok){ el('qres').innerHTML = '<div class="muted">' + escH(r.error) + '</div>'; return; }
   el('qres').innerHTML = renderQueryOrderDetail(r.order, !!r.legacy);
-}
-async function doQueryByEmail(){
-  var email = el('qemail').value.trim();
-  if (!email) { toast('请填写下单邮箱', 'error'); return; }
-  var r2 = await api('/api/orders?contact=' + encodeURIComponent(email));
-  if (!r2.ok){ el('qres').innerHTML = '<div class="muted">' + escH(r2.error) + '</div>'; return; }
-  var list = r2.orders || [];
-  if (!list.length){ el('qres').innerHTML = '<div class="muted">该邮箱下没有订单</div>'; return; }
-  window._queryOrders = list;
-  var h = '<div class="muted">共 ' + list.length + ' 笔订单（仅概要）。点“查看详情”后在上方输入该订单的查单凭证查看交付内容。</div>';
-  for (var i = 0; i < list.length; i++){ var oo = list[i]; var ss = oo.product_snapshot || {}; h += '<div class="glass" style="margin-top:10px"><p><b>' + escH(ss.title || '') + '</b> · ' + statusLabel(oo.status) + ' · ' + fmtPrice(oo.total_usdt) + '</p><p class="muted">' + escH(oo.order_no) + ' · ' + escH(oo.created_at || '') + '</p><div style="margin-top:8px"><button class="btn small" data-no="' + escH(oo.order_no) + '" onclick="fillQueryNo(this.dataset.no)">填入订单号查详情</button></div></div>'; }
-  el('qres').innerHTML = h;
 }
 function fillQueryNo(no){
   var n = el('qno'); if (n) { n.value = no; n.focus(); }
