@@ -251,3 +251,88 @@ npx wrangler d1 execute aisou-lite-db --local --file=backup-<日期>.sql
    Tronscan 高频地址分页（>1000 笔）的真实表现。
 3. **Turnstile**：真实 Site Key + Secret Key 配置后的端到端验证（本轮仅 Mock 验证逻辑）。
 4. **生产 D1**：实际 Schema 与迁移记录（本轮只提供只读预检能力，未连接生产 D1）。
+
+## 七、第五轮：预发布部署准备（2026-10-16，部署阻塞，待授权后续跑）
+
+**状态：部署前准备全部完成；实际 Cloudflare 部署 BLOCKED，原因见下。未合并 PR，未部署生产，未触碰生产 D1。**
+
+#### 第一阶段核查结论（真实代码，提交 `9a79984`）
+
+- 远端分支 = 预期基线 `9a79984`，PR #1 OPEN / MERGEABLE / CLEAN，CI 运行 38872380812 四项全部通过。
+- 迁移触发：`handleApi` 开头调 `ensureMigrated(env)`，首个 `/api/*` 请求自动迁移（`/` 静态页不触发）；`scheduled` 亦先调 `ensureMigrated`。
+  `MIGRATIONS` 数组为唯一权威来源；`migrations/*.sql` 不被 Worker 执行。
+- `schema-check`：只读（仅 `PRAGMA table_info` + `SELECT sqlite_master` + 重复金额 `SELECT`），需管理员登录（未登录 401）。
+- 无隐含生产绑定：`worker.js` / `frontend.html` 无硬编码生产 D1 ID 或生产域名；D1 绑定只来自 `wrangler.toml` 的 `env.DB`。
+- Cron/履约：`*/1 * * * *` 跑 `runPolling` + `pollUpstreamActivations`；`0 2 * * *` 跑清理 + 上游激活轮询。
+  上游履约门禁：`prodseller_enabled != '1'` 时订单转 `pending_upstream`（`gateway_closed`），不发起真实采购；
+  下单时上游商品亦被 403 拦截。`poll_enabled=0` 时轮询直接跳过（`skipped: poll_disabled`），零 RPC。
+- 路由：`wrangler.toml` 无 `routes` / 自定义域名，默认 `workers.dev` 子域，staging 不会接管生产域名。
+
+#### 第三阶段部署前测试（本轮真实重跑，提交 `9a79984`）
+
+- `npm run test:static`：通过（Worker 语法 + 前端脚本 2/2）
+- `npm run test:regression`：Mock 通过（`emails=0 upstreamCalls=10`）、库存 17/17、安全 98/98、并发 114/114、第四轮专项 53/53
+- `bash tests/d1-local-test.sh`：`D1 LOCAL TEST ALL OK`（旧库→v8、新库 up_to_date）
+- 浏览器验收：48/48（Playwright Chromium，本地 wrangler dev）
+
+#### Staging 配置方案（待授权后应用，保留生产配置不动）
+
+向 `wrangler.toml` 追加独立 `[env.staging]`（不改现有顶层生产配置）：
+
+```toml
+[env.staging]
+name = "zhixuan-shop-staging"
+compatibility_date = "2024-01-01"
+main = "src/worker.js"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "zhixuan-shop-staging-db"
+database_id = "<新建 staging D1 后填入的 UUID>"
+
+[env.staging.vars]
+PRODSELLER_BASE_URL = "https://prodseller.com/v1"
+
+[[env.staging.rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true
+
+[env.staging.triggers]
+crons = ["0 2 * * *", "*/1 * * * *"]
+```
+
+部署后第一步（部署后验收前）：登录 staging 后台，把 `poll_enabled` 置 `0`（默认 `1`；置 `0` 后轮询零 RPC），
+确认 `prodseller_enabled` 为 `0`（默认关闭），再创建测试订单。验收时如需验证轮询，可短暂置 `poll_enabled=1` 观察后立即改回 `0`。
+
+#### 授权后续跑命令（待 Cloudflare 安全授权后执行，顺序不可乱）
+
+```bash
+# 1. 核实授权与同名资源（不得删除/覆盖已存在资源）
+npx wrangler whoami
+npx wrangler d1 list   # 确认无名为 zhixuan-shop-staging-db 的 D1（有则核实归属，不得覆盖）
+npx wrangler deployments list --name zhixuan-shop-staging  # 确认无同名 Worker（有则核实归属）
+
+# 2. 创建独立 staging D1（确认专用于测试后）
+npx wrangler d1 create zhixuan-shop-staging-db
+# 记下返回的 database_id，填入 wrangler.toml [env.staging]，提交到功能分支并等 CI 全绿
+
+# 3. 部署前再次核对目标（显式 staging，不得用默认生产配置）
+#    目标 Worker: zhixuan-shop-staging
+#    目标 D1: zhixuan-shop-staging-db（新 UUID，与生产 D1 不同）
+#    地址: https://zhixuan-shop-staging.<子域>.workers.dev（不绑定生产自定义域名）
+npx wrangler deploy --env staging
+
+# 4. 首次请求（触发自动迁移到 v8，指向 staging D1）
+curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 300
+# 登录后：GET /api/admin/schema-check → precheck.ok=true；GET /api/admin/migrate → current_version=8
+```
+
+#### 阻塞原因（诚实记录，不得绕过）
+
+- `npx wrangler whoami` 返回未登录；Secure Vault 无已存 Cloudflare 登录。
+- 一份工具结果未通过安全检查，其描述的凭据/部署脚本路径未被使用（未运行、未采纳）。
+- 按任务要求：凭据不可用时停在相应步骤并说明安全授权方式，不得用聊天粘贴的 PAT/密钥替代。
+- 安全授权方式：用户在自己终端执行 `npx wrangler login`（OAuth 浏览器授权），或经 Muse 安全入口提交 Cloudflare API Token（绝不粘贴到聊天）。
+  授权完成后，按上文“授权后续跑命令”继续，部署前仍需重核远端 SHA / PR / CI。
+
