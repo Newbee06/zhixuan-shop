@@ -42,13 +42,13 @@ AI 会员 / 代充 / 成品号 / 卡密商城，单 Worker + 单 D1，Cloudflare
 
 | 字段 | 说明 |
 |---|---|
-| `source` | `self` 自营 / `prodseller` 上游，默认 `self` |
+| `source` | `'self'` 自营 / `'prodseller'` 上游，默认 `'self'` |
 | `prodseller_id` | 上游商品 ID |
 | `cost_price` | 成本价（上游导入时取上游 cost） |
 | `sell_price` | 前台售价。兼容旧 `price_usdt`：读时优先 `sell_price` |
 | `requires_email_activation` | 是否激活类（1 = 必须填激活邮箱） |
-| `delivery_method` | `onsite` 仅站内 / `email` 仅邮件 / `both` 站内+邮件，默认 `both`（历史字段，邮件已移除，实际交付只看站内） |
-| `stock_type` | `card` 卡密自动发 / `manual` 人工发货 |
+| `delivery_method` | `'onsite'` 仅站内 / `'email'` 仅邮件 / `'both'` 站内+邮件，默认 `'both'`（历史字段，邮件已移除，实际交付只看站内） |
+| `stock_type` | `'card'` 卡密自动发 / `'manual'` 人工发货 |
 | `in_stock` | 人工商品的手动库存；卡密/上游商品不靠它决定库存 |
 
 - 自营商品：后台 CRUD，新增 `delivery_method` 选择、`form_fields` 自定义。
@@ -125,10 +125,10 @@ AI 会员 / 代充 / 成品号 / 卡密商城，单 Worker + 单 D1，Cloudflare
 ### Secret 设置（bash 管道写法，不要经 Python subprocess 传 stdin）
 
 ```bash
-printf %s "$VAL" | npx wrangler secret put PRODSELLER_API_KEY
+printf '%s' "$VAL" | npx wrangler secret put PRODSELLER_API_KEY
 ```
 
-`$VAL` 请在执行前于当前 shell 赋值（如 `VAL=你的key`），不要把真实 key 写进任何文件。`PRODSELLER_BASE_URL` 在 `wrangler.toml` `[vars]`，默认 `https://prodseller.com/v1`，不用 secret。
+`$VAL` 请在执行前于当前 shell 赋值（如 `VAL='你的key'`），不要把真实 key 写进任何文件。`PRODSELLER_BASE_URL` 在 `wrangler.toml` `[vars]`，默认 `https://prodseller.com/v1`，不用 secret。
 
 ### 加价设置（后台 → 设置）
 
@@ -164,7 +164,7 @@ npx wrangler d1 create aisou-lite-db
 npx wrangler d1 execute aisou-lite-db --file=schema.sql --remote
 
 # 3. 设置 secret（见上“Secret 设置”，不要把 key 写进文件）
-printf %s "$VAL" | npx wrangler secret put PRODSELLER_API_KEY
+printf '%s' "$VAL" | npx wrangler secret put PRODSELLER_API_KEY
 
 # 4. 本地开发（可选）
 npx wrangler dev
