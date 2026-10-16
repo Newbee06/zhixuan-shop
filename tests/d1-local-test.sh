@@ -6,6 +6,7 @@
 #  3. 迁移幂等：重复调用 POST /api/admin/migrate，版本仍为 7，不报错、不丢数据
 #  4. 迁移失败恢复：上游订单表结构损坏 → 迁移失败（500、不标版本）→ 修复后重试 → 成功到 v7
 #  5. 新库（当前 schema.sql）→ 无需迁移、API 正常
+#  6. 真正空库（不导入任何 schema）→ Worker 首次请求自动建基表 + 迁移到 v8 + schema-check ok（第六轮修复）
 # 全部使用虚构数据，不读取、不复制生产数据。
 set -e
 cd "$(dirname "$0")/.."
@@ -131,6 +132,30 @@ echo "$FIX_BODY" | grep -q '"ok":true' || { echo "FAIL: migration did not recove
 FIX_VER=$($WR d1 execute aisou-lite-db --local --command="SELECT MAX(version) FROM schema_migrations;" 2>&1 | grep -o '8' | head -1)
 [ "$FIX_VER" = "8" ] || { echo "FAIL: version != 8 after fix"; exit 1; }
 echo "FAILURE RECOVERY OK: fixed db migrated to v8"
+kill $DEV_PID 2>/dev/null; trap - EXIT; wait $DEV_PID 2>/dev/null || true
+
+# --- 真正空库：不导入任何 schema，Worker 首次请求必须自动建基表 + 迁移到 v8（第六轮修复） ---
+rm -rf .wrangler/state
+$WR dev --local --port $PORT > "$TMPDIR_D1/wrangler-dev-empty.log" 2>&1 &
+DEV_PID=$!
+trap "kill $DEV_PID 2>/dev/null; true" EXIT
+for i in $(seq 1 30); do
+  if curl -s -o /dev/null -w "%{http_code}" "$BASE/api/config" 2>/dev/null | grep -q 200; then echo "WORKER UP (empty db)"; break; fi
+  sleep 2
+done
+EMPTY_CFG=$(curl -s "$BASE/api/config")
+echo "$EMPTY_CFG" | grep -q '"ok":true' || { echo "FAIL: empty db /api/config not ok (base tables missing?)"; echo "$EMPTY_CFG" | head -c 300; exit 1; }
+echo "EMPTY-DB CONFIG OK: first request migrated empty db"
+EMPTY_VER=$($WR d1 execute aisou-lite-db --local --command="SELECT MAX(version) FROM schema_migrations;" 2>&1 | grep -o '8' | head -1)
+[ "$EMPTY_VER" = "8" ] || { echo "FAIL: empty db version != 8 after migration"; exit 1; }
+echo "EMPTY-DB MIGRATION OK: version 8"
+# 空库预检：登录改密后 schema-check 必须 ok=true（无差异）
+rm -f "$COOKIE_JAR_FILE"
+curl -s -c "$COOKIE_JAR_FILE" -X POST "$BASE/api/admin/login" -H 'content-type: application/json' -d '{"password":"admin"}' > /dev/null
+curl -s -b "$COOKIE_JAR_FILE" -X POST "$BASE/api/admin/change-password" -H 'content-type: application/json' -H 'X-Admin-API: 1' -d '{"old_password":"admin","new_password":"d1-local-test-123"}' > /dev/null
+EMPTY_PRE=$(curl -s -b "$COOKIE_JAR_FILE" "$BASE/api/admin/schema-check")
+echo "$EMPTY_PRE" | grep -q '"ok":true' || { echo "FAIL: empty db schema-check not ok"; echo "$EMPTY_PRE" | head -c 500; exit 1; }
+echo "EMPTY-DB SCHEMA-CHECK OK"
 kill $DEV_PID 2>/dev/null; trap - EXIT; wait $DEV_PID 2>/dev/null || true
 
 # --- 新库：当前 schema.sql ---

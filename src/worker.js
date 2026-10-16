@@ -208,6 +208,19 @@ async function addColumnIfMissing(env, table, colDef) {
 }
 async function createTableIfMissing(env, sql) { await env.DB.prepare(sql).run(); }
 async function createIndexIfMissing(env, sql) { await env.DB.prepare(sql).run(); }
+// ---- 基表（第六轮修复：真正空库迁移）----
+// 修复：runMigrations 原先假设基表已存在，真正空库（无 schema.sql 预导入）首次请求时 v1 的
+// addColumnIfMissing 对不存在的 orders 表做 ALTER，直接 500。新库必须先建基表再跑 v1–v8。
+// BASE_TABLES 与 schema.sql 的 6 张基表定义保持一致（终态列）；v1–v8 的 addColumnIfMissing 会跳过已存在列，
+// 各版本 createTableIfMissing 会建其余表。基表定义变更时必须同步修改 schema.sql 与此处。
+var BASE_TABLES = [
+  "CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY AUTOINCREMENT, slug TEXT UNIQUE NOT NULL, title TEXT NOT NULL, category TEXT NOT NULL DEFAULT 'recharge', price_usdt REAL NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT 'self', prodseller_id TEXT NOT NULL DEFAULT '', cost_price REAL NOT NULL DEFAULT 0, sell_price REAL NOT NULL DEFAULT 0, requires_email_activation INTEGER NOT NULL DEFAULT 0, delivery_method TEXT NOT NULL DEFAULT 'both', stock_type TEXT NOT NULL DEFAULT 'manual', description TEXT NOT NULL DEFAULT '', notice TEXT NOT NULL DEFAULT '', form_fields TEXT NOT NULL DEFAULT '[]', image_emoji TEXT NOT NULL DEFAULT '🤖', image_data TEXT NOT NULL DEFAULT '', sort INTEGER NOT NULL DEFAULT 0, is_active INTEGER NOT NULL DEFAULT 1, in_stock INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT (datetime('now')))",
+  "CREATE TABLE IF NOT EXISTS cards (id INTEGER PRIMARY KEY AUTOINCREMENT, product_id INTEGER NOT NULL, code TEXT NOT NULL, is_used INTEGER NOT NULL DEFAULT 0, is_disabled INTEGER NOT NULL DEFAULT 0, order_id INTEGER, reserved_order_id INTEGER, reserved_at TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(product_id, code), FOREIGN KEY(product_id) REFERENCES products(id))",
+  "CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, order_no TEXT UNIQUE NOT NULL, query_password TEXT NOT NULL, query_token_hash TEXT NOT NULL DEFAULT '', claim_token TEXT NOT NULL DEFAULT '', claimed_at TEXT, exception_reason TEXT NOT NULL DEFAULT '', refund_status TEXT NOT NULL DEFAULT '', refund_ref TEXT NOT NULL DEFAULT '', upstream_lock TEXT NOT NULL DEFAULT '', upstream_lock_expires_at TEXT, product_id INTEGER NOT NULL, product_snapshot TEXT NOT NULL DEFAULT '{}', quantity INTEGER NOT NULL DEFAULT 1, price_usdt REAL NOT NULL DEFAULT 0, total_usdt REAL NOT NULL DEFAULT 0, actual_amount REAL NOT NULL DEFAULT 0, pay_address TEXT NOT NULL DEFAULT '', expires_at TEXT, last_checked_at TEXT, tx_hash TEXT NOT NULL DEFAULT '', customer_fields TEXT NOT NULL DEFAULT '{}', contact TEXT NOT NULL DEFAULT '', pay_method TEXT NOT NULL DEFAULT '', pay_chain TEXT NOT NULL DEFAULT '', wallet_address TEXT NOT NULL DEFAULT '', txid TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending_payment', delivery_content TEXT NOT NULL DEFAULT '', admin_note TEXT NOT NULL DEFAULT '', data_expired INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), paid_at TEXT, fulfilled_at TEXT, FOREIGN KEY(product_id) REFERENCES products(id))",
+  "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')",
+  "CREATE TABLE IF NOT EXISTS admin_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')",
+  "CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, created_at TEXT NOT NULL DEFAULT (datetime('now')), expires_at TEXT NOT NULL)"
+];
 var MIGRATIONS = [
   { version: 1, name: '订单轮询字段', up: async function (env) {
     await addColumnIfMissing(env, 'orders', "actual_amount REAL NOT NULL DEFAULT 0");
@@ -305,9 +318,19 @@ var MIGRATIONS = [
     await createIndexIfMissing(env, "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_contact_pending ON orders(contact, product_id) WHERE status = 'pending_payment' AND contact != ''");
   } }
 ];
-// 执行待迁移：逐个版本 apply，成功才标记版本；任一失败抛错（带版本号与原因），不得伪装成功。
+// 执行待迁移：先建基表（空库首次迁移），再逐个版本 apply，成功才标记版本；任一失败抛错（带版本号与原因），不得伪装成功。
 async function runMigrations(env) {
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime(\'now\')))').run();
+  // 空库首次迁移：仅当库内除迁移表与内部表外没有任何用户表时，才建基表（全新空库）。
+  // 若已有部分表但缺基表（如 orders 被误删），不静默重建空表掩盖数据丢失，让 v1 的 ALTER 自然失败、版本不标记。
+  // 排除：schema_migrations（迁移表）、sqlite_%（SQLite 内部）、_cf_%（Cloudflare D1 内部，如 _cf_METADATA）。
+  var tblRows = await env.DB.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name != 'schema_migrations'").first();
+  var isFreshDb = tblRows ? Number(tblRows.c || 0) === 0 : true;
+  if (isFreshDb) {
+    for (var b = 0; b < BASE_TABLES.length; b++) {
+      await env.DB.prepare(BASE_TABLES[b]).run();
+    }
+  }
   var applied = {};
   var rows = await env.DB.prepare('SELECT version FROM schema_migrations').all();
   (rows.results || []).forEach(function (r) { applied[Number(r.version)] = 1; });
