@@ -88,12 +88,14 @@ jobs:
         run: node tests/release-readiness-test.mjs
       - name: Payment whitelist test (dual-chain pay combos, contract/decimals/confirmations, cursor recovery, historical orders)
         run: node tests/payment-whitelist-test.mjs
+      - name: App icons test (light/dark icon library, app_icon_key, title auto-match, picker)
+        run: node tests/app-icons-test.mjs
       - name: Job summary
         if: always()
         run: |
           {
             echo "## Business regression — ${{ job.status }}"
-            echo "- mock-test / stock-test / security-test / concurrency-test / release-readiness-test / payment-whitelist-test: see logs for counts"
+            echo "- mock-test / stock-test / security-test / concurrency-test / release-readiness-test / payment-whitelist-test / app-icons-test: see logs for counts"
           } >> "$GITHUB_STEP_SUMMARY"
 
   migration:
