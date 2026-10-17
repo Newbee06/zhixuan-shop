@@ -1274,6 +1274,16 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   }
   // 防类名碰撞回归：商品页支付方式卡早已占用 .pay-card（含 margin:6px 0），成功页窄卡必须用独立类名 .pay-shell，否则居中会被后定义的 .pay-card 覆盖。
   check('payui: success card uses pay-shell not pay-card', frontendHtml.includes('glass pay-shell') && !frontendHtml.includes('glass pay-card'));
+  // 首页 Hero + 合集标题（prodseller 版式，本站品牌与文案；不出现对方品牌）。
+  check('home: hero present with key copy', frontendHtml.includes('function homeHeroHTML(') && ['无限可能', '更实惠的价格', '探索系列', '智选 ↗', '创造', '放松', '发现'].every((s) => frontendHtml.includes(s)));
+  check('home: hero rendered on shop page', frontendHtml.includes('homeHeroHTML()') && frontendHtml.includes('homeSectionHeadHTML()'));
+  check('home: section head copy + back-to-top', frontendHtml.includes('日常生活，升级版') && frontendHtml.includes('返回顶部 ↑') && !frontendHtml.includes('返回收藏夹'));
+  // 上游集成本身就叫 ProdSeller（既有代码/admin 里到处是），只断言新首页两块里不出现对方品牌。
+  {
+    const heroStart = frontendHtml.indexOf('function homeHeroHTML(');
+    const headEnd = frontendHtml.indexOf('function filterStock(', heroStart);
+    check('home: no prodseller brand in homepage blocks', !/prodseller/i.test(frontendHtml.slice(heroStart, headEnd)));
+  }
   // 防重复 ID：查单详情（renderQueryOrderDetail）渲染在查询列表卡片内的 qsec 盒子里；
   // 旧订单待付款时列表卡与详情会各出一份付款块，UID 必须不同，否则 countdown/addrBox 等 ID 重复。
   {
