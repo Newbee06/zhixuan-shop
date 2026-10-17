@@ -25,14 +25,25 @@ a{color:var(--accent);text-decoration:none}
 .theme-btn{border:0;padding:8px 12px;border-radius:999px;background:rgba(127,127,127,.12);color:var(--text);font-size:14px;cursor:pointer;line-height:1}
 .glass{background:var(--card);backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);border:1px solid var(--line);border-radius:var(--radius);box-shadow:0 8px 30px rgba(0,0,0,.08);padding:18px}
 .muted{color:var(--sub);font-size:13px;line-height:1.6}
+.pay-card{max-width:520px;margin-left:auto;margin-right:auto}
 .pay-amount{margin:14px 0 6px}
 .pay-amount-usdt{font-size:34px;font-weight:800;color:var(--green);line-height:1.1}
 .pay-amount-sub{color:var(--sub);font-size:13px;margin-top:6px}
-.pay-exact{display:inline-flex;align-items:center;gap:6px;background:rgba(10,132,255,.12);color:var(--accent);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600;margin:10px 0}
-.pay-expiry{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px;margin:6px 0 2px}
-.pay-expiry b{font-size:15px}
-.pay-order{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:13px;color:var(--sub);margin:10px 0 2px}
-.pay-order b{color:var(--text);font-family:ui-monospace,Menlo,monospace;word-break:break-all}
+.pay-copy{border:0;background:transparent;cursor:pointer;font-size:15px;color:var(--sub);padding:2px 6px;line-height:1}
+.pay-copy:hover{color:var(--text)}
+.pay-toprow{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}
+.pay-exact{display:inline-flex;align-items:center;gap:6px;background:rgba(10,132,255,.12);color:var(--accent);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600}
+.pay-deadline{border:1px solid var(--line);border-radius:12px;padding:6px 10px;font-size:13px;background:var(--card2)}
+.pay-deadline b{font-size:14px}
+.pay-div{border-top:1px solid var(--line);margin:12px 0}
+.pay-row{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px;margin:10px 0}
+.pay-row-label{color:var(--sub)}
+.pay-row-value{display:flex;align-items:center;gap:6px}
+.pay-row-value b{color:var(--text);font-family:ui-monospace,Menlo,monospace;word-break:break-all}
+.pay-qr-box{border:1px solid var(--line);border-radius:20px;padding:16px;display:flex;justify-content:center;background:rgba(255,255,255,.85);margin:14px 0}
+.pay-addrbox{background:rgba(127,127,127,.10);border-radius:16px;padding:12px 14px;margin:12px 0}
+.pay-addr-head{display:flex;justify-content:space-between;align-items:center;color:var(--sub);font-size:13px;margin-bottom:6px}
+.pay-addr{word-break:break-all;font-family:ui-monospace,Menlo,monospace;font-size:14px;line-height:1.6}
 .pay-qr{position:relative;width:180px;height:180px;margin:14px 0}
 .pay-qr img{width:180px;height:180px;border-radius:12px;background:#fff;display:block}
 .pay-qr-logo{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:38px;height:38px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:#26a17b;box-shadow:0 1px 6px rgba(0,0,0,.25)}
@@ -439,21 +450,23 @@ function paginationHTML(p, totalPages, fnName){
 function fmtTime(s){ return s ? String(s).replace('T', ' ') : ''; }
 function catLabel(c){ if (c === 'recharge') return '代充'; if (c === 'account') return '成品号'; if (c === 'card') return '卡密'; return c; }
 function statusLabel(s){ if (s === 'pending_payment') return '待付款'; if (s === 'pending_fulfill') return '待发货'; if (s === 'pending_activation') return '激活待处理'; if (s === 'pending_upstream') return '待处理'; if (s === 'refund_pending') return '退款待处理'; if (s === 'completed') return '已完成'; if (s === 'cancelled') return '已取消'; return escH(s); }
-function fmtCountdown(exp){ if (!exp) return ''; var diff = new Date(String(exp).replace(' ', 'T') + 'Z').getTime() - Date.now(); if (!(diff > 0)) return '已过期，请重新下单'; var h = Math.floor(diff / 3600000); var m = Math.floor((diff % 3600000) / 60000); var s = Math.floor((diff % 60000) / 1000); return (h > 0 ? h + '时' : '') + m + '分' + (s < 10 ? '0' : '') + s + '秒'; }
+function fmtCountdown(exp){ if (!exp) return ''; var diff = new Date(String(exp).replace(' ', 'T') + 'Z').getTime() - Date.now(); if (!(diff > 0)) return '已过期，请重新下单'; var h = Math.floor(diff / 3600000); var m = Math.floor((diff % 3600000) / 60000); var s = Math.floor((diff % 60000) / 1000); var mm = (m < 10 ? '0' : '') + m; var ss = (s < 10 ? '0' : '') + s; return h > 0 ? h + ':' + mm + ':' + ss : mm + ':' + ss; }
 // 付款到期绝对时间（本地时区，如 19:41），与倒计时并排显示，买家不用心算。
 function fmtExpiryAbsolute(exp){ if (!exp) return ''; var d = new Date(String(exp).replace(' ', 'T') + 'Z'); if (isNaN(d.getTime())) return ''; return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }); }
 // 收款地址首尾高亮（前 4 + 后 6 位绿色）；复制走 textContent，不受 span 影响。
 function payAddrHighlighted(addr){ if (!addr) return ''; var a = String(addr); if (a.length <= 12) return escH(a); return '<span class="pay-addr-hl">' + escH(a.slice(0, 4)) + '</span>' + escH(a.slice(4, -6)) + '<span class="pay-addr-hl">' + escH(a.slice(-6)) + '</span>'; }
-// 付款信息共享块（成功页 + 查询页待付款块共用）：金额大字 + 严格付款提示 + 到期时间 + 商户订单号 + 二维码（USDT 标，ecc=H）+ 收款地址（首尾高亮）+ USDT0 警告。
+// 付款信息共享块（成功页 + 查询页待付款块共用）：BEpusdt 版式 + 琉璃气泡材质。
+// 金额大字（带复制）+ 提示与到期盒同行 + 分割线 + 商户订单行 + 二维码白底圆角框（USDT 标，ecc=H）+ 地址软底盒（右上角复制，首尾高亮）+ USDT0 警告。
 function payBlockHTML(o, uid){
   var actual = Number(o.actual_amount != null ? o.actual_amount : o.total_usdt) || 0;
   var addr = o.pay_address || o.wallet_address || '';
-  var h = '<div class="pay-amount"><div class="pay-amount-usdt">' + actual + ' USDT</div><div class="pay-amount-sub">' + fmtCNY(actual) + ' · ' + escH(o.pay_method || '') + ' · ' + escH(payTokenLabel(o.pay_chain || '')) + '</div></div>';
-  h += '<div><span class="pay-exact">ⓘ 请严格按照数额进行付款</span></div>';
-  if (o.expires_at) h += '<div class="pay-expiry">到期时间 <b>' + escH(fmtExpiryAbsolute(o.expires_at)) + '</b> · 剩余 <b id="countdown-' + escH(uid) + '">' + fmtCountdown(o.expires_at) + '</b></div>';
-  h += '<div class="pay-order">商户订单 <b id="ordNo-' + escH(uid) + '">' + escH(o.order_no || '') + '</b><button class="btn small ghost" data-copy-target="ordNo-' + escH(uid) + '">复制</button></div>';
-  if (addr) { var qr = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&ecc=H&data=' + encodeURIComponent(addr); h += '<div class="pay-qr"><img src="' + qr + '" width="180" height="180" alt="收款二维码"><span class="pay-qr-logo">USDT</span></div>'; }
-  h += '<p>收款地址：</p><div class="codebox" id="addrBox-' + escH(uid) + '">' + payAddrHighlighted(addr) + '</div><button class="btn small" style="margin-top:8px" data-copy-target="addrBox-' + escH(uid) + '">复制地址</button>';
+  var h = '<div class="pay-amount"><div class="pay-amount-usdt"><span id="payAmt-' + escH(uid) + '">' + actual + '</span> USDT <button class="pay-copy" data-copy-target="payAmt-' + escH(uid) + '" title="复制金额">⧉</button></div><div class="pay-amount-sub">' + fmtCNY(actual) + ' · ' + escH(o.pay_method || '') + ' · ' + escH(payTokenLabel(o.pay_chain || '')) + '</div></div>';
+  h += '<div class="pay-toprow"><span class="pay-exact">ⓘ 请严格按照数额进行付款</span>';
+  if (o.expires_at) h += '<span class="pay-deadline">到期时间 <b>' + escH(fmtExpiryAbsolute(o.expires_at)) + '</b> · 剩余 <b id="countdown-' + escH(uid) + '">' + fmtCountdown(o.expires_at) + '</b></span>';
+  h += '</div><div class="pay-div"></div>';
+  h += '<div class="pay-row"><span class="pay-row-label">商户订单</span><span class="pay-row-value"><b id="ordNo-' + escH(uid) + '">' + escH(o.order_no || '') + '</b><button class="pay-copy" data-copy-target="ordNo-' + escH(uid) + '" title="复制订单号">⧉</button></span></div><div class="pay-div"></div>';
+  if (addr) { var qr = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&ecc=H&data=' + encodeURIComponent(addr); h += '<div class="pay-qr-box"><div class="pay-qr"><img src="' + qr + '" width="180" height="180" alt="收款二维码"><span class="pay-qr-logo">USDT</span></div></div>'; }
+  h += '<div class="pay-addrbox"><div class="pay-addr-head"><span>收款地址</span><button class="pay-copy" data-copy-target="addrBox-' + escH(uid) + '" title="复制地址">⧉</button></div><div class="pay-addr" id="addrBox-' + escH(uid) + '">' + payAddrHighlighted(addr) + '</div></div>';
   if (o.pay_chain === 'X Layer') h += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' X Layer 收款为 USDT0</b><p class="muted" style="margin:6px 0 0">请从欧易提币时选择 USDT0（X Layer 网络）转入上方地址。旧版 X Layer USDT 与 USDT0 是不同资产，转入旧版代币不会到账、无法自动发货。</p></div>';
   return h;
 }
@@ -641,7 +654,7 @@ async function renderSuccess(no){
   // P1-13：刷新后内存订单已清空（o 为 null）时，渲染“恢复支付信息”表单：
   // 用订单号 + 图形验证码调查询接口恢复收款地址与精确应付金额（地址只写内存，不存 localStorage）。
   if (!o) {
-    var recHtml = '<div class="glass"><div class="h2">恢复支付信息</div><p>订单号：<b>' + escH(no) + '</b></p>';
+    var recHtml = '<div class="glass pay-card"><div class="h2">恢复支付信息</div><p>订单号：<b>' + escH(no) + '</b></p>';
     recHtml += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 请牢记您设置的查询密码</b><p class="muted" style="margin:6px 0 0">查询卡密时需要输入该密码。忘记密码请联系客服重置。</p></div>';
     recHtml += '<p class="muted">页面已刷新，收款地址已随内存清空。请填写图形验证码恢复该订单的收款地址与精确应付金额。</p>';
     recHtml += '<label>订单号</label><input id="recoverOrderNo" value="' + escH(no) + '" autocomplete="off">';
@@ -652,7 +665,7 @@ async function renderSuccess(no){
     return;
   }
   var tut = ''; if (CFG && o) tut = CFG.pay_tutorials[o.pay_method] || '';
-  var html = '<div class="glass"><div class="h2">下单成功</div>';
+  var html = '<div class="glass pay-card"><div class="h2">下单成功</div>';
   html += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 请牢记您设置的查询密码</b><p class="muted" style="margin:6px 0 0">查询卡密时需要输入该密码。忘记密码请联系客服重置。</p></div>';
   html += payBlockHTML(o, 'success');
   html += '<p class="muted">付完不用做任何事，等 1-3 分钟自动发货。系统按精确金额自动匹配到账，金额差 1 分钱都匹配不上。</p>';

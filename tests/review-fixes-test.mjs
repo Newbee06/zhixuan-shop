@@ -1241,7 +1241,19 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   check('payui: absolute expiry + merchant order + copy', frontendHtml.includes('fmtExpiryAbsolute') && frontendHtml.includes('到期时间') && frontendHtml.includes('商户订单'));
   check('payui: QR with USDT mark + ecc=H', frontendHtml.includes('pay-qr-logo') && frontendHtml.includes('ecc=H'));
   check('payui: address head/tail highlight', frontendHtml.includes('payAddrHighlighted') && frontendHtml.includes('pay-addr-hl'));
-  check('payui: countdown hours-aware + expired state', frontendHtml.includes("h + '时'") && frontendHtml.includes('已过期，请重新下单'));
+  check('payui: countdown clock format + expired state', frontendHtml.includes("mm + ':' + ss") && frontendHtml.includes('已过期，请重新下单'));
+  // fmtCountdown 功能测试：从前端源码提取函数真跑（时钟格式 MM:SS / H:MM:SS，过期态）。
+  {
+    const feStart = frontendHtml.indexOf('function fmtCountdown(');
+    let feI = frontendHtml.indexOf('{', feStart), feDepth = 0, feJ = feI;
+    for (; feJ < frontendHtml.length; feJ++) { if (frontendHtml[feJ] === '{') feDepth++; else if (frontendHtml[feJ] === '}') { feDepth--; if (feDepth === 0) break; } }
+    const fmtCountdownFn = new Function('return (' + frontendHtml.slice(feStart, feJ + 1) + ')')();
+    const isoPlus = (ms) => new Date(Date.now() + ms).toISOString().replace('T', ' ').slice(0, 19);
+    check('payui: fmtCountdown 20min -> MM:SS', /^\d{2}:\d{2}$/.test(fmtCountdownFn(isoPlus(20 * 60 * 1000))), fmtCountdownFn(isoPlus(20 * 60 * 1000)));
+    check('payui: fmtCountdown 70min -> H:MM:SS', /^\d+:\d{2}:\d{2}$/.test(fmtCountdownFn(isoPlus(70 * 60 * 1000))), fmtCountdownFn(isoPlus(70 * 60 * 1000)));
+    check('payui: fmtCountdown expired -> 已过期', fmtCountdownFn(isoPlus(-60 * 1000)) === '已过期，请重新下单');
+  }
+  check('payui: BEpusdt layout classes', ['pay-card', 'pay-toprow', 'pay-deadline', 'pay-div', 'pay-row', 'pay-qr-box', 'pay-addrbox', 'pay-copy'].every((c) => frontendHtml.includes(c)));
   // payTokenLabel 已含链名（'USDT0 · X Layer'），小字行不得再追加一次 pay_chain。
   const payBlockSrc = frontendHtml.slice(frontendHtml.indexOf('function payBlockHTML'), frontendHtml.indexOf('function payBlockHTML') + 2500);
   check('payui: amount sub-line has no duplicated chain', (payBlockSrc.match(/o\.pay_chain/g) || []).length === 2);
