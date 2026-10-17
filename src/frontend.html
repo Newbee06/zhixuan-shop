@@ -252,7 +252,7 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
 .toast.warn{background:#8a5a00}
 html[data-theme="light"] .toast{background:#1c1c1e;color:#fff}
 .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:150;display:flex;align-items:center;justify-content:center;padding:16px}
-.modal{background:var(--card2);border-radius:18px;padding:20px;width:100%;max-width:480px;max-height:85vh;overflow-y:auto;box-shadow:0 16px 60px rgba(0,0,0,.25)}
+.modal{background:var(--card2);border-radius:18px;padding:20px;width:100%;max-width:480px;max-height:85vh;overflow-y:auto;overflow-x:hidden;box-shadow:0 16px 60px rgba(0,0,0,.25)}
 @media(max-width:720px){.modal-backdrop.modal-fullbleed .modal{padding-left:0;padding-right:0}.modal-backdrop.modal-fullbleed .modal h3{padding:0 20px}.modal-backdrop.modal-fullbleed .modal-actions{padding:0 20px}}
 .modal h3{font-size:17px;margin:0 0 10px}
 .modal .modal-body{font-size:14px;line-height:1.7;color:var(--text)}
@@ -1029,7 +1029,7 @@ function productImagePickerHTML(pfx, p){
   for (var ki = 0; ki < keys.length; ki++){
     var k = keys[ki], e = APP_ICONS[k];
     var sel = (k === (p.app_icon_key || '')) ? 'outline:2px solid #5b7bff;outline-offset:2px;' : '';
-    h += '<button type="button" data-appcell="' + escH(k) + '" onclick="selectProductAppIcon(\'' + pfx + '\', \'' + escH(k) + '\')" title="' + escH(e.name || k) + '" style="border:0;background:transparent;cursor:pointer;padding:4px;border-radius:12px;' + sel + '"><img src="' + escH(currentTheme() === 'dark' ? (e.dark || e.light || '') : (e.light || e.dark || '')) + '" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;display:block"><div style="font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escH(e.name || k) + '</div></button>';
+    h += '<button type="button" data-appcell="' + escH(k) + '" onclick="selectProductAppIcon(\'' + pfx + '\', \'' + escH(k) + '\')" title="' + escH(e.name || k) + '" style="border:0;background:transparent;cursor:pointer;padding:4px;border-radius:12px;min-width:0;' + sel + '"><img src="' + escH(currentTheme() === 'dark' ? (e.dark || e.light || '') : (e.light || e.dark || '')) + '" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;display:block"><div style="font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escH(e.name || k) + '</div></button>';
   }
   h += '</div>';
   // 上传区（仅 upload 模式显示）
