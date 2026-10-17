@@ -657,3 +657,9 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 - 修复：Telegram 暗版用泛洪填充去白底（仅与边框连通的白底映射深色，蓝圈与被蓝圈包住的白纸飞机保留）；新增 v13 迁移重新执行暗版 UPDATE（以后每次种子暗版变更都须追加新迁移版本，已应用的迁移不重跑）。测试：app-icons 76/76（含 v13 刷新测试），回归全绿，d1-local v13 全绿。
 - Staging 验证：`/api/app-icons` Telegram 暗版边缘亮度 0.11（原 0.54），中心蓝色；浏览器选择器网格深色模式下 Telegram 为深色底 + 蓝圈 + 白纸飞机，非白方块。
 - PR #1 仍 OPEN，未合并，未部署生产。
+
+### 移动端商品编辑弹窗对齐 + 防横滑（2026-10-17 12:22 CST，用户实测确认）
+
+- 对齐：商品编辑弹窗加 `fullBleed`，移动端（≤720px）去掉弹窗左右内边距，输入框（含底部说明框）撑满弹窗宽度与边缘对齐；标题与取消/保存按钮保持内缩。
+- 防横滑：图标网格标签 `white-space:nowrap`（如 Microsoft 365）把网格撑到约 580px 超出弹窗，且 `.modal` 只写了 `overflow-y:auto`（另一轴按 CSS 规则算成 auto），弹窗可被横向划走、导致输入框与弹窗错位（实测差 250px）。修复：`.modal` 加 `overflow-x:hidden`，网格按钮加 `min-width:0`（标签正常省略号）。用户实测确认“可以了”。
+- PR #1 仍 OPEN，未合并，未部署生产。
