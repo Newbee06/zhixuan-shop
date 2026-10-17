@@ -80,6 +80,7 @@ for (const want of ['chatgpt', 'claude', 'duolingo', 'gmail', 'canva', 'gemini',
   check('app-icons has ' + want, !!icons[want], 'missing ' + want);
 }
 check('claude light != dark (two variants)', icons.claude && icons.claude.light !== icons.claude.dark);
+check('telegram dark is flood-filled (not white-bg original)', icons.telegram && icons.telegram.dark !== icons.telegram.light && icons.telegram.dark.length > icons.telegram.light.length);
 
 // 3. 现有商品按标题自动匹配（在迁移前插入，迁移时匹配；此处模拟：直接插商品再跑一次匹配逻辑等价验证）
 // 注：迁移已在首次请求时跑完；此处验证已有种子商品若标题含关键词则已被匹配。
