@@ -634,3 +634,11 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 | E. 是否可以开放真实客户销售 | BLOCKED | 真实链上收款未验证 |
 | F. 是否可以启用真实链上收款 | BLOCKED | 真实链上测试未执行（仅 mock 核验） |
 | G. 是否可以启用 ProdSeller 自动采购与履约 | BLOCKED | 真实 ProdSeller 行为未验证，门禁保持关闭 |
+
+### Staging 验收与 CI（2026-10-17 09:40 CST 补记）
+
+- 部署：`wrangler deploy --env staging` 成功，Worker `zhixuan-shop-staging`，版本 `f1463aed-ad81-403c-b95e-7e319e146e35`，上传 594.85 KiB / gzip 264.27 KiB。迁移 v11 在首次请求时自动执行，`/api/app-icons` 返回 30 App。
+- 浏览器端到端验收（staging，全部通过）：管理员登录 → 新增商品 → 表单三选一（App 图标 / 自己上传 / 不选）→ 图标网格 30 个 → 选 Claude 保存（ID 12，slug p-mvbq8zse）→ 前台卡片渲染 `<img data-app-icon="claude">` → 主题切换时 img src 在明/暗版间切换 → 编辑改“不选”后恢复默认 📦 线条图标 → 删除测试商品，staging 恢复 11 个商品。未动其他商品，未动支付/订单。
+- 说明：本地浏览器无法访问 127.0.0.1（浏览器工具拦回环地址，Cloudflare Tunnel 被网络拦），故验收在 staging 进行；staging 管理员密码由用户经安全入口提交，浏览器用保存的登录完成。
+- CI：push `38985323892` success、PR `38985330274` success。PR #1 仍 OPEN，未合并，未部署生产。
+- 决策矩阵更新：A staging 部署 PASS、B staging 验收 PASS、C PASS（CI 全绿）；D/E/F/G 仍 BLOCKED（未获生产部署批准、真实链上未验证）。
