@@ -416,7 +416,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
     .replace(/-- TXID 原子认领[\s\S]*?CREATE INDEX IF NOT EXISTS idx_lookup_rate_ip ON lookup_rate\(ip, created_at\);\n/, '')
     .replace(/-- 上游轮询租约[^\n]*\n  upstream_lock TEXT NOT NULL DEFAULT '',\n  upstream_lock_expires_at TEXT,\n/, '')
     .replace(/CREATE UNIQUE INDEX IF NOT EXISTS idx_upstream_orders_order_unique ON upstream_orders\(order_id\);\n/, '')
-    .replace(/-- 数据库迁移版本[\s\S]*?INSERT OR IGNORE INTO schema_migrations \(version\) VALUES \(1\), \(2\), \(3\), \(4\), \(5\), \(6\), \(7\), \(8\), \(9\), \(10\);\n/, '')
+    .replace(/-- 数据库迁移版本[\s\S]*?INSERT OR IGNORE INTO schema_migrations \(version\) VALUES \(1\), \(2\), \(3\), \(4\), \(5\), \(6\), \(7\), \(8\), \(9\), \(10\)(, \(11\))?;\n/, '')
     // 剥离 v8（第四轮）：payments / scan_cursors / pay_rate / 金额与联系人部分唯一索引，模拟 v7 旧库
     .replace(/-- 第四轮（Release Readiness）[\s\S]*$/, '');
   dbOld.exec(oldSchema);
@@ -449,7 +449,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const cp = await callOld('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'old-db-pass-123' }, ocookie);
   check('old-db change-password ok', cp.json && cp.json.ok === true, JSON.stringify(cp.json));
   const mg = await callOld('GET', '/api/admin/migrate', null, ocookie);
-  check('old-db migrated to v10', mg.json && mg.json.ok === true && mg.json.current_version === 10, JSON.stringify(mg.json));
+  check('old-db migrated to v11', mg.json && mg.json.ok === true && mg.json.current_version === 11, JSON.stringify(mg.json));
   check('old-db: old order preserved', !!dbOld.prepare("SELECT * FROM orders WHERE order_no='AISOLD001'").get());
   check('old-db: old card preserved', !!dbOld.prepare("SELECT * FROM cards WHERE code='OLD-CARD-1'").get());
   check('old-db: old product preserved', !!dbOld.prepare("SELECT * FROM products WHERE slug='old-prod'").get());

@@ -281,6 +281,22 @@ var PRODUCTS = [];
 var curStock = 'all';
 var curSort = 'featured';
 var curQ = '';
+// App 图标库：{ key: { name, light, dark } }，由 /api/app-icons 加载；商品 app_icon_key 引用其 key。
+var APP_ICONS = {};
+async function loadAppIcons(){ try { var r = await api('/api/app-icons'); if (r && r.ok && r.icons) APP_ICONS = r.icons; } catch (e) { APP_ICONS = {}; } }
+function appIconSrc(key){ var e = APP_ICONS[String(key || '')]; if (!e) return ''; return currentTheme() === 'dark' ? (e.dark || e.light || '') : (e.light || e.dark || ''); }
+// 商品图片渲染：优先 App 图标（随主题切换），其次上传图，最后默认 📦 线条图标。
+// App 图标 img 带 data-app-icon，主题切换时 refreshAppIcons() 更新 src。
+function productImgHtml(p, cls, wrapCls){
+  var c = (cls == null) ? 'prod-img' : cls;
+  if (p && p.app_icon_key && APP_ICONS[p.app_icon_key]) {
+    var src = appIconSrc(p.app_icon_key);
+    if (src) return '<img data-app-icon="' + escH(p.app_icon_key) + '" src="' + escH(src) + '" class="' + c + '" alt="">';
+  }
+  if (p && p.image_data && String(p.image_data).indexOf('data:image/') === 0) return '<img src="' + escH(p.image_data) + '" class="' + c + '" alt="">';
+  return '<div class="' + (wrapCls || 'prod-img prod-emoji') + '">' + ic((p && p.image_emoji) || 'box') + '</div>';
+}
+function refreshAppIcons(){ var imgs = document.querySelectorAll('img[data-app-icon]'); for (var i = 0; i < imgs.length; i++){ var s = appIconSrc(imgs[i].getAttribute('data-app-icon')); if (s) imgs[i].src = s; } }
 function currentTheme(){ if (document.documentElement.dataset.theme) return document.documentElement.dataset.theme; return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light'; }
 var ICONS = {
   shop: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>',
@@ -300,7 +316,7 @@ var ICONS = {
 };
 function ic(k){ return ICONS[String(k || '')] || ICONS.box; }
 function renderThemeBtn(){ var b = el('themeBtn'); if (b) b.innerHTML = ic(currentTheme() === 'dark' ? 'sun' : 'moon'); }
-function toggleTheme(){ var next = currentTheme() === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = next; try { localStorage.setItem('theme', next); } catch (e) {} renderThemeBtn(); }
+function toggleTheme(){ var next = currentTheme() === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = next; try { localStorage.setItem('theme', next); } catch (e) {} renderThemeBtn(); refreshAppIcons(); }
 renderThemeBtn();
 function el(id){ return document.getElementById(id); }
 function escH(s){ var t = String(s == null ? '' : s); return t.split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;').split('"').join('&quot;'); }
@@ -406,10 +422,9 @@ function cnyRate(){ var r = CFG && CFG.cny_rate ? Number(CFG.cny_rate) : 7.2; re
 function fmtCNY(usdt){ return '¥' + (Number(usdt || 0) * cnyRate()).toFixed(2); }
 function fmtPrice(usdt){ return fmtCNY(usdt) + ' <span class="muted" style="font-size:13px">约 ' + Number(usdt || 0).toFixed(2) + ' USDT</span>'; }
 function productThumb(p){
-  if (p && p.image_data && String(p.image_data).indexOf('data:image/') === 0) return '<img src="' + escH(p.image_data) + '" class="prod-img" alt="">';
-  return '<div class="prod-img prod-emoji">' + ic((p && p.image_emoji) || 'box') + '</div>';
+  return productImgHtml(p, 'prod-img', 'prod-img prod-emoji');
 }
-async function load(){ var r = await api('/api/config'); if (r.ok) CFG = r.config; var pr = await api('/api/products'); if (pr.ok) PRODUCTS = pr.products; if (CFG) { el('siteName').textContent = CFG.site_name; el('announce').textContent = CFG.announcement || ''; }
+async function load(){ var r = await api('/api/config'); if (r.ok) CFG = r.config; var pr = await api('/api/products'); if (pr.ok) PRODUCTS = pr.products; await loadAppIcons(); if (CFG) { el('siteName').textContent = CFG.site_name; el('announce').textContent = CFG.announcement || ''; }
   // Turnstile 开启时动态加载官方 widget 脚本（仅在开启时加载，未开启不加载第三方脚本）。
   if (CFG && CFG.turnstile_enabled && CFG.turnstile_site_key && !window._turnstileLoaded) { window._turnstileLoaded = true; var s = document.createElement('script'); s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js'; s.async = true; s.defer = true; document.head.appendChild(s); }
   route(); }
@@ -431,7 +446,7 @@ function doSearch(){ curQ = el('q').value || ''; renderList(); }
 function changeSort(v){ curSort = v; renderList(); }
 function productCard(p){
   var inSt = Number(p.in_stock == null ? 1 : p.in_stock);
-  var img = (p.image_data && String(p.image_data).indexOf('data:image/') === 0) ? '<img src="' + escH(p.image_data) + '" alt="">' : '<div class="emoji">' + ic(p.image_emoji || 'box') + '</div>';
+  var img = productImgHtml(p, '', 'emoji');
   var stock = inSt ? '<span class="stock-dot">有存货</span>' : '<span class="stock-dot out">缺货</span>';
   var btn = inSt ? '<button class="pcard-btn" onclick="event.stopPropagation();location.hash=\x27#/product/' + p.id + '\x27">立即购买 +</button>' : '<button class="pcard-btn" disabled>售罄</button>';
   return '<div class="glass card pcard" data-pid="' + p.id + '" onclick="location.hash=\x27#/product/' + p.id + '\x27"><div class="pcard-img">' + img + '<span class="pcard-arrow">↗</span></div><div class="pcard-meta">' + stock + '<span class="muted pcard-cat">数字产品</span></div><div class="pcard-title">' + escH(p.title) + '</div><div class="pcard-desc">' + escH(p.description || '') + '</div><div class="pcard-foot"><div><div class="pcard-price-label">您的价格</div><div class="pcard-price">' + fmtCNY(p.price_usdt) + '</div></div>' + btn + '</div></div>';
@@ -482,7 +497,8 @@ async function renderProduct(id){
   html += '<div class="breadcrumb"><a href="#/">商城</a> / ' + escH(catLabel(p.category)) + ' / ' + escH(p.title) + '</div>';
   // Top: left image, right buy box (aisou.pro style)
   html += '<div class="detail-top">';
-  if (p.image_data && String(p.image_data).indexOf('data:image/') === 0) html += '<div class="glass detail-img" style="padding:0;overflow:hidden"><img src="' + escH(p.image_data) + '" class="detail-img-photo" alt=""></div>';
+  if (p.app_icon_key && APP_ICONS[p.app_icon_key] && appIconSrc(p.app_icon_key)) html += '<div class="glass detail-img" style="padding:0;overflow:hidden"><img data-app-icon="' + escH(p.app_icon_key) + '" src="' + escH(appIconSrc(p.app_icon_key)) + '" class="detail-img-photo" alt=""></div>';
+  else if (p.image_data && String(p.image_data).indexOf('data:image/') === 0) html += '<div class="glass detail-img" style="padding:0;overflow:hidden"><img src="' + escH(p.image_data) + '" class="detail-img-photo" alt=""></div>';
   else html += '<div class="glass detail-img">' + ic(p.image_emoji || 'box') + '<div class="detail-img-cap">' + escH(p.title) + '</div></div>';
   html += '<div class="glass buy-box"><div class="h1" style="margin-top:0;font-size:22px">' + escH(p.title) + '</div><div class="detail-meta badge-row">' + badgeMain + '<span class="badge" style="background:rgba(88,86,214,.14);color:#7d7aff">已售 ' + Number(p.sold_count || 0) + '</span><button type="button" class="badge badge-share" onclick="copyText(location.href)" title="复制商品链接">↗</button></div>';
   html += '<div class="buy-price">' + fmtCNY(p.price_usdt) + ' <small>约 ' + Number(p.price_usdt||0).toFixed(2) + ' USDT · 单价</small></div>';
@@ -971,7 +987,7 @@ function productFormHTML(pfx, p){
   h += '<div><label>库存类型</label><select id="' + pfx + 'stock" onchange="adminStockRow(\'' + pfx + '\')">' + sel('stock_type', [['manual','人工发货'],['card','卡密自动发']]) + '</select></div>';
   var showStockRow = (String(p.source) !== 'prodseller') && !(p.stock_type === 'card' || p.category === 'account');
   h += '<div id="' + pfx + 'stock-row"' + (showStockRow ? '' : ' style="display:none"') + '><label>库存状态</label><select id="' + pfx + 'instock">' + sel('in_stock', [['1','有货'],['0','缺货']]) + '</select><div class="muted" style="margin-top:4px">仅人工发货商品有效：选缺货后前台显示「缺货 · 补货中」，顾客无法下单。卡密/成品号商品的库存由卡密数量决定，上游商品由上游同步。</div></div>';
-  h += '<div><label>商品图片</label><div id="' + pfx + 'imgpv">' + (p.image_data ? '<img src="' + escH(p.image_data) + '" style="width:120px;height:120px;object-fit:cover;border-radius:16px">' : '<div class="muted">暂无图片，将显示默认图标</div>') + '</div><input type="file" accept="image/*" style="margin-top:8px" onchange="handleProductImage(this.files[0], \'' + pfx + '\')"><div class="muted" style="margin-top:4px">最佳比例 1:1（正方形），建议 800×800；非正方形会自动居中裁剪，原图不超过 2MB，上传后自动压缩。</div><button type="button" class="btn small ghost" style="margin-top:8px" onclick="clearProductImage(\'' + pfx + '\')">移除图片</button></div>';
+  h += productImagePickerHTML(pfx, p);
   h += '<div><label>在售</label><select id="' + pfx + 'active">' + sel('is_active', [['1','在售'],['0','下架']]) + '</select></div>';
   h += '</div>';
   h += '<div id="' + pfx + 'delivery-hint" class="muted" style="margin-top:8px">' + initHint + '</div>';
@@ -979,6 +995,69 @@ function productFormHTML(pfx, p){
   h += '<label>使用说明（显示在详情页）</label><textarea id="' + pfx + 'notice" rows="2">' + v('notice') + '</textarea>';
   h += '<label><input type="checkbox" id="' + pfx + 'reqact" style="width:auto"' + (Number(p.requires_email_activation) ? ' checked' : '') + '> 需要激活邮箱</label>';
   return h;
+}
+// 商品图片选择器：三选一 —— App 图标 / 自己上传 / 不选（默认 📦 线条图标）。
+// 状态：window._productImgMode[pfx] ∈ {app, upload, none}，window._productAppIcon[pfx] = 选中的 app key。
+function productImagePickerHTML(pfx, p){
+  var mode = p.app_icon_key ? 'app' : (p.image_data ? 'upload' : 'none');
+  window._productImgMode = window._productImgMode || {};
+  window._productAppIcon = window._productAppIcon || {};
+  window._productImgMode[pfx] = mode;
+  window._productAppIcon[pfx] = p.app_icon_key || '';
+  var h = '<div><label>商品图片</label>';
+  h += '<div style="display:flex;gap:6px;margin-bottom:10px">';
+  var modes = [['app', 'App 图标'], ['upload', '自己上传'], ['none', '不选（默认 📦）']];
+  for (var mi = 0; mi < modes.length; mi++){
+    var act = modes[mi][0] === mode;
+    h += '<button type="button" class="btn small' + (act ? '' : ' ghost') + '" data-imgmode="' + modes[mi][0] + '" onclick="setProductImgMode(\'' + pfx + '\', \'' + modes[mi][0] + '\')">' + modes[mi][1] + '</button>';
+  }
+  h += '</div>';
+  // 预览区
+  var pv = '';
+  if (mode === 'app' && p.app_icon_key && APP_ICONS[p.app_icon_key]) pv = '<img src="' + escH(appIconSrc(p.app_icon_key)) + '" style="width:120px;height:120px;object-fit:cover;border-radius:16px">';
+  else if (mode === 'upload' && p.image_data) pv = '<img src="' + escH(p.image_data) + '" style="width:120px;height:120px;object-fit:cover;border-radius:16px">';
+  else pv = '<div class="muted">不选图片，保存后显示默认 📦 线条图标</div>';
+  h += '<div id="' + pfx + 'imgpv">' + pv + '</div>';
+  // App 图标网格（仅 app 模式显示）
+  h += '<div id="' + pfx + 'appgrid" style="display:' + (mode === 'app' ? 'grid' : 'none') + ';grid-template-columns:repeat(6,1fr);gap:8px;margin-top:10px;max-height:240px;overflow:auto">';
+  var keys = Object.keys(APP_ICONS).sort(function(a, b){ return String(APP_ICONS[a].name || a).localeCompare(String(APP_ICONS[b].name || b)); });
+  for (var ki = 0; ki < keys.length; ki++){
+    var k = keys[ki], e = APP_ICONS[k];
+    var sel = (k === (p.app_icon_key || '')) ? 'outline:2px solid #5b7bff;outline-offset:2px;' : '';
+    h += '<button type="button" data-appcell="' + escH(k) + '" onclick="selectProductAppIcon(\'' + pfx + '\', \'' + escH(k) + '\')" title="' + escH(e.name || k) + '" style="border:0;background:transparent;cursor:pointer;padding:4px;border-radius:12px;' + sel + '"><img src="' + escH(currentTheme() === 'dark' ? (e.dark || e.light || '') : (e.light || e.dark || '')) + '" style="width:100%;aspect-ratio:1;object-fit:cover;border-radius:10px;display:block"><div style="font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escH(e.name || k) + '</div></button>';
+  }
+  h += '</div>';
+  // 上传区（仅 upload 模式显示）
+  h += '<div id="' + pfx + 'uploadbox" style="display:' + (mode === 'upload' ? '' : 'none') + '"><input type="file" accept="image/*" style="margin-top:8px" onchange="handleProductImage(this.files[0], \'' + pfx + '\')"><div class="muted" style="margin-top:4px">最佳比例 1:1（正方形），建议 800×800；非正方形会自动居中裁剪，原图不超过 2MB，上传后自动压缩。</div></div>';
+  h += '</div>';
+  return h;
+}
+function setProductImgMode(pfx, mode){
+  window._productImgMode = window._productImgMode || {};
+  window._productImgMode[pfx] = mode;
+  var btns = document.querySelectorAll('button[data-imgmode]');
+  for (var i = 0; i < btns.length; i++){ var m = btns[i].getAttribute('data-imgmode'); btns[i].classList.toggle('ghost', m !== mode); }
+  var grid = el(pfx + 'appgrid'); if (grid) grid.style.display = (mode === 'app') ? 'grid' : 'none';
+  var up = el(pfx + 'uploadbox'); if (up) up.style.display = (mode === 'upload') ? '' : 'none';
+  var pv = el(pfx + 'imgpv');
+  if (!pv) return;
+  if (mode === 'app'){
+    var k = (window._productAppIcon || {})[pfx] || '';
+    pv.innerHTML = (k && APP_ICONS[k]) ? '<img src="' + escH(appIconSrc(k)) + '" style="width:120px;height:120px;object-fit:cover;border-radius:16px">' : '<div class="muted">请在下方点选一个 App 图标</div>';
+  } else if (mode === 'upload'){
+    var cur = (window._productImage || {})[pfx];
+    pv.innerHTML = cur ? '<img src="' + cur + '" style="width:120px;height:120px;object-fit:cover;border-radius:16px">' : '<div class="muted">请选择一张图片上传（留空则显示默认图标）</div>';
+  } else {
+    pv.innerHTML = '<div class="muted">不选图片，保存后显示默认 📦 线条图标</div>';
+  }
+}
+function selectProductAppIcon(pfx, key){
+  window._productAppIcon = window._productAppIcon || {};
+  window._productAppIcon[pfx] = key;
+  var cells = document.querySelectorAll('button[data-appcell]');
+  for (var i = 0; i < cells.length; i++){ var on = cells[i].getAttribute('data-appcell') === key; cells[i].style.outline = on ? '2px solid #5b7bff' : ''; cells[i].style.outlineOffset = on ? '2px' : ''; }
+  var pv = el(pfx + 'imgpv');
+  if (pv && APP_ICONS[key]) pv.innerHTML = '<img src="' + escH(appIconSrc(key)) + '" style="width:120px;height:120px;object-fit:cover;border-radius:16px">';
 }
 function adminSourceChange(pfx){
   var row = document.getElementById(pfx + 'psid-row');
@@ -1023,10 +1102,15 @@ async function adminProductForm(id){
     var priceVal = parseFloat(el(pfx + 'price').value || '0');
     if (!isFinite(priceVal) || priceVal < 0){ toast('售价无效', 'error'); return false; }
     var body = { slug: slugVal, title: titleVal, price_usdt: priceVal, sell_price: priceVal, cost_price: parseFloat(el(pfx + 'cost').value || '0'), source: el(pfx + 'source').value, prodseller_id: el(pfx + 'psid').value, requires_email_activation: el(pfx + 'reqact').checked ? 1 : 0, delivery_method: 'both', category: el(pfx + 'cat').value, stock_type: el(pfx + 'stock').value, description: el(pfx + 'desc').value, notice: el(pfx + 'notice').value, image_emoji: 'box', is_active: Number(el(pfx + 'active').value), in_stock: Number(el(pfx + 'instock').value) };
+    // 商品图片三选一：App 图标 / 自己上传 / 不选（默认 📦）。App 图标与上传图互斥。
+    var imgMode = (window._productImgMode && window._productImgMode[pfx]) || (p && p.app_icon_key ? 'app' : (p && p.image_data ? 'upload' : 'none'));
+    var imgAppKey = (window._productAppIcon && window._productAppIcon[pfx]) || '';
+    if (imgMode === 'app' && imgAppKey) { body.app_icon_key = imgAppKey; body.image_data = ''; }
+    else if (imgMode === 'upload') { body.app_icon_key = ''; if (window._productImage && window._productImage[pfx]) body.image_data = window._productImage[pfx]; }
+    else { body.app_icon_key = ''; body.image_data = ''; }
     if (id){
       var old = p;
       body.image_emoji = (old && old.image_emoji) || 'box';
-      if (window._productImage && (pfx in window._productImage)) body.image_data = window._productImage[pfx];
       // 第七轮：新建/编辑商品不再自动加入旧默认联系方式字段；编辑历史商品时过滤掉旧字段，不重新加入。
       var ff = [];
       if (old && old.form_fields != null){ if (typeof old.form_fields === 'string'){ try { ff = JSON.parse(old.form_fields); } catch (e) { ff = []; } } else { ff = old.form_fields; } }
@@ -1035,7 +1119,6 @@ async function adminProductForm(id){
       if (!r.ok){ toast(r.error, 'error'); return false; }
     } else {
       body.form_fields = []; // 第七轮：新商品不再自动加入旧默认联系方式字段
-      if (window._productImage && (pfx in window._productImage)) body.image_data = window._productImage[pfx];
       var r2 = await api('/api/admin/products', 'POST', body);
       if (!r2.ok){ toast(r2.error, 'error'); return false; }
     }
@@ -1071,6 +1154,8 @@ function handleProductImage(file, pfx){
       if (url.length > 700000){ toast('图片压缩后仍超过 500KB，请换一张更小的图', 'error'); return; }
       window._productImage = window._productImage || {};
       window._productImage[pfx] = url;
+      window._productImgMode = window._productImgMode || {};
+      window._productImgMode[pfx] = 'upload';
       var pv = el(pfx + 'imgpv');
       if (pv) pv.innerHTML = '<img src="' + url + '" style="width:120px;height:120px;object-fit:cover;border-radius:16px">';
     };
@@ -1081,8 +1166,9 @@ function handleProductImage(file, pfx){
 function clearProductImage(pfx){
   window._productImage = window._productImage || {};
   window._productImage[pfx] = '';
-  var pv = el(pfx + 'imgpv');
-  if (pv) pv.innerHTML = '<div class="muted">已移除，保存后显示默认图标</div>';
+  window._productAppIcon = window._productAppIcon || {};
+  window._productAppIcon[pfx] = '';
+  setProductImgMode(pfx, 'none');
 }
 // ---- 卡密库存 ----
 window._cardFilter = { product_id: '', status: '', q: '', page: 1 };

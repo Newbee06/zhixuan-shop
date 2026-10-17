@@ -587,3 +587,50 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 - 主提交 `0e31e6b`（代码+测试+文档）经 `gh` 推送成功；CI 提交 `95d6f26` 含 `.github/workflows/ci.yml`，`gh` 缺 `workflow` 权限被拒，改走 PAT（细粒度，仅限本仓库，Contents+Workflows 读写，经安全入口提交、用完即丢）经 Git Data API 推送，远端提交 `4462d60`，`git diff` 与本地逐字节一致，ci.yml blob SHA 一致。
 - CI：push `38934786472` success、PR `38934792012` success；PR #1 仍 OPEN、MERGEABLE、CLEAN，未合并。
 - PR #1 不合并、不部署生产；真实链上验证仍 BLOCKED / NOT VERIFIED。
+
+## 第十轮：App 图标库（明/暗两版）+ 商品图片三选一（2026-10-17）
+
+### 目标（用户授权）
+
+- 找到生产店全部品牌（30 个：29 个生产品牌 + ChatGPT）的 iOS 图标，每 App 两张（明版/暗版），随主题切换。
+- 添加商品表单加 App 选择框：选 App 图标 / 自己上传 / 不选（默认 📦 线条 logo）。
+- 提交 GitHub、部署 zhixuan staging 测试；不部署生产。
+
+### 图标来源与处理
+
+- 24 个品牌：iTunes Search API 官方 App 图标（512×512，如 ChatGPT、Claude、多邻国、Gmail、Canva、Gemini、Notion、Figma、Spotify、Telegram、Cursor、iLovePDF、CapCut、Miro、edX、HBO Max、Apple TV、Scribd、ElevenLabs、Wispr Flow、Avira、Outlook、Adobe、Prime Video）。
+- 6 个无 iOS App 的品牌用品牌 Logo 兜底：Codex（OpenAI favicon）、JetBrains（Wikimedia Logo）、Framer（favicon）、Muse AI（muse.ai favicon）、Autodesk（Wikimedia Logo）、Microsoft 365（Wikimedia 365 Logo）。Clearbit 兜底被拒后改用 Google favicon / Wikimedia。
+- 处理：统一 160×160、iOS 圆角、JPEG；明版白底、暗版深色底（#1c1c1e）；近单色深色 Logo（Autodesk）在暗版反色为白，彩色 Logo 不反色。总 base64 约 282KB。
+
+### 改动
+
+**`src/worker.js`**
+- 迁移 v11：新建 `app_icons(app_key, theme, name, image_data)`，`products` 加 `app_icon_key` 列，种子 60 行图标；现有商品按标题自动匹配 App 图标（仅空值时，幂等）。
+- 新增公开 `GET /api/app-icons`（返回 `{key: {name, light, dark}}`，表不存在时返回空库不 500）。
+- 商品列表/详情返回 `app_icon_key`；新建/编辑校验 `app_icon_key`（格式小写字母数字 + 必须在图标库中存在）；App 图标与上传图互斥（选图标则清空上传图）。
+- 上游导入按标题自动匹配 App 图标（仅新导入时；重导入不覆盖人工选的图标）。
+- `expectedTables` 加入 `app_icons` 与 `products.app_icon_key`。
+
+**`src/frontend.html`**
+- 启动加载 `/api/app-icons` 存 `APP_ICONS`；`appIconSrc(key)` 按当前主题取图；`productImgHtml()` 渲染优先级：App 图标 > 上传图 > 默认 📦；`refreshAppIcons()` 主题切换时更新全部 App 图标 `src`。
+- 三处渲染（列表缩略图、商品卡、详情大图）均接入 App 图标。
+- 商品表单“商品图片”改为三选一：App 图标（30 图标网格点选，当前主题预览）、自己上传（原有上传）、不选（默认 📦）；保存时按模式发送 `app_icon_key` / `image_data`。
+
+### 测试（全部本地真实执行）
+
+- 新测试 `tests/app-icons-test.mjs`：69/69 PASS（迁移 v11、图标库 30×2、标题自动匹配、新建/编辑三态切换、不传保留旧值、伪造 key 拒绝、上游导入匹配、前端选择器/主题切换）。
+- 全量：`npm run test:static` PASS；`npm run test:regression` 全绿（mock、全量、stock 17、security 98、concurrency 114、release-readiness 90、whitelist 65、app-icons 69）；`bash tests/d1-local-test.sh` PASS（v11）；`npm run test:browser` 64/64。
+- 本地 wrangler dev 实测：`/api/app-icons` 返回 30 App；种子商品（ChatGPT/Claude/Cursor 示例）已按标题自动匹配图标。
+- 其他测试版本断言由 v10 升为 v11；concurrency/d1-local 的旧库剥离正则改为 `(11)` 可选（schema.sql 种子只到 v10，强制匹配会剥离失败）。
+
+### 决策矩阵（本轮真实证据）
+
+| 项 | 判定 | 依据 |
+| --- | --- | --- |
+| A. staging 是否已实际部署并可访问 | 待部署后补记 | 本轮代码已提交，staging 部署待执行 |
+| B. staging 是否通过部署后验收 | 待部署后补记 | — |
+| C. PR 是否具备提交人工审查的条件 | PASS（待 CI 验证） | 代码已提交至功能分支，CI 结果见 PR 页面；仅代表可进入人工审查，不代表自动合并 |
+| D. 是否已经获得生产部署批准 | BLOCKED | 未获得生产部署批准，本轮不部署生产 |
+| E. 是否可以开放真实客户销售 | BLOCKED | 真实链上收款未验证 |
+| F. 是否可以启用真实链上收款 | BLOCKED | 真实链上测试未执行（仅 mock 核验） |
+| G. 是否可以启用 ProdSeller 自动采购与履约 | BLOCKED | 真实 ProdSeller 行为未验证，门禁保持关闭 |

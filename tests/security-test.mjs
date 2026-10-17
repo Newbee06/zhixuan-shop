@@ -308,7 +308,7 @@ check('exception_reason cleared after fulfill', q('SELECT exception_reason FROM 
 
 // ===== 8d. 迁移状态端点 =====
 r = await call('GET', '/api/admin/migrate', null, cookie);
-check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 10, JSON.stringify(r.json));
+check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 11, JSON.stringify(r.json));
 r = await call('POST', '/api/admin/migrate', {}, cookie);
 check('migrate POST idempotent', r.json && r.json.ok === true && r.json.applied.length === 0, JSON.stringify(r.json));
 
