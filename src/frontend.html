@@ -449,7 +449,8 @@ function renderShop(){
   html += '<div class="filter-row"><div class="tabs" style="margin:0"><button id="pill-all" onclick="filterStock(\x27all\x27)">全部 <span id="cntAll"></span></button><button id="pill-instock" onclick="filterStock(\x27instock\x27)"><span class="stock-dot"></span> 有货 <span id="cntStock"></span></button></div><div class="muted" id="prodCount"></div></div><div id="list" class="grid shop-grid"></div>';
   el('app').innerHTML = html;
   var ss = el('sortSel'); if (ss) ss.value = curSort;
-  renderList();
+  // 商城每次进入都重新拉商品（PRODUCTS 只在首次 load() 时取过一次；下单预留库存后 SPA 内导航回商城会显示过期库存计数）。失败时用旧数据渲染，不白屏。
+  api('/api/products').then(function(pr){ if (pr.ok) PRODUCTS = pr.products; renderList(); }).catch(function(){ renderList(); });
 }
 function filterStock(s){ curStock = s; renderList(); }
 function doSearch(){ curQ = el('q').value || ''; renderList(); }

@@ -2285,7 +2285,7 @@ async function handleApi(req, env, url, ctx) {
       var credType = 'legacy';
       if (o.query_password_salt && o.query_password_hash) credType = 'password';
       else if (o.query_token_hash) credType = 'token';
-      var item = { order_no: o.order_no, status: o.status, product_title: snap.title || '', quantity: o.quantity, total_usdt: o.total_usdt, pay_method: o.pay_method, pay_chain: o.pay_chain, created_at: o.created_at, paid_at: o.paid_at, credential_type: credType };
+      var item = { order_no: o.order_no, status: o.status, product_title: snap.title || '', quantity: o.quantity, total_usdt: o.total_usdt, actual_amount: o.actual_amount, pay_method: o.pay_method, pay_chain: o.pay_chain, created_at: o.created_at, paid_at: o.paid_at, credential_type: credType };
       // P1-13：pending_payment 订单附带 pay_address（商家公开收款地址，非买家隐私），成功页刷新后仍能恢复付款信息。
       if (o.status === 'pending_payment') item.pay_address = o.pay_address || '';
       return item;

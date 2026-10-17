@@ -1217,6 +1217,30 @@ check('P1-5 frontend: refund modal has upstream-voided checkbox', frontendHtml.i
 // P2-5：genCaptchaSVG 未改动（仍为 <text> 渲染；Turnstile fail-closed 已由 security-test 覆盖）。
 check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptchaSVG') && workerCode.includes('<text'));
 
+// ================= 浏览器复验回归（2026-10-17 staging）：/query 返回 actual_amount + 商城每次进入重拉商品 =================
+// 缺陷：/query 手写字段映射漏了 actual_amount，查询页回退到 total_usdt，与成功页精确应付不一致；买家按查询页金额付款会导致链上匹配失败。
+{
+  r = await call('POST', '/api/admin/products', { title: '手动商品-复验金额', category: 'recharge', stock_type: 'manual', sell_price: 5, source: 'self' }, cookie);
+  const pAmt = q("SELECT * FROM products WHERE title='手动商品-复验金额'");
+  r = await orderCall({ product_id: pAmt.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
+  check('reverify: order created', r.json && r.json.ok === true, JSON.stringify(r.json));
+  const created = r.json && r.json.order ? r.json.order : {};
+  const actualAmt = Number(created.actual_amount);
+  check('reverify: create returns actual_amount > total_usdt (random tail)', Number.isFinite(actualAmt) && actualAmt > Number(created.total_usdt), JSON.stringify(created));
+  const cidQ = mkCaptcha('AB12');
+  r = await call('POST', '/api/orders/query', { keywords: created.order_no, captcha_id: cidQ, captcha_code: 'AB12' });
+  const listed = r.json && r.json.orders && r.json.orders[0];
+  check('reverify: /query returns actual_amount equal to create response', !!listed && Number(listed.actual_amount) === actualAmt, JSON.stringify(r.json));
+  check('reverify: /query pending_payment carries pay_address', !!listed && typeof listed.pay_address === 'string' && listed.pay_address.length > 0, JSON.stringify(listed));
+}
+// 前端：renderShop 每次进入重拉 /api/products（PRODUCTS 只在 load() 取一次，下单后 SPA 内导航回商城会显示过期库存计数）。
+{
+  const shopIdx = frontendHtml.indexOf('function renderShop()');
+  const shopSlice = shopIdx >= 0 ? frontendHtml.slice(shopIdx, shopIdx + 3000) : '';
+  check('reverify: renderShop refetches /api/products on every entry', shopSlice.includes("api('/api/products')"));
+  check('reverify: renderShop refetch falls back to stale data on failure', shopSlice.includes('.catch'));
+}
+
 // ================= 汇总 =================
 console.log('\nreview-fixes: ' + pass + ' passed, ' + fail + ' failed');
 if (fail > 0) { console.log('Failures:'); for (const f of failures) console.log(' - ' + f); process.exit(1); }
