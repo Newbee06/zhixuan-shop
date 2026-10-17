@@ -1284,6 +1284,18 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   check('home: section head below grid (above footer)', frontendHtml.includes('id="list" class="grid shop-grid"></div>\' + homeSectionHeadHTML()'));
   // 新增配色与线条图标同色（.ic 蓝 #5b7bff 同色系），不留 #7c3aed 系紫色。
   check('home: accent matches line-icon blue', frontendHtml.includes('.home-h1-accent{color:#5b7bff}') && frontendHtml.includes('.home-cta{border:0;background:#5b7bff') && !/#7c3aed|#a78bfa|#6d28d9|#5b21b6/.test(frontendHtml));
+  // 芯片符号用实心（▲/▶）：空心 △/▷ 在小字号 + 低对比下肉眼几乎看不见，用户反馈“不显示”。
+  check('home: chips use solid glyphs', frontendHtml.includes('▲ <span>创造</span>') && frontendHtml.includes('▶ <span>放松</span>'));
+  // TXID 可选：空着提交不该报长度错误——前端拦截提示 + 后端友好报错（纵深防御）。
+  check('pay: empty TXID guarded client + server', frontendHtml.includes('请先填写 TXID（不填可直接等待自动发货）') && workerCode.includes('请填写 TXID（不填可直接等待自动发货）'));
+  // 商品卡按钮背景色（用户要求，手机端 + PC 端都改）：立即购买 微亮绿色、售罄 微亮红色；深色模式各配半透明版，售罄需单独写 :disabled（深色 .pcard-btn 特异性高于基础 :disabled，否则售罄会变绿）。
+  check('shop: card button colors', frontendHtml.includes('background:#d6f5e0;color:#1a8f4a') && frontendHtml.includes('.pcard-btn:disabled{background:#ffe0e1;color:#d92b2b') && frontendHtml.includes('rgba(48,209,88,.28);color:#7be3a8') && frontendHtml.includes('rgba(255,69,58,.28);color:#ff9d97'));
+  check('shop: mobile card title/desc sizes + shrink', frontendHtml.includes('.pcard-title{font-size:12px') && frontendHtml.includes('.pcard-desc{font-size:9px') && frontendHtml.includes('.pcard{padding:8px}') && frontendHtml.includes('.pcard-price{font-size:20px}') && frontendHtml.includes('.pcard-btn{font-size:12px') && frontendHtml.includes('.pcard-arrow{font-size:14px}') && frontendHtml.includes('.pcard-img{margin-bottom:6px;aspect-ratio:4/2.7}') && frontendHtml.includes('.shop-grid{gap:10px}') && frontendHtml.includes('relHtml += productCard(rel[ri])'));
+  check('home: mobile hero is row layout', frontendHtml.includes('.home-hero{flex-direction:row;gap:12px;padding:16px;align-items:flex-start}') && frontendHtml.includes('.home-visual{flex:0 0 156px;height:119px;min-width:0}') && frontendHtml.includes('.home-visual-scale{width:420px;height:320px;transform:scale(0.37)') && frontendHtml.includes('<div class="home-visual"><div class="home-visual-scale">') && frontendHtml.includes('.home-h1{font-size:10px}') && frontendHtml.includes('.home-cta{font-size:10px;padding:6px 12px}') && frontendHtml.includes('.home-sub{font-size:8px') && frontendHtml.includes('.home-eyebrow{font-size:8px') && frontendHtml.includes('.home-note{font-size:8px') && !frontendHtml.includes('.home-visual-ring{display:none}') && !frontendHtml.includes('.home-pcard{width:calc(100% - 8px)') && !frontendHtml.includes('.home-visual-cap{display:none}'));
+  // 查单：订单号或下单邮箱双查（用户 2026-10-17 明确要求，取代 v15“邮箱查询禁用”）；卡密仍走 /secret + 查询密码。
+  check('query: order no or email', workerCode.includes('OR LOWER(contact) = LOWER(?)') && frontendHtml.includes('订单号或下单邮箱') && frontendHtml.includes('输入订单号或下单时填写的邮箱查询订单'));
+  check('home: mobile section title fits one line', frontendHtml.includes('.home-section-title{font-size:20px}') && frontendHtml.includes('.home-section-star{font-size:22px}'));
+  check('home: desktop hero/title fonts unchanged', frontendHtml.includes('.home-hero{display:flex;gap:24px;align-items:center;justify-content:space-between;background:var(--card2);border:1px solid var(--line);border-radius:28px;padding:36px 36px 28px') && frontendHtml.includes('.home-section-title{font-size:26px'));
   {
     const heroStart = frontendHtml.indexOf('function homeHeroHTML(');
     const headEnd = frontendHtml.indexOf('function filterStock(', heroStart);

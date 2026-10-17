@@ -237,7 +237,7 @@ r = await call('POST', '/api/orders/query', { keywords: 'buyer@example.com' });
 check('query-flow: query list without captcha rejected', r.status === 401, JSON.stringify(r.json));
 seedCaptcha('qf-cap-3', 'TEST');
 r = await call('POST', '/api/orders/query', { keywords: 'buyer@example.com', captcha_id: 'qf-cap-3', captcha_code: 'TEST' });
-check('query-flow: query by email returns generic empty (email is not a credential)', r.json && r.json.ok && r.json.orders.length === 0, JSON.stringify(r.json));
+check('query-flow: query by email lists order', r.json && r.json.ok && r.json.orders.length === 1 && r.json.orders[0].order_no === qfNo1, JSON.stringify(r.json));
 seedCaptcha('qf-cap-4', 'TEST');
 r = await call('POST', '/api/orders/query', { keywords: qfNo1, captcha_id: 'qf-cap-4', captcha_code: 'TEST' });
 check('query-flow: query by order_no lists order (no delivery, no has_delivery)', r.json && r.json.ok && r.json.orders.length === 1 && r.json.orders[0].order_no === qfNo1 && r.json.orders[0].credential_type === 'password' && !('delivery_content' in r.json.orders[0]) && !('has_delivery' in r.json.orders[0]), JSON.stringify(r.json));
@@ -279,7 +279,7 @@ r = await call('POST', '/api/orders/' + qfNo2 + '/secret', { password: 'newpw456
 check('P3-40: /secret correct password after 5 attempts -> 429 (gate before password check)', r.status === 429, JSON.stringify(r.json));
 check('query-flow: frontend checkout has query_password field', html.includes('id="query_password"') && html.includes('设置查询订单的密码'));
 check('query-flow: frontend query page is keyword+list flow', html.includes('id="qkeywords"') && html.includes('doQueryList()') && html.includes('doQuerySecret(') && html.includes('doQueryLegacy('));
-check('query-flow: frontend query page says email is not a credential', html.includes('邮箱不能作为查询凭证'));
+check('query-flow: frontend query page accepts order no or email', html.includes('订单号或下单邮箱') && html.includes('输入订单号或下单时填写的邮箱查询订单'));
 check('query-flow: frontend success page no longer shows system token', !html.includes('_lastQueryToken') && html.includes('请牢记您设置的查询密码'));
 
 console.log(`\nAPP-ICONS TEST DONE pass=${pass} fail=${fail}`);

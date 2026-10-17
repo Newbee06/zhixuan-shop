@@ -208,7 +208,7 @@ await page.waitForTimeout(1000);
 const qsecOk = await page.evaluate((no) => (document.getElementById('qsec-' + no) || {}).innerHTML || '', orderNo);
 check('secret correct password on unpaid order: not-paid hint, no card leak',
   (qsecOk.includes('尚未付款') || qsecOk.includes('暂无交付内容')) && !qsecOk.includes('BROWSER-'));
-// 邮箱不能作为查询凭证
+// 邮箱可查（订单号或下单邮箱精确匹配，大小写不敏感）
 await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
 await page.waitForTimeout(500);
 {
@@ -220,8 +220,7 @@ await page.waitForTimeout(500);
   await page.waitForTimeout(1200);
 }
 const qresEmail = await page.evaluate(() => (document.getElementById('qres') || {}).innerHTML || '');
-check('query by email: generic empty (email is not a credential)',
-  qresEmail.includes('未找到相关订单') && !qresEmail.includes(orderNo));
+check('query by email: order listed', qresEmail.includes(orderNo));
 // 空数据：查不存在的订单
 await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
 await page.waitForTimeout(500);
@@ -479,6 +478,50 @@ for (const [w, h, label] of [[390, 844, '390'], [360, 740, '360']]) {
   await page.waitForTimeout(800);
   check(`mobile ${label} home: no horizontal overflow`,
     (await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)) <= 1);
+  // 移动端适配回归（冻结规格 1A/2A/3C）：合集标题一行（≤30px 高）、Hero 倾斜卡不被 Hero 裁剪。
+  await page.waitForSelector('.home-section-title', { timeout: 10000 });
+  const mobileLayout = await page.evaluate(() => {
+    const title = document.querySelector('.home-section-title');
+    const hero = document.querySelector('.home-hero');
+    const pcard = document.querySelector('.home-pcard');
+    if (!title || !hero || !pcard) return null;
+    const hb = hero.getBoundingClientRect(), pb = pcard.getBoundingClientRect();
+    return { titleH: Math.round(title.getBoundingClientRect().height), pcardWithin: pb.bottom <= hb.bottom + 2 };
+  });
+  check(`mobile ${label} home: section title single line`, !!mobileLayout && mobileLayout.titleH <= 30, JSON.stringify(mobileLayout));
+  check(`mobile ${label} home: hero card not clipped`, !!mobileLayout && mobileLayout.pcardWithin, JSON.stringify(mobileLayout));
+  // 放松标签不得被 Hero 右边缘裁剪（right:0 + 旋转 8° 会超出，移动端内收 10px）。
+  const chipWithin = await page.evaluate(() => {
+    const hero = document.querySelector('.home-hero');
+    const chip = document.querySelector('.home-chip-relax');
+    if (!hero || !chip) return null;
+    const hb = hero.getBoundingClientRect(), cb = chip.getBoundingClientRect();
+    return cb.left >= hb.left - 1 && cb.right <= hb.right + 1 && cb.top >= hb.top - 1 && cb.bottom <= hb.bottom + 1;
+  });
+  check(`mobile ${label} home: relax chip fully inside hero`, chipWithin === true, String(chipWithin));
+  // 横排 Hero：文案在左、视觉在右，并排不堆叠。
+  const rowLayout = await page.evaluate(() => {
+    const hero = document.querySelector('.home-hero');
+    const kids = hero ? hero.querySelectorAll(':scope > div') : [];
+    if (!hero || kids.length < 2) return null;
+    const a = kids[0].getBoundingClientRect(), b = kids[1].getBoundingClientRect();
+    return { dir: getComputedStyle(hero).flexDirection, sideBySide: a.right <= b.left + 2 && b.width > 100 };
+  });
+  check(`mobile ${label} home: hero row layout`, !!rowLayout && rowLayout.dir === 'row' && rowLayout.sideBySide, JSON.stringify(rowLayout));
+  // 协调：卡片内容不溢出（桌面尺寸卡片原样放进 420×320 缩放盒，内容天生放得下）；视觉下标显示（1:1 缩放含下标）；圆环显示；视觉是缩放小图。
+  const cardState = await page.evaluate(() => { const c = document.querySelector('.home-pcard'); const cap = document.querySelector('.home-visual-cap'); return { fits: c ? c.scrollHeight <= c.clientHeight + 1 : false, capShown: cap ? getComputedStyle(cap).display !== 'none' : false }; });
+  check(`mobile ${label} home: card content fits`, cardState.fits === true, JSON.stringify(cardState));
+  check(`mobile ${label} home: visual caption shown`, cardState.capShown === true, JSON.stringify(cardState));
+  const visualScale = await page.evaluate(() => { const s = document.querySelector('.home-visual-scale'); const v = document.querySelector('.home-visual'); if (!s || !v) return null; const tr = getComputedStyle(s).transform; const r = v.getBoundingClientRect(); return { hasTransform: tr && tr !== 'none', boxW: Math.round(r.width), boxH: Math.round(r.height) }; });
+  check(`mobile ${label} home: visual is scaled miniature`, !!visualScale && visualScale.hasTransform && visualScale.boxW <= 170 && visualScale.boxH <= 135, JSON.stringify(visualScale));
+  const ringShown = await page.evaluate(() => { const r = document.querySelector('.home-visual-ring'); return r ? getComputedStyle(r).display !== 'none' : false; });
+  check(`mobile ${label} home: rings shown`, ringShown === true, String(ringShown));
+  // 商品卡：名称 10px、介绍 8px（同类推荐复用同一 productCard，同款）。
+  const cardType = await page.evaluate(() => { const t = document.querySelector('.pcard-title'); const d = document.querySelector('.pcard-desc'); const pr = document.querySelector('.pcard-price'); const b = document.querySelector('.pcard-btn'); return { title: t ? getComputedStyle(t).fontSize : null, desc: d ? getComputedStyle(d).fontSize : null, price: pr ? getComputedStyle(pr).fontSize : null, btn: b ? getComputedStyle(b).fontSize : null }; });
+  check(`mobile ${label} shop: card title 12px desc 9px price 20px btn 12px`, cardType.title === '12px' && cardType.desc === '9px' && cardType.price === '20px' && cardType.btn === '12px', JSON.stringify(cardType));
+  // 购买按钮背景 微亮绿色（#d6f5e0）。
+  const btnBg = await page.evaluate(() => { const b = document.querySelector('.pcard-btn:not(:disabled)'); return b ? getComputedStyle(b).backgroundColor : null; });
+  check(`mobile ${label} shop: buy button light green bg`, btnBg === 'rgb(214, 245, 224)', btnBg);
 }
 
 // ===== 9. 控制台与接口失败 =====

@@ -2271,14 +2271,15 @@ async function handleApi(req, env, url, ctx) {
   if (path === '/api/orders/query' && method === 'POST') {
     var qb = await parseJsonBody(req);
     var keywords = String(qb.keywords || '').trim();
-    if (!keywords) return err('请输入订单号再查询');
+    if (!keywords) return err('请输入订单号或邮箱再查询');
     if (keywords.length > 200) return err('查询关键词过长');
     var capErrQ = await verifyCaptcha(env, qb.captcha_id, qb.captcha_code);
     if (capErrQ) return err(capErrQ, 401);
     var rateErrQ = await checkLookupRateLimit(env, req);
     if (rateErrQ) return err(rateErrQ, 429);
-    // 仅按订单号匹配；邮箱不再作为查询键。
-    var qRows = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ? ORDER BY created_at DESC LIMIT 10').bind(keywords).all();
+    // 按订单号或下单邮箱精确匹配（用户 2026-10-17 明确要求邮箱可查；邮箱大小写不敏感）。
+    // 查询列表仅含摘要，卡密仍走 /secret + 查询密码；验证码 + IP 限流仍生效。
+    var qRows = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ? OR LOWER(contact) = LOWER(?) ORDER BY created_at DESC LIMIT 10').bind(keywords, keywords).all();
     var qList = (qRows.results || []).map(function (o) {
       var snap = {}; try { snap = JSON.parse(o.product_snapshot || '{}'); } catch (e) { snap = {}; }
       // 凭证类型：password=新订单（salted 查询密码）/ token=旧订单系统凭证 / legacy=无有效凭证（仅管理员流程）
@@ -2331,6 +2332,8 @@ async function handleApi(req, env, url, ctx) {
   if (mPay && method === 'POST') {
     var b = await parseJsonBody(req);
     var txid = String(b.txid || '').trim();
+    // TXID 可选：空着提交不是长度错误——给明确提示（前端已拦截，此处为纵深防御）。
+    if (!txid) return err('请填写 TXID（不填可直接等待自动发货）');
     if (txid.length < 6 || txid.length > 200) return err('TXID / 订单 ID 长度无效（6-200字符）');
     if (!/^[A-Za-z0-9_\-]+$/.test(txid)) return err('仅支持字母数字 _ -');
     var no2 = decodeURIComponent(mPay[1]);

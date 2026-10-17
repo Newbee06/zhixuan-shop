@@ -6,9 +6,9 @@
 <title>智选</title>
 <style>
 :root{--bg:#f2f2f7;--card:rgba(255,255,255,.68);--card2:rgba(255,255,255,.9);--text:#1c1c1e;--sub:#6b7280;--line:rgba(255,255,255,.6);--accent:#0a84ff;--green:#34c759;--orange:#ff9f0a;--red:#ff453a;--radius:24px}
-@media (prefers-color-scheme:dark){html:not([data-theme]){--bg:#000;--card:rgba(28,28,30,.62);--card2:rgba(44,44,46,.85);--text:#f5f5f7;--sub:#a1a1aa;--line:rgba(255,255,255,.14)}html:not([data-theme]) .pcard-btn{background:rgba(109,92,255,.28);color:#b7adff}}
+@media (prefers-color-scheme:dark){html:not([data-theme]){--bg:#000;--card:rgba(28,28,30,.62);--card2:rgba(44,44,46,.85);--text:#f5f5f7;--sub:#a1a1aa;--line:rgba(255,255,255,.14)}html:not([data-theme]) .pcard-btn{background:rgba(48,209,88,.28);color:#7be3a8}html:not([data-theme]) .pcard-btn:disabled{background:rgba(255,69,58,.28);color:#ff9d97}}
 html[data-theme="dark"]{--bg:#000;--card:rgba(28,28,30,.62);--card2:rgba(44,44,46,.85);--text:#f5f5f7;--sub:#a1a1aa;--line:rgba(255,255,255,.14)}
-html[data-theme="dark"] .pcard-btn{background:rgba(109,92,255,.28);color:#b7adff}
+html[data-theme="dark"] .pcard-btn{background:rgba(48,209,88,.28);color:#7be3a8}html[data-theme="dark"] .pcard-btn:disabled{background:rgba(255,69,58,.28);color:#ff9d97}
 html[data-theme="dark"] .pcard-img{background:#1c1c1e}
 html[data-theme="dark"] .prod-img{background:#1c1c1e}
 html[data-theme="dark"] .detail-img-photo{background:#1c1c1e}
@@ -63,6 +63,7 @@ a{color:var(--accent);text-decoration:none}
 #shopBrowse{scroll-margin-top:72px}
 .home-note{color:var(--sub);font-size:13px;margin-top:16px}
 .home-visual{position:relative;width:420px;height:320px;flex:0 0 auto}
+.home-visual-scale{position:relative;width:100%;height:100%}
 .home-visual-ring{position:absolute;border:1px solid rgba(91,123,255,.18);border-radius:50%}
 .home-pcard{position:absolute;left:50%;top:52%;transform:translate(-50%,-50%) rotate(-10deg);width:340px;height:200px;border-radius:22px;background:linear-gradient(135deg,#8ea6ff,#5b7bff 55%,#3d5afe);color:#fff;padding:20px;display:flex;flex-direction:column;justify-content:space-between;box-shadow:0 24px 50px rgba(91,123,255,.35)}
 .home-pcard-top{display:flex;justify-content:space-between;align-items:flex-start;font-size:13px}
@@ -82,7 +83,7 @@ a{color:var(--accent);text-decoration:none}
 .home-back-top{border:0;background:transparent;color:var(--sub);font-size:14px;cursor:pointer;white-space:nowrap;padding:6px 0}
 .home-back-top:hover{color:var(--text)}
 html[data-theme="dark"] .home-h1-accent,html[data-theme="dark"] .home-section-star,html[data-theme="dark"] .home-eyebrow b{color:#8ea6ff}
-@media(max-width:640px){.home-hero{flex-direction:column;padding:24px 20px}.home-h1{font-size:36px}.home-visual{width:100%;max-width:340px;height:280px}.home-pcard{width:300px}}
+@media(max-width:640px){.home-hero{flex-direction:row;gap:12px;padding:16px;align-items:flex-start}.home-hero>div:first-child{flex:1;min-width:0}.home-h1{font-size:10px}.home-eyebrow{font-size:8px;margin-bottom:10px}.home-sub{font-size:8px;margin-bottom:16px}.home-cta{font-size:10px;padding:6px 12px}.home-note{font-size:8px;margin-top:12px}.home-visual{flex:0 0 156px;height:119px;min-width:0}.home-visual-scale{width:420px;height:320px;transform:scale(0.37);transform-origin:top left}.home-section-title{font-size:20px}.home-section-star{font-size:22px}}
 .h1{font-size:26px;font-weight:800;margin:6px 0 4px}
 .h2{font-size:18px;font-weight:700;margin:0 0 10px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -107,8 +108,9 @@ html[data-theme="dark"] .home-h1-accent,html[data-theme="dark"] .home-section-st
 .pcard-foot{display:flex;flex-direction:column;gap:10px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(127,127,127,.15)}
 .pcard-price-label{font-size:11px;color:var(--sub)}
 .pcard-price{font-size:24px;font-weight:800;line-height:1.2}
-.pcard-btn{border:0;border-radius:12px;padding:12px 14px;font-size:14px;font-weight:700;cursor:pointer;background:#e8e4ff;color:#6d5cff;white-space:nowrap;text-align:center}
-.pcard-btn:disabled{background:rgba(127,127,127,.15);color:var(--sub);cursor:not-allowed}
+.pcard-btn{border:0;border-radius:12px;padding:12px 14px;font-size:14px;font-weight:700;cursor:pointer;background:#d6f5e0;color:#1a8f4a;white-space:nowrap;text-align:center}
+.pcard-btn:disabled{background:#ffe0e1;color:#d92b2b;cursor:not-allowed}
+@media(max-width:640px){.pcard-title{font-size:12px;margin:8px 0 4px}.pcard-desc{font-size:9px;min-height:29px}.pcard{padding:8px}.pcard-img{margin-bottom:6px;aspect-ratio:4/2.7}.pcard-foot{gap:6px;margin-top:8px;padding-top:8px}.pcard-price-label{font-size:10px}.pcard-price{font-size:20px}.pcard-btn{font-size:12px;padding:10px 12px}.pcard-arrow{font-size:14px}.shop-grid{gap:10px}}
 .emoji{font-size:34px}
 .price{font-size:22px;font-weight:800;margin:8px 0 2px}
 .badge{display:inline-block;font-size:12px;padding:4px 9px;border-radius:999px;background:rgba(10,132,255,.14);color:var(--accent)}
@@ -539,7 +541,7 @@ function renderShop(){
 }
 // 首页 Hero（参考 prodseller 版式，文案按截图、品牌换本站的）：左文案 + 右紫色倾斜卡 + 漂浮标签。
 function homeHeroHTML(){
-  return '<div class="home-hero"><div><div class="home-eyebrow"><b>✦</b> 您的数字化升级之旅由此开启</div><div class="home-h1">无限可能，<br><span class="home-h1-accent">更实惠的价格。</span></div><p class="home-sub">你下一个最爱的工具就在这里。探索适用于工作、创意以及其他各种用途的数字订阅服务。</p><button class="home-cta" onclick="document.getElementById(\x27shopBrowse\x27).scrollIntoView({behavior:\x27smooth\x27})">探索 <span>↗</span></button><div class="home-note">更多选择，尽在一处。</div></div><div class="home-visual"><span class="home-visual-ring" style="width:340px;height:340px;left:40px;top:-10px"></span><span class="home-visual-ring" style="width:260px;height:260px;left:80px;top:30px"></span><div class="home-chip home-chip-create">△ <span>创造</span></div><div class="home-chip home-chip-relax">▷ <span>放松</span></div><div class="home-pcard"><div class="home-pcard-top"><span class="home-pcard-logo">智选 ↗</span><span class="home-pcard-note">一切都数字化了。</span></div><div class="home-pcard-bottom"><div>略微升级，<br>潜力却更大。</div><span class="home-pcard-arrow">↗</span></div></div><div class="home-chip home-chip-discover">✳ <span>发现</span></div><div class="home-visual-cap">好工具，大可能。</div></div></div>';
+  return '<div class="home-hero"><div><div class="home-eyebrow"><b>✦</b> 您的数字化升级之旅由此开启</div><div class="home-h1">无限可能，<br><span class="home-h1-accent">更实惠的价格。</span></div><p class="home-sub">你下一个最爱的工具就在这里。探索适用于工作、创意以及其他各种用途的数字订阅服务。</p><button class="home-cta" onclick="document.getElementById(\x27shopBrowse\x27).scrollIntoView({behavior:\x27smooth\x27})">探索 <span>↗</span></button><div class="home-note">更多选择，尽在一处。</div></div><div class="home-visual"><div class="home-visual-scale"><span class="home-visual-ring" style="width:340px;height:340px;left:40px;top:-10px"></span><span class="home-visual-ring" style="width:260px;height:260px;left:80px;top:30px"></span><div class="home-chip home-chip-create">▲ <span>创造</span></div><div class="home-chip home-chip-relax">▶ <span>放松</span></div><div class="home-pcard"><div class="home-pcard-top"><span class="home-pcard-logo">智选 ↗</span><span class="home-pcard-note">一切都数字化了。</span></div><div class="home-pcard-bottom"><div>略微升级，<br>潜力却更大。</div><span class="home-pcard-arrow">↗</span></div></div><div class="home-chip home-chip-discover">✳ <span>发现</span></div><div class="home-visual-cap">好工具，大可能。</div></div></div></div>';
 }
 // 商品合集区标题（截图第二块；本站无收藏夹，右侧改为返回顶部）。
 function homeSectionHeadHTML(){
@@ -772,6 +774,8 @@ async function doRecoverPayment(){
 async function submitTxid(no){
   var txEl = el('txid') || el('qtxid-' + no) || el('qtxid');
   var tx = txEl ? txEl.value : '';
+  // TXID 可选：空着点提交不是长度错误——直接提示，不发请求（也不消耗一次性验证码）。
+  if (!tx.trim()){ toast('请先填写 TXID（不填可直接等待自动发货）', 'error'); return; }
   // P3-4：/pay 提交 TXID 带图形验证码，字段名与下单验证码一致（captcha_id / captcha_code）。
   // 验证码单次有效，/pay 用独立的新验证码，不复用查单验证码。
   var body = { txid: tx };
@@ -787,7 +791,7 @@ async function submitTxid(no){
   toast(r.message || 'TXID 已提交', 'success');
 }
 function renderQuery(){
-  var html = '<div class="glass"><div class="h2">查询订单</div><p class="muted">输入订单号查询订单；卡密需输入下单时设置的查询密码查看。邮箱不能作为查询凭证。</p><label>订单号</label><input id="qkeywords" placeholder="订单号（AIS…）" autocomplete="off"><label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="qCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="qCaptchaImg" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" onclick="loadQueryCaptcha()"></div><div style="margin-top:12px"><button class="btn" onclick="doQueryList()">查询</button></div><div id="qres" style="margin-top:14px"></div></div>';
+  var html = '<div class="glass"><div class="h2">查询订单</div><p class="muted">输入订单号或下单时填写的邮箱查询订单；卡密需输入下单时设置的查询密码查看。</p><label>订单号 / 邮箱</label><input id="qkeywords" placeholder="订单号或下单邮箱" autocomplete="off"><label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="qCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="qCaptchaImg" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" onclick="loadQueryCaptcha()"></div><div style="margin-top:12px"><button class="btn" onclick="doQueryList()">查询</button></div><div id="qres" style="margin-top:14px"></div></div>';
   el('app').innerHTML = html;
   loadQueryCaptcha();
 }
