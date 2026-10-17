@@ -1282,7 +1282,8 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   check('home: section head copy + back-to-top', frontendHtml.includes('日常生活，升级版') && frontendHtml.includes('返回顶部 ↑') && !frontendHtml.includes('返回收藏夹'));
   // 合集标题在最底：商品网格下方、紧贴底部声明上方（声明在 #app 之外的页脚，标题是 #app 内最后一个块）。
   check('home: section head below grid (above footer)', frontendHtml.includes('id="list" class="grid shop-grid"></div>\' + homeSectionHeadHTML()'));
-  // 上游集成本身就叫 ProdSeller（既有代码/admin 里到处是），只断言新首页两块里不出现对方品牌。
+  // 新增配色与线条图标同色（.ic 蓝 #5b7bff 同色系），不留 #7c3aed 系紫色。
+  check('home: accent matches line-icon blue', frontendHtml.includes('.home-h1-accent{color:#5b7bff}') && frontendHtml.includes('.home-cta{border:0;background:#5b7bff') && !/#7c3aed|#a78bfa|#6d28d9|#5b21b6/.test(frontendHtml));
   {
     const heroStart = frontendHtml.indexOf('function homeHeroHTML(');
     const headEnd = frontendHtml.indexOf('function filterStock(', heroStart);
