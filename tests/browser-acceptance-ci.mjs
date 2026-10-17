@@ -517,6 +517,10 @@ for (const [w, h, label] of [[390, 844, '390'], [360, 740, '360']]) {
     return { dir: getComputedStyle(hero).flexDirection, sideBySide: a.right <= b.left + 2 && b.width > 100 };
   });
   check(`mobile ${label} home: hero row layout`, !!rowLayout && rowLayout.dir === 'row' && rowLayout.sideBySide, JSON.stringify(rowLayout));
+  // 协调：卡片内容不溢出（底文/箭头不被裁），视觉下标隐藏不与发现标签撞。
+  const cardState = await page.evaluate(() => { const c = document.querySelector('.home-pcard'); const cap = document.querySelector('.home-visual-cap'); return { fits: c ? c.scrollHeight <= c.clientHeight + 1 : false, capHidden: cap ? getComputedStyle(cap).display === 'none' : null }; });
+  check(`mobile ${label} home: card content fits`, cardState.fits === true, JSON.stringify(cardState));
+  check(`mobile ${label} home: visual caption hidden`, cardState.capHidden === true, JSON.stringify(cardState));
 }
 
 // ===== 8b. P2-12：浏览器计算样式真实断言（深色售罄/Hero/合集标题/倒计时/App 图标/付款块/对齐/TXID+Turnstile/必填无请求）=====

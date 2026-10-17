@@ -1325,8 +1325,8 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   check('home: section head below grid (above footer)', frontendHtml.includes('id="list" class="grid shop-grid"></div>\' + homeSectionHeadHTML()'));
   // 新增配色与线条图标同色（.ic 蓝 #5b7bff 同色系），不留 #7c3aed 系紫色。
   check('home: accent matches line-icon blue', frontendHtml.includes('.home-h1-accent{color:#5b7bff}') && frontendHtml.includes('.home-cta{border:0;background:#5b7bff') && !/#7c3aed|#a78bfa|#6d28d9|#5b21b6/.test(frontendHtml));
-  // 移动端 Hero 横排（左文案右视觉，桌面版式等比缩小；用户选 A 时已确认字与标签会变小，3C 的“只改合集标题字号”对 Hero 不再适用）。
-  check('home: mobile hero is row layout', frontendHtml.includes('.home-hero{flex-direction:row;gap:12px;padding:16px}') && frontendHtml.includes('.home-visual{flex:0 0 46%;height:180px}') && frontendHtml.includes('.home-pcard{width:calc(100% - 12px);height:115px;padding:10px}') && frontendHtml.includes('.home-chip-relax{right:10px;top:0}') && frontendHtml.includes('.home-h1{font-size:20px}'));
+  // 移动端 Hero 横排协调版（用户反馈“整体要协调，字体可再调小”）：视觉 52% + 卡 100px，卡内字号缩小（logo 22/注 11/底文 15/箭头 20），发现标签沉底不压卡片文字，视觉下标隐藏。
+  check('home: mobile hero is row layout', frontendHtml.includes('.home-hero{flex-direction:row;gap:12px;padding:16px}') && frontendHtml.includes('.home-visual{flex:0 0 52%;height:170px}') && frontendHtml.includes('.home-pcard{width:calc(100% - 8px);height:100px;padding:10px}') && frontendHtml.includes('.home-chip-relax{right:10px;top:0}') && frontendHtml.includes('.home-h1{font-size:18px}') && frontendHtml.includes('.home-pcard-bot{font-size:15px}') && frontendHtml.includes('.home-visual-cap{display:none}'));
   check('home: mobile section title fits one line', frontendHtml.includes('.home-section-title{font-size:20px}') && frontendHtml.includes('.home-section-star{font-size:22px}'));
   check('home: desktop hero/title fonts unchanged', frontendHtml.includes('.home-hero{display:flex;gap:24px;align-items:center;justify-content:space-between;background:var(--card2);border:1px solid var(--line);border-radius:28px;padding:36px 36px 28px') && frontendHtml.includes('.home-section-title{font-size:26px'));
   {
