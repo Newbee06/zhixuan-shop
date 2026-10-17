@@ -525,6 +525,9 @@ for (const [w, h, label] of [[390, 844, '390'], [360, 740, '360']]) {
   check(`mobile ${label} home: visual is scaled miniature`, !!visualScale && visualScale.hasTransform && visualScale.boxW <= 170 && visualScale.boxH <= 135, JSON.stringify(visualScale));
   const ringShown = await page.evaluate(() => { const r = document.querySelector('.home-visual-ring'); return r ? getComputedStyle(r).display !== 'none' : false; });
   check(`mobile ${label} home: rings shown`, ringShown === true, String(ringShown));
+  // 商品卡：名称 10px、介绍 8px（同类推荐复用同一 productCard，同款）。
+  const cardType = await page.evaluate(() => { const t = document.querySelector('.pcard-title'); const d = document.querySelector('.pcard-desc'); return { title: t ? getComputedStyle(t).fontSize : null, desc: d ? getComputedStyle(d).fontSize : null }; });
+  check(`mobile ${label} shop: card title 10px desc 8px`, cardType.title === '10px' && cardType.desc === '8px', JSON.stringify(cardType));
 }
 
 // ===== 8b. P2-12：浏览器计算样式真实断言（深色售罄/Hero/合集标题/倒计时/App 图标/付款块/对齐/TXID+Turnstile/必填无请求）=====
