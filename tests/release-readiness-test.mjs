@@ -261,7 +261,7 @@ function insertHistTRC20Order(orderNo, actualAmount, contact, cardCode) {
 {
   r = await call('GET', '/api/admin/schema-check', null, cookie);
   check('7. schema-check ok', r.json && r.json.ok === true && r.json.precheck && r.json.precheck.ok === true, JSON.stringify(r.json));
-  check('7. schema-check version 11', r.json && r.json.precheck && r.json.precheck.current_version === 11, JSON.stringify(r.json));
+  check('7. schema-check version 12', r.json && r.json.precheck && r.json.precheck.current_version === 12, JSON.stringify(r.json));
   // 模拟缺表：删 payments 表后预检应报告问题（随后重建）
   db.exec('DROP TABLE payments');
   r = await call('GET', '/api/admin/schema-check', null, cookie);
@@ -413,11 +413,11 @@ db.prepare('DELETE FROM order_rate').run();
     let j = null; try { j = JSON.parse(txt); } catch {}
     return { status: res.status, json: j, txt };
   }
-  // 触发迁移（首次请求自动跑 v9 + v10 + v11）
+  // 触发迁移（首次请求自动跑 v9 + v10 + v11 + v12）
   const migV9 = await callV9('GET', '/api/config');
-  check('15. v9/v10/v11 migration applied (config ok)', migV9.json && migV9.json.ok === true, migV9.txt.slice(0, 200));
+  check('15. v9/v10/v11/v12 migration applied (config ok)', migV9.json && migV9.json.ok === true, migV9.txt.slice(0, 200));
   const verV9 = dbV9.prepare('SELECT MAX(version) AS v FROM schema_migrations').get();
-  check('15. v9+v10+v11 version marked', verV9 && verV9.v === 11, JSON.stringify(verV9));
+  check('15. v9+v10+v11+v12 version marked', verV9 && verV9.v === 12, JSON.stringify(verV9));
   const idxV9 = dbV9.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_orders_amount_claim'").get();
   check('15. v9 index excludes BinanceUID', idxV9 && /pay_method != 'BinanceUID'/.test(idxV9.sql || ''), (idxV9 && idxV9.sql) || '');
   // 第二笔同金额 BinanceUID 订单（不同联系方式）：v8 旧索引下会 500，v9 下应成功。

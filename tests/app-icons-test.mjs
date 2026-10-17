@@ -161,5 +161,15 @@ check('frontend loads /api/app-icons', html.includes("/api/app-icons") && html.i
 check('frontend theme toggle refreshes icons', html.includes('refreshAppIcons()') && html.includes('function toggleTheme'));
 check('frontend productImgHtml prefers app icon', html.includes('function productImgHtml') && html.includes('p.app_icon_key'));
 
+// 11. v12：已有库的暗版图标被 UPDATE 刷新（模拟 v11 旧暗版：伪造旧值 + 删 v12 标记后重跑迁移）
+const darkSeed = db.prepare("SELECT image_data FROM app_icons WHERE app_key='chatgpt' AND theme='dark'").get().image_data;
+db.prepare("UPDATE app_icons SET image_data='data:image/jpeg;base64,FAKE-OLD-DARK' WHERE app_key='chatgpt' AND theme='dark'").run();
+db.prepare("DELETE FROM schema_migrations WHERE version=12").run();
+r = await call('POST', '/api/admin/migrate', {}, cookie);
+check('v12 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 12, JSON.stringify(r.json));
+const darkAfter = db.prepare("SELECT image_data FROM app_icons WHERE app_key='chatgpt' AND theme='dark'").get().image_data;
+check('v12 refreshed dark icon to seed value', darkAfter === darkSeed, 'after len=' + darkAfter.length);
+check('v12 does not touch light icon', db.prepare("SELECT image_data FROM app_icons WHERE app_key='chatgpt' AND theme='light'").get().image_data === icons.chatgpt.light);
+
 console.log(`\nAPP-ICONS TEST DONE pass=${pass} fail=${fail}`);
 if (fail) process.exit(1);
