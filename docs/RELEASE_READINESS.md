@@ -650,3 +650,10 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 - 关键坑：种子用 `INSERT OR IGNORE`，已有库的暗版不会被新种子覆盖；新增 v12 迁移（UPDATE 暗版 image_data），`APP_ICON_SEED` 提升为模块作用域供 v11/v12 共用。测试：app-icons 73/73（含 v12 刷新测试 + CSS 覆盖测试），回归全绿，d1-local 全绿。
 - Staging 验证：v12 部署后 `/api/app-icons` 暗版中央亮度 Codex 0.34 / ChatGPT 0.36 / Gmail 0.33 / Figma 0.32；浏览器深色模式实测 `.pcard-img` 计算背景 rgb(28,28,30)，图标黑底白结，无白方块残留。
 - PR #1 仍 OPEN，未合并，未部署生产。
+
+### 第十轮补丁2：Telegram 暗版 + v13（2026-10-17 11:30 CST）
+
+- 问题：Telegram 暗版在选择器里仍是白方块。根因：原图为蓝圈 + 白纸飞机 + 白底（白底占 52%），上轮修复未覆盖；且 v12 已在上一轮部署时标记已应用，种子更新后 v12 不重跑，staging 一直返回旧暗版。
+- 修复：Telegram 暗版用泛洪填充去白底（仅与边框连通的白底映射深色，蓝圈与被蓝圈包住的白纸飞机保留）；新增 v13 迁移重新执行暗版 UPDATE（以后每次种子暗版变更都须追加新迁移版本，已应用的迁移不重跑）。测试：app-icons 76/76（含 v13 刷新测试），回归全绿，d1-local v13 全绿。
+- Staging 验证：`/api/app-icons` Telegram 暗版边缘亮度 0.11（原 0.54），中心蓝色；浏览器选择器网格深色模式下 Telegram 为深色底 + 蓝圈 + 白纸飞机，非白方块。
+- PR #1 仍 OPEN，未合并，未部署生产。
