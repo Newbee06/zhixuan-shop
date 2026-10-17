@@ -517,8 +517,8 @@ for (const [w, h, label] of [[390, 844, '390'], [360, 740, '360']]) {
   const ringShown = await page.evaluate(() => { const r = document.querySelector('.home-visual-ring'); return r ? getComputedStyle(r).display !== 'none' : false; });
   check(`mobile ${label} home: rings shown`, ringShown === true, String(ringShown));
   // 商品卡：名称 10px、介绍 8px（同类推荐复用同一 productCard，同款）。
-  const cardType = await page.evaluate(() => { const t = document.querySelector('.pcard-title'); const d = document.querySelector('.pcard-desc'); return { title: t ? getComputedStyle(t).fontSize : null, desc: d ? getComputedStyle(d).fontSize : null }; });
-  check(`mobile ${label} shop: card title 10px desc 8px`, cardType.title === '10px' && cardType.desc === '8px', JSON.stringify(cardType));
+  const cardType = await page.evaluate(() => { const t = document.querySelector('.pcard-title'); const d = document.querySelector('.pcard-desc'); const pr = document.querySelector('.pcard-price'); const b = document.querySelector('.pcard-btn'); return { title: t ? getComputedStyle(t).fontSize : null, desc: d ? getComputedStyle(d).fontSize : null, price: pr ? getComputedStyle(pr).fontSize : null, btn: b ? getComputedStyle(b).fontSize : null }; });
+  check(`mobile ${label} shop: card title 12px desc 9px price 20px btn 12px`, cardType.title === '12px' && cardType.desc === '9px' && cardType.price === '20px' && cardType.btn === '12px', JSON.stringify(cardType));
 }
 
 // ===== 9. 控制台与接口失败 =====
