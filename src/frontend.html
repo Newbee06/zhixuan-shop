@@ -253,6 +253,7 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
 html[data-theme="light"] .toast{background:#1c1c1e;color:#fff}
 .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:150;display:flex;align-items:center;justify-content:center;padding:16px}
 .modal{background:var(--card2);border-radius:18px;padding:20px;width:100%;max-width:480px;max-height:85vh;overflow-y:auto;box-shadow:0 16px 60px rgba(0,0,0,.25)}
+@media(max-width:720px){.modal-backdrop.modal-fullbleed .modal{padding-left:0;padding-right:0}.modal-backdrop.modal-fullbleed .modal h3{padding:0 20px}.modal-backdrop.modal-fullbleed .modal-actions{padding:0 20px}}
 .modal h3{font-size:17px;margin:0 0 10px}
 .modal .modal-body{font-size:14px;line-height:1.7;color:var(--text)}
 .modal .modal-body .muted{font-size:13px}
@@ -364,10 +365,11 @@ function toast(msg, type){
   setTimeout(function(){ try { t.remove(); } catch (e) {} }, type === 'error' ? 4200 : 2800);
 }
 function showModal(opts){
-  // opts: {title, bodyHTML, confirmText, cancelText, danger, onConfirm, onCancel, showInput, inputLabel, inputPlaceholder, inputValue}
+  // opts: {title, bodyHTML, confirmText, cancelText, danger, onConfirm, onCancel, showInput, inputLabel, inputPlaceholder, inputValue, fullBleed}
+  // fullBleed: 移动端去掉弹窗左右内边距，表单输入框撑满弹窗宽度、与弹窗边缘对齐（用于商品编辑表单）。
   closeModal();
   var bd = document.createElement('div');
-  bd.className = 'modal-backdrop'; bd.id = 'modalBackdrop';
+  bd.className = 'modal-backdrop' + (opts.fullBleed ? ' modal-fullbleed' : ''); bd.id = 'modalBackdrop';
   bd.addEventListener('click', function(e){ if (e.target === bd) { if (opts.onCancel) opts.onCancel(); closeModal(); } });
   var inputHtml = '';
   if (opts.showInput) inputHtml = '<div class="adm-field"><label>' + escH(opts.inputLabel || '说明') + '</label><textarea id="modalInput" rows="2" placeholder="' + escH(opts.inputPlaceholder || '') + '">' + escH(opts.inputValue || '') + '</textarea></div>';
@@ -1097,7 +1099,7 @@ async function adminProductForm(id){
   if (id) { for (var i = 0; i < (window._adminProducts || []).length; i++){ if (String(window._adminProducts[i].id) === String(id)) p = window._adminProducts[i]; } }
   var pfx = 'pm-';
   window._productImage = {};
-  showModal({ title: id ? '编辑商品' : '新增商品', bodyHTML: '<div>' + productFormHTML(pfx, p) + '</div>', confirmText: '保存', onConfirm: async function(){
+  showModal({ title: id ? '编辑商品' : '新增商品', bodyHTML: '<div>' + productFormHTML(pfx, p) + '</div>', confirmText: '保存', fullBleed: true, onConfirm: async function(){
     var slugVal = (el(pfx + 'slug').value || '').trim().toLowerCase().replace(/[^a-z0-9\-]+/g, '-').replace(/^-+|-+$/g, '');
     if (!slugVal) slugVal = 'p-' + Date.now().toString(36);
     var titleVal = (el(pfx + 'title').value || '').trim();
