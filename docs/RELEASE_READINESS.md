@@ -689,3 +689,10 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 - **审计**：订单状态机（全部条件 UPDATE + 已付款保护 + 退款不造假）、管理端鉴权（会话 7 天过期 + 改密拦截 + CSRF + 登录限流）均通过。
 - **文档**：新增 docs/ARCHITECTURE.md、docs/SECURITY.md、docs/PAYMENT_FLOW.md、docs/PRODUCTION_CHECKLIST.md、docs/RUNBOOK.md；README 更新为 v15（删 TRC20/ERC20/BinanceUID/查单凭证/邮箱查询描述）。
 - PR #1 仍 OPEN，未合并，未部署生产。真实链上验收仍 BLOCKED / NOT VERIFIED（无真实转账证据）。
+
+### 浏览器验收实测（staging，2026-10-17 14:51–14:53 CST）+ 前端缺陷修复
+
+- 首轮验收（订单 AISMVC1EW6345A2DC，staging 测试商品，¥36.00 约 5.00 USDT，OKX|X Layer，待付款，未真实付款）：首页/下单/成功页/查询列表/邮箱查为空/URL 无密码参数均通过。发现缺陷：未付款订单在查询列表里无密码输入框/查看卡密按钮，/secret 的“尚未付款”路径在 UI 上不可达。根因：doQueryList 的 else if 链把未付款订单挡在密码输入分支之外。
+- 修复（提交 ac82de2）：状态提示与凭证输入解耦，未付款订单也显示密码输入框，买家可在付款前验证密码；/secret 对未付款订单返回“尚未付款”。app-icons 107/107、security 101/101 回归通过（worker.js 未变，其余套件结果继续有效）。已重部署 staging（Version 23b0da10）。
+- 复验全部通过：查询列表出现密码输入框 + 查看卡密按钮；错密码 → “查询密码错误”；对密码 → “订单尚未付款或暂无交付内容”；URL 全程无 password=/token= 参数。
+- 备注：首轮下单时商品 2、4（staging 对接商品）提示“上游服务验证中”无法下单，为 prodseller_enabled=0 门禁预期行为，非缺陷。
