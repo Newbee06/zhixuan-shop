@@ -67,10 +67,12 @@ page.on('console', (m) => {
   // 过滤非应用错误的环境噪声与预期内的鉴权失败（不弱化真实 JS 异常检查）：
   // - ERR_TUNNEL_CONNECTION_FAILED：本机代理环境加载外部资源失败，非应用代码错误。
   // - 401：错误凭证查单测试（预期返回 401）与未登录时 /api/admin/me 的预期鉴权失败。
+  // - 400：/secret 预期分支（密码正确但订单未付款 → “尚未付款”），由下方断言单独校验；与 401 预期失败同理。
   // - favicon.ico 404：应用无 favicon，浏览器自动请求，属良性；其他 404 仍计为错误。
   // - 404（控制台消息不带 URL，无法区分预期/非预期）：由下方基于响应的 notFoundUrls 检查兜底（带 URL，可准确判定）。
   if (text.includes('ERR_TUNNEL_CONNECTION_FAILED')) return;
   if (text.includes('401')) return;
+  if (text.includes('400')) return;
   if (text.includes('favicon.ico')) return;
   if (text.includes('404')) return;
   jsErrors.push(text);
@@ -191,7 +193,7 @@ await page.waitForTimeout(500);
 }
 const qres = await page.evaluate(() => (document.getElementById('qres') || {}).innerHTML || '');
 check('query via UI: order listed', qres.includes(orderNo));
-check('query via UI: pay address shown for pending_payment order', qres.includes('收款地址') && qres.includes('0x2222222222222222222222222222222222222222') && qres.includes('复制收款地址'));
+check('query via UI: pay address shown for pending_payment order', qres.includes('收款地址') && qres.includes('0x2222222222222222222222222222222222222222') && qres.includes('data-copy-target="addrBox-'));
 check('query via UI: password input shown (P3-39: exact qpw-<orderNo>)', qres.includes('qpw-' + orderNo));
 check('query: URL has no credential', !page.url().includes('password=') && !page.url().includes('token=') && !page.url().includes('browser-ci-pw123'));
 await page.fill('#qpw-' + orderNo, 'wrongpw123');
@@ -443,9 +445,12 @@ check('7th order: created via real button click (no delivery_email error)', lega
 if (legacyResJson.ok) {
   await page.waitForFunction(() => location.hash.includes('#/success/'), { timeout: 15000 }).catch(() => {});
   check('7th success page shown after real submit', page.url().includes('#/success/'), page.url());
+  // 持久化字段必须走详情接口：管理端列表是 summary 级（删 contact/customer_fields），列表里读不到是预期行为。
   const legacyPersist = await page.evaluate(async (no) => {
-    const r = await fetch('/api/admin/orders?q=' + encodeURIComponent(no)).then((x) => x.json());
-    const o = (r.orders || [])[0] || {};
+    const list = await fetch('/api/admin/orders?q=' + encodeURIComponent(no)).then((x) => x.json());
+    const first = (list.orders || [])[0] || {};
+    const det = first.id ? await fetch('/api/admin/orders/' + first.id).then((x) => x.json()) : {};
+    const o = det.order || {};
     const cf = (typeof o.customer_fields === 'string') ? (() => { try { return JSON.parse(o.customer_fields); } catch { return {}; } })() : (o.customer_fields || {});
     return { contact: o.contact, cf };
   }, legacyResJson.order.order_no);

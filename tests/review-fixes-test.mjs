@@ -1289,6 +1289,16 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
     const headEnd = frontendHtml.indexOf('function filterStock(', heroStart);
     check('home: no prodseller brand in homepage blocks', !/prodseller/i.test(frontendHtml.slice(heroStart, headEnd)));
   }
+  // CI 浏览器验收测试断言与实现一致（防 4 个过期断言复发；均为测试侧修法，产品行为不动）：
+  // ① 地址复制按钮 title 是“复制地址”（标签“收款地址”另起），测试不得断言连写“复制收款地址”；
+  // ② 持久化字段走详情接口（列表 summary 级删 contact/customer_fields）；
+  // ③ console 过滤预期 400（/secret 密码正确但未付款 → “尚未付款”）。
+  {
+    const ciTest = fs.readFileSync(path.join(dir, 'browser-acceptance-ci.mjs'), 'utf8');
+    check('ci: pay-address check uses real copy title', ciTest.includes('data-copy-target="addrBox-') && !ciTest.includes('复制收款地址'));
+    check('ci: persisted check uses admin detail endpoint', ciTest.includes("'/api/admin/orders/' + first.id"));
+    check('ci: console filter excludes expected 400', ciTest.includes("if (text.includes('400')) return;"));
+  }
   // 防重复 ID：查单详情（renderQueryOrderDetail）渲染在查询列表卡片内的 qsec 盒子里；
   // 旧订单待付款时列表卡与详情会各出一份付款块，UID 必须不同，否则 countdown/addrBox 等 ID 重复。
   {
