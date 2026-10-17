@@ -4,8 +4,8 @@
 
 ## A. 代码与测试（发布候选）
 
-- [ ] 分支与 PR：PR #1 已审，未合并前不得部署生产。
-- [ ] 全套测试全绿（命令与退出码见 docs/RELEASE_READINESS.md）：
+- [x] 分支与 PR：PR #1 已审（2026-10-17 最终验收，见 docs/CODE_REVIEW_2026-10-17.md“最终合并前验收”），未合并前不得部署生产。
+- [x] 全套测试全绿（本地全套 + CI 四 Job；review-fixes 262/262、browser 76/76，命令与退出码见 docs/RELEASE_READINESS.md）：
   - `node tests/app-icons-test.mjs`
   - `node tests/security-test.mjs`
   - `node tests/concurrency-test.mjs`
@@ -14,8 +14,8 @@
   - `node tests/payment-whitelist-test.mjs`
   - `node tests/stock-test.mjs`
   - `bash tests/d1-local-test.sh`（仅 `--local`，绝不 `--remote`）
-- [ ] 浏览器验收（staging）：下单 → 查询密码取卡密 → 错密码拒绝 → 管理端操作全流程。
-- [ ] 无未提交变更；HEAD 与远端同步。
+- [x] 浏览器验收（staging）：下单 → 查询密码取卡密 → 错密码拒绝 → 管理端操作全流程。（2026-10-17 最终验收通过，HEAD 62d8797，staging Version 375c8e5e；另有 API 直测覆盖白名单负向、/secret、/pay 假 TXID。）
+- [x] 无未提交变更；HEAD 与远端同步。（文档更新提交后复核。）
 
 ## B. 真正可收款运营（与 A 分开，不得混同）
 

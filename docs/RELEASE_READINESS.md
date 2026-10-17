@@ -698,3 +698,9 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 - 修复（提交 ac82de2）：状态提示与凭证输入解耦，未付款订单也显示密码输入框，买家可在付款前验证密码；/secret 对未付款订单返回“尚未付款”。app-icons 107/107、security 101/101 回归通过（worker.js 未变，其余套件结果继续有效）。已重部署 staging（Version 23b0da10）。
 - 复验全部通过：查询列表出现密码输入框 + 查看卡密按钮；错密码 → “查询密码错误”；对密码 → “订单尚未付款或暂无交付内容”；URL 全程无 password=/token= 参数。
 - 备注：首轮下单时商品 2、4（staging 对接商品）提示“上游服务验证中”无法下单，为 prodseller_enabled=0 门禁预期行为，非缺陷。
+
+### 最终合并前验收（2026-10-17 晚，HEAD 62d8797）
+- PR #1：OPEN、MERGEABLE、CLEAN，57 提交，CI 四 Job 全绿（review-fixes 262/262、browser 76/76）。
+- Staging：备份成功，部署 Version 375c8e5e，浏览器 + API 端到端验收通过（详见 docs/CODE_REVIEW_2026-10-17.md“最终合并前验收”）。
+- 结论：代码与 CI PASS、Staging 部署 PASS、Staging 验收 PASS；真实链上支付 NOT VERIFIED、P1-11 BLOCKED。
+- 建议合 PR #1（仍需用户授权）；合并 ≠ 可部署生产 ≠ 可开放真实销售。生产真实收款地址、真实链上小额验收、ProdSeller 真实密钥仍 BLOCKED。

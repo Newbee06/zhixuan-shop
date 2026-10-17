@@ -297,3 +297,57 @@
   - P1-11：ProdSeller 连接器无按业务单号查询接口，故“创建成功无单号”时置人工标记，不盲目重建。
 - **仍 BLOCKED**：仅 P1-11 的真实上游沙箱验证（`Idempotency-Key` 重放语义无真实服务商证据）——绝不调用真实 ProdSeller 接口，未验证。
 - **测试证据（协调员亲手重跑，全绿，退出码 0）**：app-icons 112/112、security 104/104、concurrency 115/115、release-readiness 90/90、mock ALL DONE、payment-whitelist ALL PASS、stock 17/17、review-fixes 226/226、d1-local ALL OK。浏览器测试未执行（子代理无法操作 live browser），由 CI 运行 `browser-acceptance-ci.mjs`。
+
+## 最终合并前验收（2026-10-17 晚，HEAD 62d8797，PR #1 合并前最后一轮）
+
+> 本节取代上方“测试证据”行的旧口径：review-fixes 在 CI 实际执行为 262/262（非 226；ci.yml 步骤名仍写 226，仅标签滞后），浏览器验收已在最新 staging 完成（非“由 CI 运行”）。
+
+### A. GitHub（全部重核）
+- PR #1 OPEN，MERGEABLE，mergeState CLEAN；base main；head `62d879756dcebe39fcb52b2b62e69d93cbd8623c`（本地 = 远端 = PR head）；57 提交，+12482/-673，48 文件；无 review/comment；`e2d47e8`、`19836a5` 均在历史中；vs origin/main 0 behind / 57 ahead。
+- CI（head 62d8797，两轮运行 39037262340 push / 39037265458 PR）：Static、Business regression、D1 migration、Browser acceptance 四 Job 全部 success。CI 日志实证：review-fixes 262/262、browser 76/76。ci.yml 门禁均存在且通过：worker/前端语法、wrangler.toml 解析、顶层 [triggers] 两条 cron、迁移文件存在、硬编码秘密扫描、CI/测试无 --remote / wrangler deploy。
+
+### B. Staging 部署（部署前备份 + 部署后核验）
+- 备份：`staging-db-20261017-2204.sql`（363,077 字节）导出成功。
+- 部署前盘点：迁移版本 15；订单 18（已完成 2、待付款 16，含 2 笔旧 BinanceUID + 1 笔旧 TRC20 历史订单）；商品 15；卡密 18（已用 2、预留 16、可用 0）；upstream_orders 0。
+- 门禁：`poll_enabled=0`、`prodseller_enabled=0`（D1 直查；设置页 UI 不显示 prodseller_enabled 字段，以 D1 为准）；收款地址为已知测试地址（0x1111…/0x2222…）；`rpc_urls` 为空；`binance_uid` 键代码不再用于新订单。
+- 部署：Version `375c8e5e-c240-4bf0-a6e8-38edf1698d0b`，2026-10-17 22:06 CST；绑定 `zhixuan-shop-staging-db`（`4fb3878b…`，经 CF 侧 D1 列表再确认）；触发器 `0 2 * * *` + `*/1 * * * *`；无生产域名路由。
+- 部署后：首页 200 且含 HEAD 特征；`/api/config` 正常，白名单仅 OKX|X Layer、Binance|BEP20；`/api/app-icons` 正常；D1 计数与部署前一致，设置未变。生产 Worker/D1 未触碰。
+
+### C. 浏览器验收（staging，最新部署版本）
+- 新建自营商品 ID 17“最终验收-自营-1017”（1 USDT）+ 4 张卡密（ID 21–24）；新建零库存商品 ID 18。
+- 首页：Hero、付款提示行、搜索/筛选、商品网格、合集标题在最底；“探索 ↗”滚动到付款提示行；浅深主题正常。
+- 下单：订单 AISMVCHEV8J7B7212B0861ED01E（OKX|X Layer，精确应付 1.0038 USDT），成功页付款块完整（金额/地址/倒计时/二维码/订单号）；未真实付款、未提交 TXID。
+- 查询密码：必填，空密码与 5 位均被拒；正确密码查询显示订单 + 付款块；错误密码“查询密码错误”；正确密码“查看卡密”仅提示“订单尚未付款”，未泄露卡密。
+- 库存/下架：零库存商品购买按钮禁用；商品 17 下架后前台“商品不存在”，首页计数 17→16、有货 6→5；保持下架。
+- 对接门禁：对接商品购买被拒“该商品暂未开放购买（上游服务验证中，请联系客服）”，上游管理页“暂无上游订单”，无真实采购。
+- 后台：订单列表 19 笔，无 delivery_content 列；详情含管理字段；设置页只读确认 poll_enabled=0，未改任何设置；未执行退款、未删历史数据。
+- 异常：商品保存曾点击超时（重试成功）；卡密多行导入换行丢失致 1 条拼接卡密（ID 20，已删该刚建错误条目，非历史数据）；直接导航 #/product/17 曾短暂“商品不存在”（后经卡片点击进入，未复现）；验证码两次读错（刷新重试成功）；同联系方式重复待付款被拦截（设计行为）。
+- 局限：浏览器工具无控制台日志导出，控制台结论以页面表现为据；移动端视口由 CI Playwright（390/360）覆盖。
+
+### D. API 验收（staging，脚本直测）
+- 合法组合：OKX|X Layer（订单 AISMVCHVH2H1E01B19ECEFFB54C，收款 0x1111…，actual 1.0023）、Binance|BEP20（订单 AISMVCHVIIU7AE07ED79380E27C，收款 0x2222…，actual 1.0016）均成功；actual = total + 随机尾数 0.0001–0.0099（设计）。
+- 非白名单组合全部拒绝：OKX|TRC20、Binance|ERC20、BinanceUID|站内转账、OKX|BEP20、Binance|X Layer、空链、空方式。
+- 入参：qty -1/1.5/abc、无效邮箱、缺密码、5 位/65 位密码均拒绝；qty 100 拒绝；qty 0 因 `quantity || 1` 默认成 1（既有口径问题，P3，非本轮引入，见遗留）。
+- 下架/零库存/重复待付款/对接门禁：商品 17（下架）404、商品 18（零库存）拒绝、重复联系方式拒绝、对接商品 403，全部通过。
+- GET /api/orders → 410；/query 返回订单且无 delivery_content，待付款订单附 pay_address；空关键词拒绝。
+- /secret 直调：正确密码未付款 → 400“尚未付款”且无 delivery_content；错误/空密码 → 401；第 6 次尝试 → 429（按单记数含正确尝试，符合设计）。
+- /pay：旧 TRC20 订单 → “不在首期支持范围内”拒绝；假 TXID（0x+64 个 0，不存在于链上）提交到两订单均被异步受理（ok:true，轮询核验），两订单仍待付款；payments 账本 0 行，无认账、无重复认领；假 TXID 按设计存入订单 txid 字段（核验失败仅存 TXID，不建账本行）。
+- 局限：poll_enabled=0，轮询核验未在 staging 实际执行（设计上不为验收开启真实扫描）；TXID 双认领的唯一约束由本地 payment-whitelist 测试覆盖。
+
+### E. 本轮测试数据（均保留，未删历史）
+- 新增：商品 3（ID 17、18、19，其中 17、19 已下架）；卡密 6（ID 21–24、API 商品 2 张）；订单 3（浏览器 1 + API 2），均待付款，未真实付款。
+- 终态计数：订单 21、商品 18、卡密 24、upstream_orders 0；卡密：商品 17（1 预留 3 可用）、API 商品（2 预留）；设置未变。
+- 3 笔新订单将随 20 分钟过期 + 次日 02:00 清理自动取消并释放预留；未手动取消/确认收款。
+
+### F. 遗留（不阻塞合并，但上线前须处理）
+- P1-11 真实上游幂等仍 BLOCKED（无真实服务商证据，绝不虚构）。
+- 真实链上支付 NOT VERIFIED（全程无真实转账；假 TXID 仅证明失败关闭）。
+- qty 0 默认成 1（`Number(body.quantity || 1)`，既有行为，P3）：前端最小数量为 1，无资金风险；建议后续改为 `?? 1` 并补回归测试。
+- ci.yml 步骤名“226 assertions”标签滞后（实际 262），仅标签问题，建议后续顺手改。
+- Staging 实际 Cron 调度行为未验证（配置存在；不得为验收开启真实支付扫描）。
+- 生产配置（真实收款地址、RPC、汇率、公告、客服）未核验，需部署时逐项授权。
+
+### G. 结论
+- 代码与 CI：PASS。Staging 部署：PASS。Staging 浏览器及 API 验收：PASS。
+- 真实链上支付：NOT VERIFIED。ProdSeller 真实幂等：BLOCKED。
+- 建议合 PR #1（合并本身仍需用户授权；合并 ≠ 可部署生产 ≠ 可开放真实销售）。
