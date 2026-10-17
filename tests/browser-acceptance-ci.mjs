@@ -208,7 +208,7 @@ await page.waitForTimeout(1000);
 const qsecOk = await page.evaluate((no) => (document.getElementById('qsec-' + no) || {}).innerHTML || '', orderNo);
 check('secret correct password on unpaid order: not-paid hint, no card leak',
   (qsecOk.includes('尚未付款') || qsecOk.includes('暂无交付内容')) && !qsecOk.includes('BROWSER-'));
-// 邮箱不能作为查询凭证
+// 邮箱可查（订单号或下单邮箱精确匹配，大小写不敏感）
 await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
 await page.waitForTimeout(500);
 {
@@ -220,8 +220,7 @@ await page.waitForTimeout(500);
   await page.waitForTimeout(1200);
 }
 const qresEmail = await page.evaluate(() => (document.getElementById('qres') || {}).innerHTML || '');
-check('query by email: generic empty (email is not a credential)',
-  qresEmail.includes('未找到相关订单') && !qresEmail.includes(orderNo));
+check('query by email: order listed', qresEmail.includes(orderNo));
 // 空数据：查不存在的订单
 await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
 await page.waitForTimeout(500);
