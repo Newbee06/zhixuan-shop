@@ -164,6 +164,8 @@ check('frontend productImgHtml prefers app icon', html.includes('function produc
 check('dark mode: image containers not white (pcard-img/prod-img/detail-img-photo)', html.includes('html[data-theme="dark"] .pcard-img{background:#1c1c1e}') && html.includes('html[data-theme="dark"] .prod-img{background:#1c1c1e}') && html.includes('html[data-theme="dark"] .detail-img-photo{background:#1c1c1e}'));
 check('mobile product form full-bleed alignment (modal edges = input edges)', html.includes('modal-fullbleed') && html.includes("fullBleed: true") && html.includes('.modal-backdrop.modal-fullbleed .modal{padding-left:0;padding-right:0}'));
 check('modal cannot scroll horizontally (overflow-x:hidden; icon grid min-width:0)', html.includes('overflow-x:hidden') && html.includes('border-radius:12px;min-width:0;'));
+check('product sub-nav: upstream/self under products (admin-nav-sub)', html.includes('admin-nav-sub') && html.includes("data-tab=\"products-upstream\"") && html.includes('对接商品') && html.includes("data-tab=\"products-self\"") && html.includes('自营商品'));
+check('product sub-nav: view locks source filter + new product defaults to view source', html.includes('prodViewSource()') && html.includes('prodViewTitle()') && html.includes("window._prodView = 'upstream'") && html.includes("window._prodView = 'self'") && html.includes('adminProductForm(null') && html.includes('defaultSource'));
 
 // 11. v12/v13：已有库的暗版图标被 UPDATE 刷新（模拟 v11 旧暗版：伪造旧值 + 删迁移标记后重跑迁移）
 const darkSeed = db.prepare("SELECT image_data FROM app_icons WHERE app_key='chatgpt' AND theme='dark'").get().image_data;

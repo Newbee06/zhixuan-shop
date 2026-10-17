@@ -157,6 +157,8 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
 .admin-nav{display:flex;flex-direction:column;gap:6px}
 .admin-nav button{border:0;background:transparent;color:var(--text);text-align:left;padding:11px 12px;border-radius:12px;font-size:15px;font-weight:600;cursor:pointer}
 .admin-nav button.on{background:var(--text);color:var(--bg)}
+.admin-nav-sub{display:flex;flex-direction:column;gap:4px;margin:-2px 0 2px 18px;padding-left:12px;border-left:1px solid var(--line)}
+.admin-nav-sub button{font-size:14px;font-weight:500;padding:9px 12px}
 .admin-side-foot{margin-top:16px;padding-top:12px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:10px;align-items:flex-start}
 .admin-main{flex:1;min-width:0}
 .admin-topbar{display:flex;align-items:center;gap:10px;margin-bottom:12px}
@@ -698,15 +700,25 @@ function statusPill(s){
   return '<span class="spill ' + cls + '">' + escH(statusLabel(s)) + '</span>';
 }
 function adminNavHTML(){
-  var tabs = [['data',ic('chart')+' 数据总览'],['orders',ic('receipt')+' 订单管理'],['products',ic('shop')+' 商品管理'],['cards',ic('card')+' 卡密库存'],['upstream',ic('link')+' 上游管理'],['settings',ic('settings')+' 系统设置'],['audit',ic('clipboard')+' 操作审计']];
+  var tabs = [['data',ic('chart')+' 数据总览'],['orders',ic('receipt')+' 订单管理']];
+  var tail = [['cards',ic('card')+' 卡密库存'],['upstream',ic('link')+' 上游管理'],['settings',ic('settings')+' 系统设置'],['audit',ic('clipboard')+' 操作审计']];
   var h = '<div class="admin-nav">';
   for (var i = 0; i < tabs.length; i++){ h += '<button data-tab="' + tabs[i][0] + '" onclick="adminTab(\'' + tabs[i][0] + '\');adminToggleSide(false)">' + tabs[i][1] + '</button>'; }
+  // 商品管理子目录：对接商品（上游 prodseller）/ 自营商品（self），分开管理
+  h += '<button data-tab="products" onclick="adminTab(\'products\');adminToggleSide(false)">' + ic('shop') + ' 商品管理</button>';
+  h += '<div class="admin-nav-sub"><button data-tab="products-upstream" onclick="adminTab(\'products-upstream\');adminToggleSide(false)">对接商品</button><button data-tab="products-self" onclick="adminTab(\'products-self\');adminToggleSide(false)">自营商品</button></div>';
+  for (var j = 0; j < tail.length; j++){ h += '<button data-tab="' + tail[j][0] + '" onclick="adminTab(\'' + tail[j][0] + '\');adminToggleSide(false)">' + tail[j][1] + '</button>'; }
   return h + '</div>';
 }
 function adminNavSync(){
   var btns = document.querySelectorAll('.admin-nav button');
-  for (var i = 0; i < btns.length; i++){ btns[i].classList.toggle('on', btns[i].dataset.tab === window._adminTab); }
-  var titles = {data:'数据总览', orders:'订单管理', products:'商品管理', cards:'卡密库存', upstream:'上游管理', settings:'系统设置', audit:'操作审计'};
+  for (var i = 0; i < btns.length; i++){
+    var tb = btns[i].dataset.tab;
+    // 商品管理父项在任一商品子目录下也高亮
+    var on = (tb === window._adminTab) || (tb === 'products' && (window._adminTab === 'products-upstream' || window._adminTab === 'products-self'));
+    btns[i].classList.toggle('on', on);
+  }
+  var titles = {data:'数据总览', orders:'订单管理', products:'商品管理', 'products-upstream':'对接商品', 'products-self':'自营商品', cards:'卡密库存', upstream:'上游管理', settings:'系统设置', audit:'操作审计'};
   var t = el('adminTitle'); if (t) t.textContent = titles[window._adminTab] || '管理后台';
 }
 function adminToggleSide(open){
@@ -733,7 +745,9 @@ async function adminTab(t){
   try {
     if (t === 'data') await renderAdminData();
     else if (t === 'orders') await renderAdminOrders(1);
-    else if (t === 'products') await renderAdminProducts(1);
+    else if (t === 'products') { window._prodView = 'all'; await renderAdminProducts(1); }
+    else if (t === 'products-upstream') { window._prodView = 'upstream'; await renderAdminProducts(1); }
+    else if (t === 'products-self') { window._prodView = 'self'; await renderAdminProducts(1); }
     else if (t === 'cards') await renderAdminCards(1);
     else if (t === 'upstream') await renderAdminUpstream();
     else if (t === 'settings') await renderAdminSettings();
@@ -923,10 +937,15 @@ async function adminRefundConfirm(id){
   }});
 }
 // ---- 商品管理 ----
+// _prodView: 'all'（商品管理/全部）| 'upstream'（对接商品）| 'self'（自营商品）。子目录锁定来源筛选。
 window._prodFilter = { q: '', category: '', source: '', is_active: '', stock: '', page: 1 };
+function prodViewSource(){ return window._prodView === 'upstream' ? 'prodseller' : (window._prodView === 'self' ? 'self' : ''); }
+function prodViewTitle(){ return window._prodView === 'upstream' ? '对接商品' : (window._prodView === 'self' ? '自营商品' : '商品管理'); }
 async function renderAdminProducts(page){
   var f = window._prodFilter;
   f.page = page || 1;
+  var viewSrc = prodViewSource();
+  if (viewSrc) f.source = viewSrc; // 子目录下来源由视图锁定，不跟随旧筛选
   var qs = '/api/admin/products?page=' + f.page + '&page_size=20';
   if (f.q) qs += '&q=' + encodeURIComponent(f.q);
   if (f.category) qs += '&category=' + encodeURIComponent(f.category);
@@ -938,8 +957,8 @@ async function renderAdminProducts(page){
   var list = r.products || [];
   window._adminProducts = list;
   function selOpts(opts, cur){ var h = ''; for (var i = 0; i < opts.length; i++) h += '<option value="' + opts[i][0] + '"' + (String(cur) === String(opts[i][0]) ? ' selected' : '') + '>' + opts[i][1] + '</option>'; return h; }
-  var h = '<div class="admin-page"><div class="admin-page-head"><h2>商品管理</h2><button class="btn" onclick="adminProductForm(null)">+ 新增商品</button></div>';
-  h += '<div class="admin-toolbar"><input id="prodQ" placeholder="搜索标题 / slug" value="' + escH(f.q) + '" onkeydown="if(event.key===\'Enter\')adminProdSearch()"><select id="prodCat" onchange="adminProdSearch()">' + selOpts([['', '全部分类'], ['recharge', '代充'], ['account', '成品号'], ['card', '卡密']], f.category) + '</select><select id="prodSrc" onchange="adminProdSearch()">' + selOpts([['', '全部来源'], ['self', '自营'], ['prodseller', '上游']], f.source) + '</select><select id="prodAct" onchange="adminProdSearch()">' + selOpts([['', '在售/下架'], ['1', '在售'], ['0', '下架']], f.is_active) + '</select><select id="prodStock" onchange="adminProdSearch()">' + selOpts([['', '全部库存'], ['in', '有货'], ['out', '缺货']], f.stock) + '</select><button class="btn" onclick="adminProdSearch()">搜索</button><button class="btn ghost" onclick="adminProdReset()">重置</button></div>';
+  var h = '<div class="admin-page"><div class="admin-page-head"><h2>' + prodViewTitle() + '</h2><button class="btn" onclick="adminProductForm(null' + (viewSrc ? ",'" + viewSrc + "'" : '') + ')">+ 新增商品</button></div>';
+  h += '<div class="admin-toolbar"><input id="prodQ" placeholder="搜索标题 / slug" value="' + escH(f.q) + '" onkeydown="if(event.key===\'Enter\')adminProdSearch()"><select id="prodCat" onchange="adminProdSearch()">' + selOpts([['', '全部分类'], ['recharge', '代充'], ['account', '成品号'], ['card', '卡密']], f.category) + '</select>' + (viewSrc ? '' : '<select id="prodSrc" onchange="adminProdSearch()">' + selOpts([['', '全部来源'], ['self', '自营'], ['prodseller', '上游']], f.source) + '</select>') + '<select id="prodAct" onchange="adminProdSearch()">' + selOpts([['', '在售/下架'], ['1', '在售'], ['0', '下架']], f.is_active) + '</select><select id="prodStock" onchange="adminProdSearch()">' + selOpts([['', '全部库存'], ['in', '有货'], ['out', '缺货']], f.stock) + '</select><button class="btn" onclick="adminProdSearch()">搜索</button><button class="btn ghost" onclick="adminProdReset()">重置</button></div>';
   h += '<p class="muted">共 ' + (r.total || 0) + ' 件商品。毛利 = 售价 − 成本价；无成本数据的商品毛利显示 —。</p>';
   if (!list.length) h += '<div class="adm-empty">暂无符合条件的商品</div>';
   else {
@@ -963,12 +982,12 @@ function adminProdSearch(){
   var f = window._prodFilter;
   f.q = el('prodQ') ? el('prodQ').value.trim() : '';
   f.category = el('prodCat') ? el('prodCat').value : '';
-  f.source = el('prodSrc') ? el('prodSrc').value : '';
+  f.source = el('prodSrc') ? el('prodSrc').value : prodViewSource(); // 子目录下无来源下拉，保持视图锁定值
   f.is_active = el('prodAct') ? el('prodAct').value : '';
   f.stock = el('prodStock') ? el('prodStock').value : '';
   renderAdminProducts(1);
 }
-function adminProdReset(){ window._prodFilter = { q: '', category: '', source: '', is_active: '', stock: '', page: 1 }; renderAdminProducts(1); }
+function adminProdReset(){ window._prodFilter = { q: '', category: '', source: prodViewSource(), is_active: '', stock: '', page: 1 }; renderAdminProducts(1); }
 function adminJumpToCards(pid){
   window._cardFilter = window._cardFilter || {};
   window._cardFilter.product_id = String(pid);
@@ -1094,9 +1113,10 @@ function adminDeliveryHint(pfx){
   else if (cat === 'account') hint.textContent = '发货方式：付款后从卡密库自动发（成品号按账号卡密发）。保存后，去左侧「卡密库存」按商品筛选批量导入账号。';
   else hint.textContent = '发货方式：付款后人工发货。确认收款后，在订单页点「发货」填交付内容。';
 }
-async function adminProductForm(id){
+async function adminProductForm(id, defaultSource){
   var p = null;
   if (id) { for (var i = 0; i < (window._adminProducts || []).length; i++){ if (String(window._adminProducts[i].id) === String(id)) p = window._adminProducts[i]; } }
+  else if (defaultSource) p = { source: defaultSource }; // 子目录下新增商品默认归属当前目录（对接=上游 / 自营=self）
   var pfx = 'pm-';
   window._productImage = {};
   showModal({ title: id ? '编辑商品' : '新增商品', bodyHTML: '<div>' + productFormHTML(pfx, p) + '</div>', confirmText: '保存', fullBleed: true, onConfirm: async function(){
