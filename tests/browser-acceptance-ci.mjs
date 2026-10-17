@@ -508,10 +508,14 @@ for (const [w, h, label] of [[390, 844, '390'], [360, 740, '360']]) {
     return { dir: getComputedStyle(hero).flexDirection, sideBySide: a.right <= b.left + 2 && b.width > 100 };
   });
   check(`mobile ${label} home: hero row layout`, !!rowLayout && rowLayout.dir === 'row' && rowLayout.sideBySide, JSON.stringify(rowLayout));
-  // 协调：卡片内容不溢出（底文/箭头不被裁），视觉下标隐藏不与发现标签撞。
-  const cardState = await page.evaluate(() => { const c = document.querySelector('.home-pcard'); const cap = document.querySelector('.home-visual-cap'); return { fits: c ? c.scrollHeight <= c.clientHeight + 1 : false, capHidden: cap ? getComputedStyle(cap).display === 'none' : null }; });
+  // 协调：卡片内容不溢出（桌面尺寸卡片原样放进 420×320 缩放盒，内容天生放得下）；视觉下标显示（1:1 缩放含下标）；圆环显示；视觉是缩放小图。
+  const cardState = await page.evaluate(() => { const c = document.querySelector('.home-pcard'); const cap = document.querySelector('.home-visual-cap'); return { fits: c ? c.scrollHeight <= c.clientHeight + 1 : false, capShown: cap ? getComputedStyle(cap).display !== 'none' : false }; });
   check(`mobile ${label} home: card content fits`, cardState.fits === true, JSON.stringify(cardState));
-  check(`mobile ${label} home: visual caption hidden`, cardState.capHidden === true, JSON.stringify(cardState));
+  check(`mobile ${label} home: visual caption shown`, cardState.capShown === true, JSON.stringify(cardState));
+  const visualScale = await page.evaluate(() => { const s = document.querySelector('.home-visual-scale'); const v = document.querySelector('.home-visual'); if (!s || !v) return null; const tr = getComputedStyle(s).transform; const r = v.getBoundingClientRect(); return { hasTransform: tr && tr !== 'none', boxW: Math.round(r.width), boxH: Math.round(r.height) }; });
+  check(`mobile ${label} home: visual is scaled miniature`, !!visualScale && visualScale.hasTransform && visualScale.boxW <= 170 && visualScale.boxH <= 135, JSON.stringify(visualScale));
+  const ringShown = await page.evaluate(() => { const r = document.querySelector('.home-visual-ring'); return r ? getComputedStyle(r).display !== 'none' : false; });
+  check(`mobile ${label} home: rings shown`, ringShown === true, String(ringShown));
 }
 
 // ===== 9. 控制台与接口失败 =====
