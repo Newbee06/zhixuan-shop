@@ -60,6 +60,7 @@ a{color:var(--accent);text-decoration:none}
 .home-sub{color:var(--sub);font-size:16px;line-height:1.7;max-width:460px;margin:0 0 24px}
 .home-cta{border:0;background:#7c3aed;color:#fff;font-size:16px;font-weight:700;padding:14px 24px;border-radius:14px;cursor:pointer;display:inline-flex;align-items:center;gap:8px}
 .home-cta:hover{background:#6d28d9}
+#shopBrowse{scroll-margin-top:72px}
 .home-note{color:var(--sub);font-size:13px;margin-top:16px}
 .home-visual{position:relative;width:420px;height:320px;flex:0 0 auto}
 .home-visual-ring{position:absolute;border:1px solid rgba(124,58,237,.18);border-radius:50%}
@@ -528,7 +529,7 @@ window.addEventListener('hashchange', route);
 function renderShop(){
   curQ = '';
   var html = homeHeroHTML();
-  html += '<div class="muted" style="margin:0 0 12px">下单后按页面收款地址付精确金额，付完成功后自动发货。</div>';
+  html += '<div class="muted" id="shopBrowse" style="margin:0 0 12px">下单后按页面收款地址付精确金额，付完成功后自动发货。</div>';
   html += '<div class="search-row"><div class="search-wrap"><span class="search-icon">' + ic('search') + '</span><input id="q" placeholder="搜索商品…" oninput="doSearch()"></div><select id="sortSel" class="sort-sel" onchange="changeSort(this.value)"><option value="featured">排序方式：精选</option><option value="price-asc">排序方式：价格从低到高</option><option value="price-desc">排序方式：价格从高到低</option><option value="name-asc">排序方式：名称：A 到 Z</option></select></div>';
   html += '<div class="filter-row"><div class="tabs" style="margin:0"><button id="pill-all" onclick="filterStock(\x27all\x27)">全部 <span id="cntAll"></span></button><button id="pill-instock" onclick="filterStock(\x27instock\x27)"><span class="stock-dot"></span> 有货 <span id="cntStock"></span></button></div><div class="muted" id="prodCount"></div></div><div id="list" class="grid shop-grid"></div>' + homeSectionHeadHTML();
   el('app').innerHTML = html;
@@ -538,7 +539,7 @@ function renderShop(){
 }
 // 首页 Hero（参考 prodseller 版式，文案按截图、品牌换本站的）：左文案 + 右紫色倾斜卡 + 漂浮标签。
 function homeHeroHTML(){
-  return '<div class="home-hero"><div><div class="home-eyebrow"><b>✦</b> 您的数字化升级之旅由此开启</div><div class="home-h1">无限可能，<br><span class="home-h1-accent">更实惠的价格。</span></div><p class="home-sub">你下一个最爱的工具就在这里。探索适用于工作、创意以及其他各种用途的数字订阅服务。</p><button class="home-cta" onclick="document.getElementById(\x27list\x27).scrollIntoView({behavior:\x27smooth\x27})">探索系列 <span>↗</span></button><div class="home-note">更多选择，尽在一处。</div></div><div class="home-visual"><span class="home-visual-ring" style="width:340px;height:340px;left:40px;top:-10px"></span><span class="home-visual-ring" style="width:260px;height:260px;left:80px;top:30px"></span><div class="home-chip home-chip-create">△ <span>创造</span></div><div class="home-chip home-chip-relax">▷ <span>放松</span></div><div class="home-pcard"><div class="home-pcard-top"><span class="home-pcard-logo">智选 ↗</span><span class="home-pcard-note">一切都数字化了。</span></div><div class="home-pcard-bottom"><div>略微升级，<br>潜力却更大。</div><span class="home-pcard-arrow">↗</span></div></div><div class="home-chip home-chip-discover">✳ <span>发现</span></div><div class="home-visual-cap">好工具，大可能。</div></div></div>';
+  return '<div class="home-hero"><div><div class="home-eyebrow"><b>✦</b> 您的数字化升级之旅由此开启</div><div class="home-h1">无限可能，<br><span class="home-h1-accent">更实惠的价格。</span></div><p class="home-sub">你下一个最爱的工具就在这里。探索适用于工作、创意以及其他各种用途的数字订阅服务。</p><button class="home-cta" onclick="document.getElementById(\x27shopBrowse\x27).scrollIntoView({behavior:\x27smooth\x27})">探索 <span>↗</span></button><div class="home-note">更多选择，尽在一处。</div></div><div class="home-visual"><span class="home-visual-ring" style="width:340px;height:340px;left:40px;top:-10px"></span><span class="home-visual-ring" style="width:260px;height:260px;left:80px;top:30px"></span><div class="home-chip home-chip-create">△ <span>创造</span></div><div class="home-chip home-chip-relax">▷ <span>放松</span></div><div class="home-pcard"><div class="home-pcard-top"><span class="home-pcard-logo">智选 ↗</span><span class="home-pcard-note">一切都数字化了。</span></div><div class="home-pcard-bottom"><div>略微升级，<br>潜力却更大。</div><span class="home-pcard-arrow">↗</span></div></div><div class="home-chip home-chip-discover">✳ <span>发现</span></div><div class="home-visual-cap">好工具，大可能。</div></div></div>';
 }
 // 商品合集区标题（截图第二块；本站无收藏夹，右侧改为返回顶部）。
 function homeSectionHeadHTML(){

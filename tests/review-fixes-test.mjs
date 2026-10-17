@@ -1275,7 +1275,9 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   // 防类名碰撞回归：商品页支付方式卡早已占用 .pay-card（含 margin:6px 0），成功页窄卡必须用独立类名 .pay-shell，否则居中会被后定义的 .pay-card 覆盖。
   check('payui: success card uses pay-shell not pay-card', frontendHtml.includes('glass pay-shell') && !frontendHtml.includes('glass pay-card'));
   // 首页 Hero + 合集标题（prodseller 版式，本站品牌与文案；不出现对方品牌）。
-  check('home: hero present with key copy', frontendHtml.includes('function homeHeroHTML(') && ['无限可能', '更实惠的价格', '探索系列', '智选 ↗', '创造', '放松', '发现'].every((s) => frontendHtml.includes(s)));
+  check('home: hero present with key copy', frontendHtml.includes('function homeHeroHTML(') && ['无限可能', '更实惠的价格', '探索 <span>↗</span>', '智选 ↗', '创造', '放松', '发现'].every((s) => frontendHtml.includes(s)) && !frontendHtml.includes('探索系列'));
+  // 探索按钮滑到付款提示行/搜索栏（截图位置），而非直接跳商品网格；scroll-margin 避开吸顶导航遮挡。
+  check('home: explore scrolls to browse anchor', frontendHtml.includes('id="shopBrowse"') && frontendHtml.includes("getElementById(\\x27shopBrowse\\x27)") && frontendHtml.includes('#shopBrowse{scroll-margin-top:72px}'));
   check('home: hero rendered on shop page', frontendHtml.includes('homeHeroHTML()') && frontendHtml.includes('homeSectionHeadHTML()'));
   check('home: section head copy + back-to-top', frontendHtml.includes('日常生活，升级版') && frontendHtml.includes('返回顶部 ↑') && !frontendHtml.includes('返回收藏夹'));
   // 合集标题在最底：商品网格下方、紧贴底部声明上方（声明在 #app 之外的页脚，标题是 #app 内最后一个块）。
