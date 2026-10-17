@@ -487,6 +487,18 @@ for (const [w, h, label] of [[390, 844, '390'], [360, 740, '360']]) {
   await page.waitForTimeout(800);
   check(`mobile ${label} home: no horizontal overflow`,
     (await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)) <= 1);
+  // 移动端适配回归（冻结规格 1A/2A/3C）：合集标题一行（≤30px 高）、Hero 倾斜卡不被 Hero 裁剪。
+  await page.waitForSelector('.home-section-title', { timeout: 10000 });
+  const mobileLayout = await page.evaluate(() => {
+    const title = document.querySelector('.home-section-title');
+    const hero = document.querySelector('.home-hero');
+    const pcard = document.querySelector('.home-pcard');
+    if (!title || !hero || !pcard) return null;
+    const hb = hero.getBoundingClientRect(), pb = pcard.getBoundingClientRect();
+    return { titleH: Math.round(title.getBoundingClientRect().height), pcardWithin: pb.bottom <= hb.bottom + 2 };
+  });
+  check(`mobile ${label} home: section title single line`, !!mobileLayout && mobileLayout.titleH <= 30, JSON.stringify(mobileLayout));
+  check(`mobile ${label} home: hero card not clipped`, !!mobileLayout && mobileLayout.pcardWithin, JSON.stringify(mobileLayout));
 }
 
 // ===== 8b. P2-12：浏览器计算样式真实断言（深色售罄/Hero/合集标题/倒计时/App 图标/付款块/对齐/TXID+Turnstile/必填无请求）=====
