@@ -33,8 +33,11 @@ a{color:var(--accent);text-decoration:none}
 .pay-copy:hover{color:var(--text)}
 .pay-toprow{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0}
 .pay-exact{display:inline-flex;align-items:center;gap:6px;background:rgba(10,132,255,.12);color:var(--accent);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600}
-.pay-deadline{border:1px solid var(--line);border-radius:12px;padding:6px 10px;font-size:13px;background:var(--card2)}
-.pay-deadline b{font-size:14px}
+.pay-deadline{display:flex;flex-direction:column;align-items:flex-end;gap:2px;border:1px solid var(--line);border-radius:12px;padding:6px 10px;background:var(--card2);text-align:right}
+.pay-deadline-abs{font-size:12px;color:var(--sub)}
+.pay-deadline-left{font-size:14px;font-weight:700}
+.pay-deadline-expired{border-color:rgba(255,69,58,.5);background:rgba(255,69,58,.10)}
+.pay-deadline-expired .pay-deadline-left{color:var(--red)}
 .pay-div{border-top:1px solid var(--line);margin:12px 0}
 .pay-row{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px;margin:10px 0}
 .pay-row-label{color:var(--sub)}
@@ -451,6 +454,8 @@ function fmtTime(s){ return s ? String(s).replace('T', ' ') : ''; }
 function catLabel(c){ if (c === 'recharge') return '代充'; if (c === 'account') return '成品号'; if (c === 'card') return '卡密'; return c; }
 function statusLabel(s){ if (s === 'pending_payment') return '待付款'; if (s === 'pending_fulfill') return '待发货'; if (s === 'pending_activation') return '激活待处理'; if (s === 'pending_upstream') return '待处理'; if (s === 'refund_pending') return '退款待处理'; if (s === 'completed') return '已完成'; if (s === 'cancelled') return '已取消'; return escH(s); }
 function fmtCountdown(exp){ if (!exp) return ''; var diff = new Date(String(exp).replace(' ', 'T') + 'Z').getTime() - Date.now(); if (!(diff > 0)) return '已过期，请重新下单'; var h = Math.floor(diff / 3600000); var m = Math.floor((diff % 3600000) / 60000); var s = Math.floor((diff % 60000) / 1000); var mm = (m < 10 ? '0' : '') + m; var ss = (s < 10 ? '0' : '') + s; return h > 0 ? h + ':' + mm + ':' + ss : mm + ':' + ss; }
+// 到期盒第二行整行文案：正常“剩余 MM:SS”，过期只显示过期态（不带“剩余”前缀，避免“剩余已过期”自相矛盾）。
+function fmtCountdownLine(exp){ var t = fmtCountdown(exp); return t === '已过期，请重新下单' ? t : '剩余 ' + t; }
 // 付款到期绝对时间（本地时区，如 19:41），与倒计时并排显示，买家不用心算。
 function fmtExpiryAbsolute(exp){ if (!exp) return ''; var d = new Date(String(exp).replace(' ', 'T') + 'Z'); if (isNaN(d.getTime())) return ''; return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }); }
 // 收款地址首尾高亮（前 4 + 后 6 位绿色）；复制走 textContent，不受 span 影响。
@@ -462,7 +467,7 @@ function payBlockHTML(o, uid){
   var addr = o.pay_address || o.wallet_address || '';
   var h = '<div class="pay-amount"><div class="pay-amount-usdt"><span id="payAmt-' + escH(uid) + '">' + actual + '</span> USDT <button class="pay-copy" data-copy-target="payAmt-' + escH(uid) + '" title="复制金额">⧉</button></div><div class="pay-amount-sub">' + fmtCNY(actual) + ' · ' + escH(o.pay_method || '') + ' · ' + escH(payTokenLabel(o.pay_chain || '')) + '</div></div>';
   h += '<div class="pay-toprow"><span class="pay-exact">ⓘ 请严格按照数额进行付款</span>';
-  if (o.expires_at) h += '<span class="pay-deadline">到期时间 <b>' + escH(fmtExpiryAbsolute(o.expires_at)) + '</b> · 剩余 <b id="countdown-' + escH(uid) + '">' + fmtCountdown(o.expires_at) + '</b></span>';
+  if (o.expires_at) { var expiredNow = fmtCountdown(o.expires_at) === '已过期，请重新下单'; h += '<span class="pay-deadline' + (expiredNow ? ' pay-deadline-expired' : '') + '" id="deadline-' + escH(uid) + '"><span class="pay-deadline-abs">到期时间 ' + escH(fmtExpiryAbsolute(o.expires_at)) + '</span><span class="pay-deadline-left"><b id="countdown-' + escH(uid) + '">' + fmtCountdownLine(o.expires_at) + '</b></span></span>'; }
   h += '</div><div class="pay-div"></div>';
   h += '<div class="pay-row"><span class="pay-row-label">商户订单</span><span class="pay-row-value"><b id="ordNo-' + escH(uid) + '">' + escH(o.order_no || '') + '</b><button class="pay-copy" data-copy-target="ordNo-' + escH(uid) + '" title="复制订单号">⧉</button></span></div><div class="pay-div"></div>';
   if (addr) { var qr = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&ecc=H&data=' + encodeURIComponent(addr); h += '<div class="pay-qr-box"><div class="pay-qr"><img src="' + qr + '" width="180" height="180" alt="收款二维码"><span class="pay-qr-logo">USDT</span></div></div>'; }
@@ -675,7 +680,7 @@ async function renderSuccess(no){
   html += '<div style="margin-top:10px"><button class="btn" data-no="' + escH(no) + '" onclick="submitTxid(this.dataset.no)">提交 TXID（可选）</button> <a class="btn ghost" href="#/query">去查询订单</a></div></div>';
   el('app').innerHTML = html;
   loadPayCaptcha();
-  if (o && o.expires_at) { clearInterval(window._cdTimer); window._cdTimer = setInterval(function(){ var c = el('countdown-success'); if (!c){ clearInterval(window._cdTimer); return; } c.textContent = fmtCountdown(o.expires_at); }, 1000); }
+  if (o && o.expires_at) { clearInterval(window._cdTimer); window._cdTimer = setInterval(function(){ var c = el('countdown-success'); if (!c){ clearInterval(window._cdTimer); return; } c.textContent = fmtCountdownLine(o.expires_at); var box = el('deadline-success'); if (box) { if (fmtCountdown(o.expires_at) === '已过期，请重新下单') box.classList.add('pay-deadline-expired'); else box.classList.remove('pay-deadline-expired'); } }, 1000); }
 }
 async function loadPayCaptcha(){
   var img = el('payCaptchaImg'); if (!img) return;

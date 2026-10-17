@@ -1252,8 +1252,15 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
     check('payui: fmtCountdown 20min -> MM:SS', /^\d{2}:\d{2}$/.test(fmtCountdownFn(isoPlus(20 * 60 * 1000))), fmtCountdownFn(isoPlus(20 * 60 * 1000)));
     check('payui: fmtCountdown 70min -> H:MM:SS', /^\d+:\d{2}:\d{2}$/.test(fmtCountdownFn(isoPlus(70 * 60 * 1000))), fmtCountdownFn(isoPlus(70 * 60 * 1000)));
     check('payui: fmtCountdown expired -> 已过期', fmtCountdownFn(isoPlus(-60 * 1000)) === '已过期，请重新下单');
+    // fmtCountdownLine：正常带“剩余”前缀，过期不带（避免“剩余已过期”）。
+    const feStart2 = frontendHtml.indexOf('function fmtCountdownLine(');
+    let feI2 = frontendHtml.indexOf('{', feStart2), feDepth2 = 0, feJ2 = feI2;
+    for (; feJ2 < frontendHtml.length; feJ2++) { if (frontendHtml[feJ2] === '{') feDepth2++; else if (frontendHtml[feJ2] === '}') { feDepth2--; if (feDepth2 === 0) break; } }
+    const fmtLineFn = new Function('fmtCountdown', 'return (' + frontendHtml.slice(feStart2, feJ2 + 1) + ')')(fmtCountdownFn);
+    check('payui: fmtCountdownLine 20min -> 剩余 MM:SS', /^剩余 \d{2}:\d{2}$/.test(fmtLineFn(isoPlus(20 * 60 * 1000))), fmtLineFn(isoPlus(20 * 60 * 1000)));
+    check('payui: fmtCountdownLine expired -> 仅过期态', fmtLineFn(isoPlus(-60 * 1000)) === '已过期，请重新下单');
   }
-  check('payui: BEpusdt layout classes', ['pay-shell', 'pay-toprow', 'pay-deadline', 'pay-div', 'pay-row', 'pay-qr-box', 'pay-addrbox', 'pay-copy'].every((c) => frontendHtml.includes(c)));
+  check('payui: BEpusdt layout classes', ['pay-shell', 'pay-toprow', 'pay-deadline', 'pay-deadline-abs', 'pay-deadline-left', 'pay-deadline-expired', 'pay-div', 'pay-row', 'pay-qr-box', 'pay-addrbox', 'pay-copy'].every((c) => frontendHtml.includes(c)));
   // 防类名碰撞回归：商品页支付方式卡早已占用 .pay-card（含 margin:6px 0），成功页窄卡必须用独立类名 .pay-shell，否则居中会被后定义的 .pay-card 覆盖。
   check('payui: success card uses pay-shell not pay-card', frontendHtml.includes('glass pay-shell') && !frontendHtml.includes('glass pay-card'));
   // payTokenLabel 已含链名（'USDT0 · X Layer'），小字行不得再追加一次 pay_chain。
