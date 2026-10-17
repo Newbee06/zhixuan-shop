@@ -1253,7 +1253,9 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
     check('payui: fmtCountdown 70min -> H:MM:SS', /^\d+:\d{2}:\d{2}$/.test(fmtCountdownFn(isoPlus(70 * 60 * 1000))), fmtCountdownFn(isoPlus(70 * 60 * 1000)));
     check('payui: fmtCountdown expired -> 已过期', fmtCountdownFn(isoPlus(-60 * 1000)) === '已过期，请重新下单');
   }
-  check('payui: BEpusdt layout classes', ['pay-card', 'pay-toprow', 'pay-deadline', 'pay-div', 'pay-row', 'pay-qr-box', 'pay-addrbox', 'pay-copy'].every((c) => frontendHtml.includes(c)));
+  check('payui: BEpusdt layout classes', ['pay-shell', 'pay-toprow', 'pay-deadline', 'pay-div', 'pay-row', 'pay-qr-box', 'pay-addrbox', 'pay-copy'].every((c) => frontendHtml.includes(c)));
+  // 防类名碰撞回归：商品页支付方式卡早已占用 .pay-card（含 margin:6px 0），成功页窄卡必须用独立类名 .pay-shell，否则居中会被后定义的 .pay-card 覆盖。
+  check('payui: success card uses pay-shell not pay-card', frontendHtml.includes('glass pay-shell') && !frontendHtml.includes('glass pay-card'));
   // payTokenLabel 已含链名（'USDT0 · X Layer'），小字行不得再追加一次 pay_chain。
   const payBlockSrc = frontendHtml.slice(frontendHtml.indexOf('function payBlockHTML'), frontendHtml.indexOf('function payBlockHTML') + 2500);
   check('payui: amount sub-line has no duplicated chain', (payBlockSrc.match(/o\.pay_chain/g) || []).length === 2);
