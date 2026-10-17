@@ -31,6 +31,16 @@ jobs:
         run: node tests/extract-frontend-check.mjs
       - name: wrangler.toml parses
         run: python3 -c "import tomllib; tomllib.load(open('wrangler.toml','rb')); print('wrangler.toml OK')"
+      - name: Production cron triggers present (top-level [triggers])
+        run: |
+          python3 - <<'PY'
+          import tomllib, sys
+          cfg = tomllib.load(open('wrangler.toml','rb'))
+          crons = (cfg.get('triggers') or {}).get('crons') or []
+          for want in ("0 2 * * *", "*/1 * * * *"):
+              assert want in crons, f"FAIL: top-level [triggers] missing cron {want}: {crons}"
+          print('production triggers OK:', crons)
+          PY
       - name: Migration files present and non-empty
         run: |
           set -e
@@ -90,6 +100,8 @@ jobs:
         run: node tests/payment-whitelist-test.mjs
       - name: App icons test (light/dark icon library, app_icon_key, title auto-match, picker)
         run: node tests/app-icons-test.mjs
+      - name: Code review fixes test (83 review findings, 226 assertions)
+        run: node tests/review-fixes-test.mjs
       - name: Job summary
         if: always()
         run: |
