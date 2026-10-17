@@ -530,7 +530,7 @@ function renderShop(){
   var html = homeHeroHTML();
   html += '<div class="muted" style="margin:0 0 12px">下单后按页面收款地址付精确金额，付完成功后自动发货。</div>';
   html += '<div class="search-row"><div class="search-wrap"><span class="search-icon">' + ic('search') + '</span><input id="q" placeholder="搜索商品…" oninput="doSearch()"></div><select id="sortSel" class="sort-sel" onchange="changeSort(this.value)"><option value="featured">排序方式：精选</option><option value="price-asc">排序方式：价格从低到高</option><option value="price-desc">排序方式：价格从高到低</option><option value="name-asc">排序方式：名称：A 到 Z</option></select></div>';
-  html += '<div class="filter-row"><div class="tabs" style="margin:0"><button id="pill-all" onclick="filterStock(\x27all\x27)">全部 <span id="cntAll"></span></button><button id="pill-instock" onclick="filterStock(\x27instock\x27)"><span class="stock-dot"></span> 有货 <span id="cntStock"></span></button></div><div class="muted" id="prodCount"></div></div>' + homeSectionHeadHTML() + '<div id="list" class="grid shop-grid"></div>';
+  html += '<div class="filter-row"><div class="tabs" style="margin:0"><button id="pill-all" onclick="filterStock(\x27all\x27)">全部 <span id="cntAll"></span></button><button id="pill-instock" onclick="filterStock(\x27instock\x27)"><span class="stock-dot"></span> 有货 <span id="cntStock"></span></button></div><div class="muted" id="prodCount"></div></div><div id="list" class="grid shop-grid"></div>' + homeSectionHeadHTML();
   el('app').innerHTML = html;
   var ss = el('sortSel'); if (ss) ss.value = curSort;
   // 商城每次进入都重新拉商品（PRODUCTS 只在首次 load() 时取过一次；下单预留库存后 SPA 内导航回商城会显示过期库存计数）。失败时用旧数据渲染，不白屏。

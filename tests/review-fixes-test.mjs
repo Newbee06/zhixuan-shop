@@ -1278,6 +1278,8 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   check('home: hero present with key copy', frontendHtml.includes('function homeHeroHTML(') && ['无限可能', '更实惠的价格', '探索系列', '智选 ↗', '创造', '放松', '发现'].every((s) => frontendHtml.includes(s)));
   check('home: hero rendered on shop page', frontendHtml.includes('homeHeroHTML()') && frontendHtml.includes('homeSectionHeadHTML()'));
   check('home: section head copy + back-to-top', frontendHtml.includes('日常生活，升级版') && frontendHtml.includes('返回顶部 ↑') && !frontendHtml.includes('返回收藏夹'));
+  // 合集标题在最底：商品网格下方、紧贴底部声明上方（声明在 #app 之外的页脚，标题是 #app 内最后一个块）。
+  check('home: section head below grid (above footer)', frontendHtml.includes('id="list" class="grid shop-grid"></div>\' + homeSectionHeadHTML()'));
   // 上游集成本身就叫 ProdSeller（既有代码/admin 里到处是），只断言新首页两块里不出现对方品牌。
   {
     const heroStart = frontendHtml.indexOf('function homeHeroHTML(');
