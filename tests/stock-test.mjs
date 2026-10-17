@@ -24,7 +24,6 @@ async function mockFetch(url, opts = {}) {
   const u = String(url);
   if (u.includes('api.resend.com')) return new Response(JSON.stringify({ id: 'mock-mail' }), { status: 200 });
   if (u.includes('prodseller.com')) return new Response(JSON.stringify({ error: 'unused' }), { status: 500 });
-  if (u.includes('tronscanapi.com')) return new Response(JSON.stringify({ data: [] }), { status: 200 });
   throw new Error('unexpected fetch ' + u);
 }
 const workerPath = path.join(dir, 'src/worker.js');
@@ -52,7 +51,7 @@ function mkCaptcha(code) {
 }
 async function orderCall(body) {
   const cid = mkCaptcha('AB12');
-  return call('/api/orders', 'POST', { ...body, captcha_id: cid, captcha_code: 'AB12' });
+  return call('/api/orders', 'POST', { query_password: 'stock-test-pw', ...body, captcha_id: cid, captcha_code: 'AB12' });
 }
 // admin login + 首次改密（新规则：未改密的会话不能调管理接口）
 let loginRes = await call('/api/admin/login', 'POST', { password: 'admin' });

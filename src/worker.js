@@ -3,7 +3,7 @@
 // 安全：PBKDF2 迭代 100000（Workers 生产上限），参数化查询，httpOnly session cookie。
 // 支付：CF 轮询自动发货（链上按精确金额匹配），双链收口：欧易 USDT0 · X Layer、币安 USDT · BEP20。服务端白名单强制，历史订单仍可查询与恢复。
 // 轮询原理：下单生成 actual_amount = 基础价 + 随机尾数 0.0001-0.0099，锁定 20 分钟；
-// cron 每 1 分钟查 D1 有无 pending_payment，无则零 RPC；有则查 Tronscan / 公开 RPC 匹配 to+金额。
+// cron 每 1 分钟查 D1 有无 pending_payment，无则零 RPC；有则查 EVM 公开 RPC 匹配 to+金额。仅支持 OKX X Layer 与币安 BEP20。
 
 var PBKDF2_ITERATIONS = 100000;
 var SESSION_MAX_AGE = 7 * 24 * 3600;
@@ -60,12 +60,11 @@ function validImageData(s){
 }
 var POLL_LOCK_MINUTES = 20;
 var TRANSFER_TOPIC0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
-var USDT_TRC20_ID = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
-var DEFAULT_RPC_URLS = { 'X Layer': ['https://xlayerrpc.okx.com'], 'ERC20': ['https://eth.llamarpc.com', 'https://rpc.ankr.com/eth'], 'BEP20': ['https://bsc-dataseed.binance.org', 'https://bsc-dataseed1.defibit.io'] };
+var DEFAULT_RPC_URLS = { 'X Layer': ['https://xlayerrpc.okx.com'], 'BEP20': ['https://bsc-dataseed.binance.org', 'https://bsc-dataseed1.defibit.io'] };
 // ---- 第四轮（Release Readiness）新增常量 ----
 // 各链确认数策略（可经 settings.chain_confirmations 以 JSON 覆盖）：未达确认数不入账、不履约，防链重组导致已发货但付款失效。
-// X Layer 出块快且重组概率低，1 确认；ERC20 12 确认（约 2.5 分钟）；BEP20 15 确认（约 45 秒）；TRC20 19 确认（约 1 分钟）。
-var DEFAULT_CHAIN_CONFIRMATIONS = { 'X Layer': 1, 'ERC20': 12, 'BEP20': 15, 'TRC20': 19 };
+// X Layer 出块快且重组概率低，1 确认；BEP20 15 确认（约 45 秒）。仅支持这两条链。
+var DEFAULT_CHAIN_CONFIRMATIONS = { 'X Layer': 1, 'BEP20': 15 };
 // /pay 独立限流：同一订单 10 分钟最多 5 次提交；同一 IP 10 分钟最多 20 次提交。受限不影响后台轮询继续处理。
 var PAY_RATE_PER_ORDER = 5;
 var PAY_RATE_PER_IP = 20;
@@ -76,9 +75,7 @@ var LOGIN_GLOBAL_WINDOW_MS = 15 * 60 * 1000;
 var LOGIN_GLOBAL_BLOCK_MS = 5 * 60 * 1000;
 // EVM 扫描分页：每次 eth_getLogs 最多覆盖的区块数，避免单次 RPC 超时。
 var EVM_SCAN_PAGE_BLOCKS = 1000;
-// Tronscan 分页：每页 50 笔，最多页数（评估见 RELEASE_READINESS；命中上限时记警告，不得静默漏账）。
-var TRONSCAN_MAX_PAGES = 20;
-var DEFAULT_USDT_CONTRACTS = { 'X Layer': '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', 'ERC20': '0xdAC17F958D2ee523a2206206994597C13D831ec7', 'BEP20': '0x55d398326f99059fF775485246999027B3197955', 'TRC20': 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t' };
+var DEFAULT_USDT_CONTRACTS = { 'X Layer': '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', 'BEP20': '0x55d398326f99059fF775485246999027B3197955' };
 // 第九轮：X Layer 默认代币 = USDT0（欧易 + Tether 2025-09-09 上线 X Layer 的当前标准，欧易提币/充值走 USDT0；6 位精度，LayerZero OFT v2）。
 // 旧版 X Layer USDT（0x1e4a5963abfd975d8c9021ce480b42188849d41d）是不同资产，绝不混用、绝不自动接受。
 // BEP20 默认 = Binance-Peg USDT 0x55d398326f99059fF775485246999027B3197955，18 位精度（BscScan 合约源码 _decimals=18）。
@@ -415,7 +412,7 @@ var MIGRATIONS = [
   { version: 8, name: '第四轮：付款账本 + 扫描游标 + /pay 限流 + 金额/联系人唯一性', up: async function (env) {
     // 付款账本 payments：独立记录每一笔链上付款事件（提交/发现/核验/确认/入账/异常），与订单分离。
     // 唯一键 (chain, tx_hash, event_key)：同一链上事件（同一交易内同一笔转账）只能入账一次，防重复轮询/并发重复入账。
-    // event_key：EVM 为日志索引（logIndex），TRC20 为区块时间:金额（区分同交易内多笔转账）；/pay 提交时未知先为空，核验后回填。
+    // event_key：EVM 为日志索引（logIndex）；/pay 提交时未知先为空，核验后回填。
     // order_id 不唯一：同一订单可有多笔付款（重复付款/部分付款/超额付款各留独立记录）。
     await createTableIfMissing(env, "CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, chain TEXT NOT NULL DEFAULT '', asset TEXT NOT NULL DEFAULT 'USDT', pay_address TEXT NOT NULL DEFAULT '', tx_hash TEXT NOT NULL DEFAULT '', event_key TEXT NOT NULL DEFAULT '', amount REAL NOT NULL DEFAULT 0, amount_unit TEXT NOT NULL DEFAULT 'USDT', block_number INTEGER, confirmations INTEGER NOT NULL DEFAULT 0, first_seen_at TEXT NOT NULL DEFAULT (datetime('now')), status TEXT NOT NULL DEFAULT 'submitted', reconcile_status TEXT NOT NULL DEFAULT '', reconcile_note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')))");
     await createIndexIfMissing(env, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_event_unique ON payments(chain, tx_hash, event_key)');
@@ -490,6 +487,11 @@ var MIGRATIONS = [
     // secret_attempts：按单密码取卡密的尝试记录（order_no + ip + 时间），防针对单订单的密码爆破。
     await createTableIfMissing(env, 'CREATE TABLE IF NOT EXISTS secret_attempts (order_no TEXT NOT NULL, ip TEXT NOT NULL, created_at TEXT NOT NULL)');
     await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_secret_attempts_order ON secret_attempts(order_no, created_at)');
+  } },
+  { version: 15, name: 'P0：查询密码必填 + 随机salt PBKDF2 + 移除邮箱查询', up: async function (env) {
+    // query_password_salt：每订单随机 16 字节 salt（base64），与 hashPassword（PBKDF2 10万次）配对。
+    // salt 为空 + hash 非空 = v14 遗留无 salt 哈希（仅 staging 测试订单），按 legacy 处理（仅管理员流程，不走 /secret）。
+    await addColumnIfMissing(env, 'orders', "query_password_salt TEXT NOT NULL DEFAULT ''");
   } }
 ];
 // 执行待迁移：先建基表（空库首次迁移），再逐个版本 apply，成功才标记版本；任一失败抛错（带版本号与原因），不得伪装成功。
@@ -646,7 +648,7 @@ async function precheckSchema(env) {
   var expectedTables = {
     products: ['id', 'slug', 'title', 'category', 'price_usdt', 'source', 'prodseller_id', 'cost_price', 'sell_price', 'requires_email_activation', 'delivery_method', 'stock_type', 'description', 'notice', 'form_fields', 'image_emoji', 'image_data', 'app_icon_key', 'sort', 'is_active', 'in_stock', 'created_at'],
     cards: ['id', 'product_id', 'code', 'is_used', 'is_disabled', 'order_id', 'reserved_order_id', 'reserved_at', 'created_at'],
-    orders: ['id', 'order_no', 'query_password', 'query_token_hash', 'query_password_hash', 'claim_token', 'claimed_at', 'exception_reason', 'refund_status', 'refund_ref', 'upstream_lock', 'upstream_lock_expires_at', 'product_id', 'product_snapshot', 'quantity', 'price_usdt', 'total_usdt', 'actual_amount', 'pay_address', 'expires_at', 'last_checked_at', 'tx_hash', 'customer_fields', 'contact', 'pay_method', 'pay_chain', 'wallet_address', 'txid', 'status', 'delivery_content', 'admin_note', 'data_expired', 'created_at', 'paid_at', 'fulfilled_at'],
+    orders: ['id', 'order_no', 'query_password', 'query_token_hash', 'query_password_hash', 'query_password_salt', 'claim_token', 'claimed_at', 'exception_reason', 'refund_status', 'refund_ref', 'upstream_lock', 'upstream_lock_expires_at', 'product_id', 'product_snapshot', 'quantity', 'price_usdt', 'total_usdt', 'actual_amount', 'pay_address', 'expires_at', 'last_checked_at', 'tx_hash', 'customer_fields', 'contact', 'pay_method', 'pay_chain', 'wallet_address', 'txid', 'status', 'delivery_content', 'admin_note', 'data_expired', 'created_at', 'paid_at', 'fulfilled_at'],
     settings: ['key', 'value'],
     admin_meta: ['key', 'value'],
     upstream_orders: ['id', 'order_id', 'prodseller_order_id', 'status', 'amount', 'delivered_keys', 'created_at'],
@@ -943,7 +945,7 @@ function parseJsonSafe(s, fallback) { try { return JSON.parse(s || ''); } catch 
 function fmtTsPlusMinutes(min) { return new Date(Date.now() + min * 60000).toISOString().replace('T', ' ').slice(0, 19); }
 function amountsEqual(a, b) { return Math.abs(Number(a) - Number(b)) < 0.000001; }
 // ---- 第九轮：代币精度（按合约实际 decimals，不得硬编码）----
-// USDT 在不同链精度不同：X Layer USDT0 = 6，BEP20 Binance-Peg USDT = 18，ERC20 原生 USDT = 6。
+// USDT 在不同链精度不同：X Layer USDT0 = 6，BEP20 Binance-Peg USDT = 18。
 // 核验时必须用合约实际 decimals() 换算金额，否则会漏认真实到账（BEP20 按 6 位算永远对不上），
 // 或误认粉尘转账为全额付款（BEP20 按 6 位算，5005700 个最小单位 = 5.0057e-12 USDT 也会被当成 5.0057 USDT）。
 // decimals 通过 eth_call decimals() 读取并缓存（同一 Worker 隔离期内复用）；读取失败时 fail-closed（该 RPC 不认账）。
@@ -1005,56 +1007,6 @@ async function rpcCall(fetchFn, rpcUrl, method, params) {
   if (j.error) throw new Error('RPC ' + (j.error.message || JSON.stringify(j.error)));
   return j.result;
 }
-// TRC20：Tronscan token_trc20/transfers，匹配 to + 金额 + token + 时间。
-// 分页：共享收款地址在忙时 1 分钟内可收到 >50 笔，单页 limit=50 会漏到账。按 start 偏移逐页取，最多 TRONSCAN_MAX_PAGES 页（20 页 = 1000 笔）；
-// 某页已全部早于订单创建时间（减 1 分钟缓冲）时停止（后续页只会更早，不会含本订单的到账）。
-// 分页上限评估（第四轮 P0）：20 页基于 Tronscan 单地址高频收款场景（1 分钟内 >1000 笔 USDT 转账的地址极少）；
-// 若命中上限且未找到本订单付款，记 console 警告（不得静默漏账），运营需人工在 Tronscan 核查该地址的转账并手动对账。
-async function checkTrc20Payment(fetchFn, payAddress, actualAmount, createdAtISO) {
-  var createdMs = Date.parse(String(createdAtISO).replace(' ', 'T') + 'Z') || 0;
-  var start = 0;
-  var pageSize = 50;
-  for (var page = 0; page < TRONSCAN_MAX_PAGES; page++) {
-    var url = 'https://apilist.tronscanapi.com/api/token_trc20/transfers?limit=' + pageSize + '&start=' + start + '&toAddress=' + encodeURIComponent(payAddress);
-    var res = await fetchFn(url);
-    if (!res.ok) throw new Error('Tronscan HTTP ' + res.status);
-    var j = await res.json();
-    var list = (j && (j.data || j.token_transfers)) || [];
-    if (!Array.isArray(list)) list = [];
-    var oldestTsInPage = Infinity;
-    for (var i = 0; i < list.length; i++) {
-      var t = list[i] || {};
-      // 本页最旧时间（页内按时间倒序，所有转账都统计，与金额过滤无关，用于提前停页判断）
-      var tsAll = Number(t.block_ts || t.timestamp || 0);
-      if (tsAll) oldestTsInPage = Math.min(oldestTsInPage, tsAll);
-      var to = t.to_address || t.toAddress || (t.to && t.to.address) || '';
-      if (String(to).toLowerCase() !== String(payAddress).toLowerCase()) continue;
-      var info = t.tokenInfo || t.token_info || {};
-      var tokenId = info.tokenId || info.token_id || t.tokenId || '';
-      var abbr = info.tokenAbbr || info.token_abbr || t.tokenAbbr || '';
-      if (tokenId && tokenId !== USDT_TRC20_ID) continue;
-      if (abbr && String(abbr).toUpperCase() !== 'USDT') continue;
-      var decimals = Number(info.tokenDecimal != null ? info.tokenDecimal : (info.token_decimal != null ? info.token_decimal : 6));
-      var quant = Number(t.quant != null ? t.quant : t.value);
-      if (!isFinite(quant)) continue;
-      var amt = quant / Math.pow(10, decimals);
-      if (!amountsEqual(amt, actualAmount)) continue;
-      var ts = Number(t.block_ts || t.timestamp || 0);
-      if (ts && ts < createdMs - 60000) continue;
-      if (t.confirmed === false) continue;
-      var hash = t.transactionHash || t.transaction_hash || t.hash || '';
-      if (hash) return { txHash: String(hash), amount: amt };
-    }
-    if (list.length < pageSize) break; // 最后一页
-    if (oldestTsInPage !== Infinity && oldestTsInPage < createdMs - 60000) break; // 本页已全部早于订单创建时间
-    start += pageSize;
-    if (page === TRONSCAN_MAX_PAGES - 1) {
-      // 命中分页上限且未找到付款：不得静默漏账，记警告供运营人工核查。
-      try { console.warn('Tronscan 分页上限命中（' + TRONSCAN_MAX_PAGES + ' 页），地址 ' + payAddress + ' 可能漏检，请人工核查 Tronscan 转账并对账'); } catch (e) {}
-    }
-  }
-  return null;
-}
 // EVM/X Layer：eth_getLogs 查 USDT Transfer，至少 requiredConfirmations 确认（各链策略，见 DEFAULT_CHAIN_CONFIRMATIONS）。
 // opts: { requiredConfirmations, fromBlockOverride }。fromBlockOverride 用于游标扫描；未传时回溯 200 区块（兼容旧口径）。
 async function checkEvmPayment(fetchFn, rpcUrls, contract, payAddress, actualAmount, opts) {
@@ -1105,6 +1057,8 @@ async function checkEvmPayment(fetchFn, rpcUrls, contract, payAddress, actualAmo
 // 对每个 Transfer 日志：记付款账本（discovered），按 to + 金额匹配待付款订单，匹配到且确认数足够时触发履约并记 posted。
 // 返回 { scanned: 扫描日志数, matched: 匹配到账数, fulfilled: 履约数 }。游标失败不抛错（下次轮询重试）。
 async function scanEvmChain(env, fetchFn, ctx, chain, pendingOrders) {
+  // 白名单封堵：仅 X Layer / BEP20 可扫描；旧链订单不自动认账。
+  if (PAY_CHAINS.indexOf(chain) === -1) return { scanned: 0, matched: 0, fulfilled: 0 };
   var settings = await getAllSettings(env);
   var contracts = parseJsonSafe(settings.usdt_contracts, {});
   var contract = contracts[chain] || DEFAULT_USDT_CONTRACTS[chain] || '';
@@ -1203,8 +1157,9 @@ async function scanEvmChain(env, fetchFn, ctx, chain, pendingOrders) {
   return out;
 }
 async function checkChainPayment(env, fetchFn, order) {
+  // 白名单封堵：仅 OKX X Layer / 币安 BEP20 两种组合可走链上核验；旧 TRC20/ERC20/站内转账订单不自动认账，转人工审核。
+  if (!validPayCombo(order.pay_method, order.pay_chain)) return null;
   var settings = await getAllSettings(env);
-  if (order.pay_chain === 'TRC20') return await checkTrc20Payment(fetchFn, order.pay_address || order.wallet_address, order.actual_amount || order.total_usdt, order.created_at);
   var contracts = parseJsonSafe(settings.usdt_contracts, {});
   var contract = contracts[order.pay_chain] || DEFAULT_USDT_CONTRACTS[order.pay_chain] || '';
   var rpcMap = parseJsonSafe(settings.rpc_urls, {});
@@ -1214,29 +1169,10 @@ async function checkChainPayment(env, fetchFn, order) {
   return await checkEvmPayment(fetchFn, rpcs, contract, order.pay_address || order.wallet_address, order.actual_amount || order.total_usdt, { requiredConfirmations: reqConf });
 }
 async function checkTxidPayment(env, fetchFn, order, txid) {
-  // 按需核验：用户主动提交 TXID 时复用同一链上核验（TRC20 查单笔，EVM 查 receipt 日志）
+  // 按需核验：用户主动提交 TXID 时复用同一链上核验（EVM 查 receipt 日志）。白名单封堵：非首期两种组合不核验。
   var settings = await getAllSettings(env);
+  if (!validPayCombo(order.pay_method, order.pay_chain)) return null;
   try {
-    if (order.pay_chain === 'TRC20') {
-      var r = await fetchFn('https://apilist.tronscanapi.com/api/transaction-info?hash=' + encodeURIComponent(txid));
-      if (!r.ok) return null;
-      var j = await r.json();
-      var list = j.tokenTransferInfo ? j.tokenTransferInfo.transfers || [] : (j.data || []);
-      var arr = Array.isArray(list) ? list : [j];
-      for (var i = 0; i < arr.length; i++) {
-        var t = arr[i] || {};
-        var to = t.to_address || t.toAddress || '';
-        if (String(to).toLowerCase() !== String(order.pay_address || order.wallet_address).toLowerCase()) continue;
-        var info = t.tokenInfo || {};
-        if (info.tokenId && info.tokenId !== USDT_TRC20_ID) continue;
-        var dec = Number(info.tokenDecimal != null ? info.tokenDecimal : 6);
-        var amt = Number(t.amount != null ? t.amount : (t.quant != null ? t.quant / Math.pow(10, dec) : NaN));
-        if (!isFinite(amt) || !amountsEqual(amt, order.actual_amount || order.total_usdt)) continue;
-        if (j.confirmed === false) continue;
-        return { txHash: txid, amount: amt };
-      }
-      return null;
-    }
     var contracts = parseJsonSafe(settings.usdt_contracts, {});
     var contract = contracts[order.pay_chain] || DEFAULT_USDT_CONTRACTS[order.pay_chain] || '';
     var rpcMap = parseJsonSafe(settings.rpc_urls, {});
@@ -1565,10 +1501,9 @@ async function runPolling(env, fetchFn, ctx) {
       try { hit = await checkChainPayment(env, fetchFn, o); } catch (e) { hit = null; }
       if (hit && hit.txHash) {
         // 账本：轮询发现 → 核验通过 → 确认数足够（checkChainPayment 已按各链确认策略过滤）→ 履约 → 入账。
-        // event_key：EVM 为 logIndex，TRC20 为 block_ts:quant（区分同交易多笔转账）。
+        // event_key：EVM 为 logIndex（区分同交易多笔转账）。
         var evKey = '';
         if (hit.logIndex != null && hit.logIndex !== '') evKey = String(hit.logIndex);
-        else if (o.pay_chain === 'TRC20' && hit.blockTs) evKey = String(hit.blockTs) + ':' + String(hit.amount);
         var prec = await recordPayment(env, { order_id: o.id, chain: o.pay_chain, pay_address: o.pay_address || o.wallet_address, tx_hash: hit.txHash, event_key: evKey, amount: hit.amount != null ? hit.amount : (o.actual_amount || o.total_usdt), block_number: hit.blockNumber != null ? hit.blockNumber : null, confirmations: hit.confirmations != null ? hit.confirmations : 0, status: 'verified', reconcile_note: '轮询发现并核验通过' }).catch(function () { return null; });
         var payRow = prec && prec.payment ? prec.payment : null;
         if (payRow && payRow.status === 'posted') continue; // 已入账，跳过（防重复发货）
@@ -1589,7 +1524,7 @@ async function runPolling(env, fetchFn, ctx) {
   // 按链分组待付款订单，只扫有待付款订单的链与地址；游标持久化，RPC 失败不推进。
   try {
     var evmChains = {};
-    list.forEach(function (o) { if (o.pay_chain && o.pay_chain !== 'TRC20' && o.pay_chain !== '站内转账') evmChains[o.pay_chain] = 1; });
+    list.forEach(function (o) { if (validPayCombo(o.pay_method, o.pay_chain)) evmChains[o.pay_chain] = 1; });
     for (var ch in evmChains) {
       var chainOrders = list.filter(function (o) { return o.pay_chain === ch; });
       var scanRes = await scanEvmChain(env, fetchFn, ctx, ch, chainOrders);
@@ -1606,7 +1541,7 @@ function sanitizeOrderForPublic(o, level) {
   delete out.query_password;
   delete out.query_token_hash;
   // 只暴露“是否设了查询密码”（与查询列表的 credential_type 同口径），不暴露哈希本身。
-  out.has_query_password = o.query_password_hash ? 1 : 0;
+  out.has_query_password = (o.query_password_salt && o.query_password_hash) ? 1 : 0;
   delete out.query_password_hash;
   delete out.claim_token;
   delete out.claimed_at;
@@ -1924,28 +1859,25 @@ async function handleApi(req, env, url, ctx) {
     var settings = await getAllSettings(env);
     var addrMap = {}; try { addrMap = JSON.parse(settings.usdt_addresses || '{}'); } catch (e) { addrMap = {}; }
     var wallet = '';
-    if (body.pay_method === 'BinanceUID') {
-      wallet = String(settings.binance_uid || '').trim();
-    } else {
-      wallet = addrMap[body.pay_method + '|' + body.pay_chain] || '';
-    }
+    wallet = addrMap[body.pay_method + '|' + body.pay_chain] || '';
     // 第九轮：所选方式没有有效收款地址时拒绝创建订单，不得生成无收款地址却显示下单成功的订单。
     // EVM 收款地址格式：0x + 40 位十六进制。历史订单不受影响（创建时不重校验旧订单）。
     wallet = String(wallet || '').trim();
     if (!/^0x[0-9a-fA-F]{40}$/.test(wallet)) return err('该支付方式暂未配置有效收款地址，请联系管理员配置后再下单');
     var orderNo = genOrderNo();
-    // 查询密码（aisou.pro 方向）：买家下单时自设，可选。只存 SHA-256 哈希，绝不存明文；空 = 未设密码，查卡密无需密码。
-    // 新订单不再生成系统查单凭证（query_token_hash 写空）；旧订单的系统凭证/旧密码走老路径兼容。
+    // 查询密码（P0，必填）：买家下单时自设，6-64 位。存储 = 随机 16 字节 salt + PBKDF2(10万次) 哈希（与管理员密码同一方案），绝不存明文。
+    // 无 salt 的 v14 遗留哈希按 legacy 处理（仅管理员流程）。新订单不再生成系统查单凭证（query_token_hash 写空）。
     var queryPasswordRaw = String(body.query_password || '').trim();
+    if (!queryPasswordRaw) return err('请设置查询密码（查询卡密时需要输入，请牢记）');
+    if (queryPasswordRaw.length < 6) return err('查询密码至少 6 位');
     if (queryPasswordRaw.length > 64) return err('查询密码过长（最多 64 字符）');
-    var queryPasswordHash = queryPasswordRaw ? await sha256Hex(queryPasswordRaw) : '';
+    var queryPasswordSalt = bufToB64(crypto.getRandomValues(new Uint8Array(16)).buffer);
+    var queryPasswordHash = await hashPassword(queryPasswordRaw, queryPasswordSalt);
     var effPrice = getEffectivePrice(prod);
     var total = Math.round(effPrice * qty * 100) / 100;
     var actualAmount = total;
     var expiresAt = fmtTsPlusMinutes(POLL_LOCK_MINUTES);
-    if (body.pay_method !== 'BinanceUID') {
-      actualAmount = await genActualAmount(env, total, wallet);
-    }
+    actualAmount = await genActualAmount(env, total, wallet);
     var snapshot = JSON.stringify({ id: prod.id, slug: prod.slug, title: prod.title, category: prod.category, price_usdt: effPrice, source: prod.source || 'self', requires_email_activation: Number(prod.requires_email_activation || 0), delivery_method: prod.delivery_method || 'both' });
     // INSERT 原子重试（第四轮 P0）：SELECT 查重有 TOCTOU 窗口，真正的原子保障是 v8 唯一索引。
     // 金额冲突（pay_address + actual_amount）→ 重新生成金额并重试，最多 5 次；联系人冲突（contact + product_id）→ 返回明确重复提示。
@@ -1953,7 +1885,7 @@ async function handleApi(req, env, url, ctx) {
     var insertedOrderNo = null;
     for (var insAttempt = 0; insAttempt < 5; insAttempt++) {
       try {
-        await env.DB.prepare('INSERT INTO orders (order_no, query_password, query_token_hash, query_password_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(orderNo, '', '', queryPasswordHash, productId, snapshot, qty, effPrice, total, actualAmount, wallet, expiresAt, JSON.stringify(cust), contact, body.pay_method, body.pay_chain, wallet, 'pending_payment', nowISO()).run();
+        await env.DB.prepare('INSERT INTO orders (order_no, query_password, query_token_hash, query_password_hash, query_password_salt, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(orderNo, '', '', queryPasswordHash, queryPasswordSalt, productId, snapshot, qty, effPrice, total, actualAmount, wallet, expiresAt, JSON.stringify(cust), contact, body.pay_method, body.pay_chain, wallet, 'pending_payment', nowISO()).run();
         insertedOrderNo = orderNo;
         break;
       } catch (e) {
@@ -1962,8 +1894,7 @@ async function handleApi(req, env, url, ctx) {
         if (!isUnique) throw e;
         // 联系人冲突：contact + product_id 唯一索引（部分索引，列名含 contact）
         if (/contact/i.test(emsg)) return err('该联系方式已有一笔待付款订单，请先完成付款或等它超时取消后再下单');
-        // 金额冲突：重新生成金额并重试（非 BinanceUID 才有随机尾数；BinanceUID 金额 = total，无随机尾数，不重试）
-        if (body.pay_method === 'BinanceUID') throw e;
+        // 金额冲突：重新生成金额并重试
         if (insAttempt >= 4) return err('系统繁忙，金额分配冲突，请稍后重试');
         actualAmount = await genActualAmount(env, total, wallet);
         continue;
@@ -1980,7 +1911,7 @@ async function handleApi(req, env, url, ctx) {
     }
     // 订单确认邮件（waitUntil，不阻塞下单响应）
     try { var createdOrder = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ?').bind(orderNo).first(); if (createdOrder) deliverWithCtx(ctx, sendOrderEmail(env, createdOrder, prod, 'confirm', '')); } catch (e) {}
-    return json({ ok: true, order: { order_no: orderNo, has_query_password: queryPasswordHash ? 1 : 0, total_usdt: total, actual_amount: actualAmount, pay_address: wallet, expires_at: expiresAt, wallet_address: wallet, pay_method: body.pay_method, pay_chain: body.pay_chain } });
+    return json({ ok: true, order: { order_no: orderNo, has_query_password: 1, total_usdt: total, actual_amount: actualAmount, pay_address: wallet, expires_at: expiresAt, wallet_address: wallet, pay_method: body.pay_method, pay_chain: body.pay_chain } });
   }
 
   // ---- 公开：查单 ----
@@ -2019,7 +1950,9 @@ async function handleApi(req, env, url, ctx) {
     var noL = decodeURIComponent(mLookup[1]);
     var ordL = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ?').bind(noL).first();
     if (!ordL) return err('订单不存在', 404);
-    // 新订单（有凭证哈希）：验证凭证哈希，验证通过返回完整详情。
+    // 新订单（salted 查询密码）：禁止走老 /lookup 取完整详情，必须用 /secret + 查询密码（单一授权路径）。
+    if (ordL.query_password_salt && ordL.query_password_hash) return err('新订单请使用查询密码在查询页查看卡密', 401);
+    // 旧订单（有系统凭证哈希）：验证凭证哈希，验证通过返回完整详情。
     if (ordL.query_token_hash) {
       if ((await sha256Hex(cred)) !== ordL.query_token_hash) return err('查单凭证错误', 401);
       return json({ ok: true, order: sanitizeOrderForPublic(ordL, 'full') });
@@ -2028,52 +1961,61 @@ async function handleApi(req, env, url, ctx) {
     if (cred && cred === ordL.query_password && ordL.query_password) return json({ ok: true, order: sanitizeOrderForPublic(ordL, 'summary'), legacy: true });
     return err('查单凭证或旧查询密码错误，请联系客服获取交付内容', 401);
   }
-  // POST 查单列表（aisou.pro 方向）：关键词 = 订单号 或 邮箱（contact），返回订单概要列表（最多 10 条）。
-  // 需图形验证码（防机器人枚举）+ 查单限流。列表不含交付内容；卡密需按单走 /secret 验证。
+  // POST 查单列表（P0）：仅接受订单号。邮箱查询已禁用（邮箱不是身份凭证，且邮件验证未实现）。
+  // 关键词含 @（像邮箱）时返回与“订单不存在”相同的通用响应，不泄露其为邮箱。
+  // 列表仅含订单概要（无 delivery_content、无 has_delivery），卡密必须按单走 /secret 验密码。
   if (path === '/api/orders/query' && method === 'POST') {
     var qb = await parseJsonBody(req);
     var keywords = String(qb.keywords || '').trim();
-    if (!keywords) return err('请输入订单号或邮箱再查询');
+    if (!keywords) return err('请输入订单号再查询');
     if (keywords.length > 200) return err('查询关键词过长');
     var capErrQ = await verifyCaptcha(env, qb.captcha_id, qb.captcha_code);
     if (capErrQ) return err(capErrQ, 401);
     var rateErrQ = await checkLookupRateLimit(env, req);
     if (rateErrQ) return err(rateErrQ, 429);
-    var qRows = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ? OR contact = ? ORDER BY created_at DESC LIMIT 10').bind(keywords, keywords).all();
+    // 仅按订单号匹配；邮箱不再作为查询键。
+    var qRows = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ? ORDER BY created_at DESC LIMIT 10').bind(keywords).all();
     var qList = (qRows.results || []).map(function (o) {
       var snap = {}; try { snap = JSON.parse(o.product_snapshot || '{}'); } catch (e) { snap = {}; }
-      // 凭证类型：password=新订单自设密码 / token=旧订单系统凭证 / legacy=旧订单旧密码 / none=未设密码
-      var credType = 'none';
-      if (o.query_password_hash) credType = 'password';
+      // 凭证类型：password=新订单（salted 查询密码）/ token=旧订单系统凭证 / legacy=无有效凭证（仅管理员流程）
+      var credType = 'legacy';
+      if (o.query_password_salt && o.query_password_hash) credType = 'password';
       else if (o.query_token_hash) credType = 'token';
-      else if (o.query_password) credType = 'legacy';
-      return { order_no: o.order_no, status: o.status, product_title: snap.title || '', quantity: o.quantity, total_usdt: o.total_usdt, pay_method: o.pay_method, pay_chain: o.pay_chain, created_at: o.created_at, paid_at: o.paid_at, credential_type: credType, has_delivery: o.delivery_content ? 1 : 0 };
+      return { order_no: o.order_no, status: o.status, product_title: snap.title || '', quantity: o.quantity, total_usdt: o.total_usdt, pay_method: o.pay_method, pay_chain: o.pay_chain, created_at: o.created_at, paid_at: o.paid_at, credential_type: credType };
     });
     return json({ ok: true, orders: qList, total: qList.length });
   }
-  // POST 按单取卡密（aisou.pro 方向）：已付款订单 + 密码校验通过 → 返回交付内容。
-  // 未设密码的订单（query_password_hash 为空）直接返回卡密；旧订单（系统凭证）不走此口，请用老 /lookup。
+  // POST 按单取卡密（P0）：唯一公开的卡密读取路径。查询密码必填（6-64 位），用 salt + PBKDF2 校验。
+  // 限流覆盖全部执行路径：IP 级 + 按单原子记数（单条 SQL 记数，防并发绕过）。空密码、缺失凭证、legacy 订单、认证成功均记数。
+  // 错误消息统一为通用文案，不泄露密码是否正确、订单是否有卡密。
   var mSecret = path.match(/^\/api\/orders\/([^\/]+)\/secret$/);
   if (mSecret && method === 'POST') {
     var sb = await parseJsonBody(req);
     var noS = decodeURIComponent(mSecret[1]);
     var ordS = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ?').bind(noS).first();
     if (!ordS) return err('订单不存在', 404);
-    // 旧订单（系统凭证）：不走此口，避免两种凭证语义混淆
+    // IP 级限流（防枚举/爆破）
+    var rateErrS = await checkLookupRateLimit(env, req);
+    if (rateErrS) return err(rateErrS, 429);
+    // 按单原子记数：INSERT ... WHERE count < 5 单条语句执行，D1 串行化保证并发不绕过。changes=0 即已达上限。
+    var ipS = (req.headers.get('cf-connecting-ip') || req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || 'unknown';
+    var winStartS = new Date(Date.now() - 10 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+    try { await env.DB.prepare('DELETE FROM secret_attempts WHERE created_at < ?').bind(winStartS).run(); } catch (e) {}
+    var insS = await env.DB.prepare('INSERT INTO secret_attempts (order_no, ip, created_at) SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM secret_attempts WHERE order_no = ?) < 5').bind(noS, ipS, nowISO(), noS).run().catch(function () { return null; });
+    if (!insS || !insS.meta || insS.meta.changes === 0) return err('该订单密码尝试次数过多，请 10 分钟后再试', 429);
+    // 密码必填：空/缺失一律拒绝（不区分 legacy/未付款，避免信息泄露）。
+    var pw = String(sb.password || '').trim();
+    if (!pw) return err('请输入查询密码', 401);
+    // 旧订单（系统凭证）：不走此口，请用老 /lookup。
     if (ordS.query_token_hash) return err('旧订单请使用订单号 + 查单凭证在原查询方式查询', 410);
-    if (ordS.status !== 'completed' && ordS.status !== 'paid' && !ordS.delivery_content) return err('订单尚未付款或暂无交付内容');
-    // 密码校验（有设密码时）：按单+IP 限流，防针对单订单爆破
-    if (ordS.query_password_hash) {
-      var pw = String(sb.password || '').trim();
-      if (!pw) return err('请输入查询密码', 401);
-      var ipS = (req.headers.get('cf-connecting-ip') || req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || 'unknown';
-      var winStartS = new Date(Date.now() - 10 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
-      try { await env.DB.prepare('DELETE FROM secret_attempts WHERE created_at < ?').bind(winStartS).run(); } catch (e) {}
-      var attS = await env.DB.prepare('SELECT COUNT(*) as n FROM secret_attempts WHERE order_no = ?').bind(noS).first();
-      if (attS && Number(attS.n) >= 5) return err('该订单密码尝试次数过多，请 10 分钟后再试', 429);
-      try { await env.DB.prepare('INSERT INTO secret_attempts (order_no, ip, created_at) VALUES (?, ?, ?)').bind(noS, ipS, nowISO()).run(); } catch (e) {}
-      if ((await sha256Hex(pw)) !== ordS.query_password_hash) return err('查询密码错误', 401);
-    }
+    // legacy（无 salted 密码）：仅管理员流程，绝不匿名返回卡密。
+    if (!ordS.query_password_salt || !ordS.query_password_hash) return err('该订单未设置查询密码，请联系客服处理', 403);
+    // PBKDF2 校验（与管理员密码同一方案）。错误 → 通用 401，不区分密码错/订单状态。
+    var calcHash = '';
+    try { calcHash = await hashPassword(pw, ordS.query_password_salt); } catch (e) { calcHash = ''; }
+    if (!calcHash || calcHash !== ordS.query_password_hash) return err('查询密码错误', 401);
+    // 认证通过后才返回状态相关信息：未付款/无交付 → 明确提示（已认证用户可看状态）。
+    if (ordS.status !== 'completed' && !ordS.delivery_content) return err('订单尚未付款或暂无交付内容');
     return json({ ok: true, order_no: ordS.order_no, delivery_content: ordS.delivery_content || '' });
   }
   var mPay = path.match(/^\/api\/orders\/([^\/]+)\/pay$/);
@@ -2086,27 +2028,23 @@ async function handleApi(req, env, url, ctx) {
     var o2 = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ?').bind(no2).first();
     if (!o2) return err('订单不存在', 404);
     if (o2.status !== 'pending_payment') return err('当前状态不可提交 TXID');
+    // 白名单封堵：仅首期两种组合可提交 TXID 核验；旧 TRC20/ERC20/站内转账订单请联系客服人工处理。
+    if (!validPayCombo(o2.pay_method, o2.pay_chain)) return err('该订单的支付方式不在首期支持范围内，请联系客服处理');
     // /pay 独立限流（第四轮 P0）：同一订单 10 分钟最多 5 次，同一 IP 10 分钟最多 20 次。
     // 受限不影响后台轮询继续核验已到账的付款，订单不会因限流永久无法处理。
     var payRateErr = await checkPayRateLimit(env, req, no2);
     if (payRateErr) return err(payRateErr, 429);
     // 付款账本：提交时先记一笔 submitted（event_key 未知为空，核验后回填）。同一 (chain, tx_hash, '') 重复提交不重复建行。
-    // BinanceUID 无链上 TXID，不记链上付款账本（站内转账走管理员手动核对）。
+    // 非白名单订单已在上方拒绝，此处均为链上订单。
     var payRec = null;
-    if (o2.pay_method !== 'BinanceUID') {
-      try { var pr = await recordPayment(env, { order_id: o2.id, chain: o2.pay_chain, pay_address: o2.pay_address || o2.wallet_address, tx_hash: txid, event_key: '', amount: o2.actual_amount || o2.total_usdt, status: 'submitted', reconcile_note: '用户经 /pay 提交' }); payRec = pr.payment || null; } catch (e) { payRec = null; }
-    }
-    // 币安 UID 站内转账：无链上 TXID，只存内部订单 ID，走手动核对
-    if (o2.pay_method === 'BinanceUID') {
-      await env.DB.prepare('UPDATE orders SET txid = ?, tx_hash = ? WHERE order_no = ?').bind(txid, txid, no2).run();
-      return json({ ok: true, message: '已提交币安订单 ID，请等待管理员核对', auto: false });
-    }
+    try { var pr = await recordPayment(env, { order_id: o2.id, chain: o2.pay_chain, pay_address: o2.pay_address || o2.wallet_address, tx_hash: txid, event_key: '', amount: o2.actual_amount || o2.total_usdt, status: 'submitted', reconcile_note: '用户经 /pay 提交' }); payRec = pr.payment || null; } catch (e) { payRec = null; }
+
     // 链上：可选兜底，按需核验同一 TXID，成功即自动发货（链上核验通过 = 链上证明）。
     // TXID 认领严格先到先得：若该 TXID 已被其他订单认领，返回明确错误，不静默接受为“已提交”（否则客户误以为付款成功，实际订单永远无法认领）。
     var hit = null;
     try { hit = await checkTxidPayment(env, fetch, o2, txid); } catch (e) { hit = null; }
     if (hit && hit.txHash) {
-      // 核验通过：账本推进为 verified/confirmed（确认数由 checkTxidPayment 的 1 确认口径保证；全局确认策略见 runPolling）。
+      // 核验通过：账本推进为 verified/confirmed（确认数由 checkTxidPayment 按该链确认策略保证，与 runPolling 一致）。
       if (payRec) { try { await updatePayment(env, payRec.id, { status: 'verified', confirmations: 1 }); } catch (e) {} }
       var fr = await fulfillOrderByPayment(env, o2, hit.txHash, ctx, { txVerified: true });
       if (fr.ok && (fr.mode === 'completed' || fr.mode === 'pending_fulfill' || fr.mode === 'out_of_stock')) {
@@ -2250,7 +2188,8 @@ async function handleApi(req, env, url, ctx) {
     var orr = await stmt.all();
     var totalRow = await cstmt.first();
     var total = Number((totalRow && totalRow.c) || 0);
-    var list = (orr.results || []).map(function (x) { return sanitizeOrderForPublic(x); });
+    // 管理端列表仅返回概要（不含 delivery_content/联系方式/客户字段），防批量卡密暴露；详情走单订单接口。
+    var list = (orr.results || []).map(function (x) { return sanitizeOrderForPublic(x, 'summary'); });
     return json({ ok: true, orders: list, total: total, page: page, page_size: pageSize, total_pages: Math.max(1, Math.ceil(total / pageSize)) });
   }
   var mAdminOrder = path.match(/^\/api\/admin\/orders\/(\d+)$/);
@@ -2390,17 +2329,23 @@ async function handleApi(req, env, url, ctx) {
     return json({ ok: true, message: '已确认退款，订单已取消。' });
   }
 
-  // 管理端：清除某订单的查询密码（买家忘密码时客服可用；清掉后该订单查卡密无需密码）。仅清新密码哈希，不动旧凭证。
-  var mClearQP = path.match(/^\/api\/admin\/orders\/(\d+)\/clear-query-password$/);
-  if (mClearQP && method === 'POST') {
-    // 管理路径已在入口处统一验登（isAdminPath && !admin → 401），此处不再重复校验。
-    var cqId = Number(mClearQP[1]);
-    var cqO = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(cqId).first();
-    if (!cqO) return err('订单不存在', 404);
-    if (!cqO.query_password_hash) return err('该订单未设置查询密码，无需清除');
-    await env.DB.prepare('UPDATE orders SET query_password_hash = ? WHERE id = ?').bind('', cqId).run();
-    await logAudit(env, cqId, 'clear_query_password', cqO.status, cqO.status, '管理员清除了该订单的查询密码');
-    return json({ ok: true, message: '查询密码已清除，该订单查卡密无需密码' });
+  // 管理端：重置某订单的查询密码（买家忘密码时客服可用；管理员提供新密码，服务端 salt+PBKDF2 存储，记审计）。
+  // 管理员本身已可查看交付内容，重置不产生额外权限。响应不返回新密码（管理员已知自己设的值）。
+  var mResetQP = path.match(/^\/api\/admin\/orders\/(\d+)\/reset-query-password$/);
+  if (mResetQP && method === 'POST') {
+    var rq = await parseJsonBody(req);
+    var newPw = String(rq.new_password || '').trim();
+    if (!newPw) return err('请提供新查询密码');
+    if (newPw.length < 6) return err('查询密码至少 6 位');
+    if (newPw.length > 64) return err('查询密码过长（最多 64 字符）');
+    var rqId = Number(mResetQP[1]);
+    var rqO = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(rqId).first();
+    if (!rqO) return err('订单不存在', 404);
+    var newSalt = bufToB64(crypto.getRandomValues(new Uint8Array(16)).buffer);
+    var newHash = await hashPassword(newPw, newSalt);
+    await env.DB.prepare('UPDATE orders SET query_password_hash = ?, query_password_salt = ? WHERE id = ?').bind(newHash, newSalt, rqId).run();
+    await logAudit(env, rqId, 'reset_query_password', rqO.status, rqO.status, '管理员重置了该订单的查询密码');
+    return json({ ok: true, message: '查询密码已重置，请将新密码告知买家' });
   }
 
   // 商品 CRUD（管理员）— 服务端统一校验与规范化，不只依赖前端 onchange

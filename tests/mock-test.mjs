@@ -53,13 +53,6 @@ async function mockFetch(url, opts = {}) {
     if (body.productId === 'PS-409') return new Response(JSON.stringify({ error: 'out of stock' }), { status: 409 });
     return new Response(JSON.stringify({ error: 'unknown' }), { status: 500 });
   }
-  if (u.includes('tronscanapi.com/api/token_trc20/transfers')) {
-    const toAddr = new URL(u).searchParams.get('toAddress');
-    const rows = db.prepare("SELECT * FROM orders WHERE pay_address=? AND status='pending_payment'").all(toAddr);
-    const o = rows[0];
-    if (!o) return new Response(JSON.stringify({ data: [] }), { status: 200 });
-    return new Response(JSON.stringify({ data: [{ to_address: toAddr, tokenInfo: { tokenId: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', tokenAbbr: 'USDT', tokenDecimal: 6 }, quant: Math.round(Number(o.actual_amount) * 1e6), block_ts: Date.now(), confirmed: true, transactionHash: 'TXHASH-' + o.order_no }] }), { status: 200 });
-  }
   // EVM RPC mock（第九轮白名单路径：X Layer USDT0 6 位、BEP20 USDT 18 位）：
   // eth_call 返回合约 decimals；eth_blockNumber 返回固定最新块；eth_getLogs 按收款地址返回待付款订单的匹配转账。
   // 日志区块 9980（最新 10000，20 确认），满足 BEP20 默认 15 确认与 X Layer 1 确认。
@@ -128,7 +121,7 @@ function mkCaptcha(code){
 }
 async function orderCall(body, cookie){
   const cid = mkCaptcha('AB12');
-  return call('POST', '/api/orders', { ...body, captcha_id: cid, captcha_code: 'AB12' }, cookie);
+  return call('POST', '/api/orders', { query_password: 'mock-test-pw', ...body, captcha_id: cid, captcha_code: 'AB12' }, cookie);
 }
 function assert(cond, msg) { if (!cond) { console.error('FAIL: ' + msg); process.exitCode = 1; throw new Error(msg); } console.log('PASS: ' + msg); }
 function q(sql, ...a) { return db.prepare(sql).get(...a); }
@@ -237,7 +230,7 @@ assert(oE.status === 'pending_upstream', '409 -> pending_upstream, got ' + oE.st
 // Test E: timeout cancel
 r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer7@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer7@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
 assert(r.json.ok, 'timeout order created');
-// remove its tronscan match by expiring it (mock only returns pending_payment rows; expiry check runs before chain check, so it cancels)
+// expire it (mock only returns pending_payment rows; expiry check runs before chain check, so it cancels)
 db.prepare("UPDATE orders SET expires_at=datetime('now','-1 minute') WHERE order_no=?").run(r.json.order.order_no);
 const ctxT = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxT); await ctxT.drain();
 let oT = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
@@ -255,7 +248,7 @@ r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, cu
 assert(!r.json.ok && r.json.error.includes('验证码错误'), 'wrong captcha rejected: ' + JSON.stringify(r.json));
 assert(q('SELECT attempts FROM captcha_codes WHERE id=?', badCap).attempts === 1, 'wrong attempt counted');
 const goodCap = mkCaptcha('AB12');
-r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'BEP20', captcha_id: goodCap, captcha_code: 'AB12' });
+r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'BEP20', query_password: 'mock-test-pw', captcha_id: goodCap, captcha_code: 'AB12' });
 assert(r.json.ok, 'order with correct captcha created: ' + JSON.stringify(r.json));
 r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'BEP20', captcha_id: goodCap, captcha_code: 'AB12' });
 assert(!r.json.ok && r.json.error.includes('验证码'), 'used captcha cannot be replayed: ' + JSON.stringify(r.json));

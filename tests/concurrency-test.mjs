@@ -13,8 +13,8 @@ db.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
 db.prepare("UPDATE settings SET value='1' WHERE key='prodseller_enabled'").run();
 // 支付白名单：新订单只允许 OKX|X Layer、Binance|BEP20；下单需有效收款地址。
 // 并发测试的 OKX|X Layer 订单走 API 创建，故此处配置有效 EVM 收款地址。
-// TRC20 场景（§3 cron 抢跑、§5b TXID 认领）测的是抢跑/认领逻辑而非下单，
-// 故用直接插库的方式创建历史 TRC20 订单（不走 API），保留原逻辑断言。
+// BEP20 场景（§3 cron 抢跑、§5b TXID 认领）测的是抢跑/认领逻辑而非下单，
+// 故用直接插库的方式创建 BEP20 订单（不走 API），保留原逻辑断言。
 db.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111', 'Binance|BEP20': '0x2222222222222222222222222222222222222222' }));
 // 计数器：统计 PRAGMA / ALTER（验证常规请求不跑完整迁移）与上游调用
 let pragmaCount = 0, alterCount = 0, upstreamCalls = 0, upstreamCreates = 0;
@@ -33,8 +33,9 @@ function wrapStmt(sql) {
   return api;
 }
 const env = { DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
-// Mock fetch：ProdSeller（计数 + 延迟屏障 + 首次失败）与 Tronscan（链上到账）
-let tronscanTransfer = null; // 由测试设置：{ to, amount, hash }
+// Mock fetch：ProdSeller（计数 + 延迟屏障 + 首次失败）与 EVM RPC（BEP20 收据，供 §5b 的 TXID 认领测试）
+let evmReceiptFor = null; // 由测试设置：{ to, amount, hash } —— 模拟该 TXID 已在链上向 to 付款（认领机制单测，链上核验由 payment-whitelist 覆盖）
+let evmScanLogs = []; // 由测试设置：eth_getLogs 返回的日志（供 §3 cron 扫描）
 async function mockFetch(url, opts = {}) {
   const u = String(url);
   if (u.includes('prodseller.com/v1/orders') && (opts.method === 'POST' || (opts && opts.method === 'POST'))) {
@@ -47,9 +48,27 @@ async function mockFetch(url, opts = {}) {
     upstreamCalls++;
     return new Response(JSON.stringify({ id: 'PS-ORDER-1', status: 'delivered', deliveredKey: 'PS-DELIVERED-KEY-1' }), { status: 200 });
   }
-  if (u.includes('tronscanapi.com')) {
-    if (!tronscanTransfer) return new Response(JSON.stringify({ data: [] }), { status: 200 });
-    return new Response(JSON.stringify({ data: [{ to_address: tronscanTransfer.to, tokenInfo: { tokenId: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', tokenDecimal: 6 }, quant: Math.round(tronscanTransfer.amount * 1e6), block_ts: Date.now(), confirmed: true, transactionHash: tronscanTransfer.hash }] }), { status: 200 });
+  if (u.includes('bsc-dataseed')) {
+    const body = JSON.parse(opts.body || '{}');
+    if (body.method === 'eth_call') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + (18).toString(16).padStart(64, '0') }), { status: 200 });
+    if (body.method === 'eth_blockNumber') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + (1000).toString(16) }), { status: 200 });
+    if (body.method === 'eth_getLogs') {
+      const p0 = body.params[0] || {};
+      const from = parseInt(p0.fromBlock || '0x0', 16);
+      const to = parseInt(p0.toBlock || '0x0', 16);
+      const topic2 = String((p0.topics && p0.topics[2]) || '').toLowerCase();
+      const logs = evmScanLogs.filter((l) => { const b = parseInt(l.blockNumber, 16); return b >= from && b <= to && String(l.topics[2]).toLowerCase() === topic2; });
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: logs }), { status: 200 });
+    }
+    if (body.method === 'eth_getTransactionReceipt') {
+      if (!evmReceiptFor || evmReceiptFor.hash !== body.params[0]) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }), { status: 200 });
+      const raw = (() => { const parts = String(evmReceiptFor.amount).split('.'); const frac = ((parts[1] || '') + '0'.repeat(18)).slice(0, 18); return BigInt(parts[0] + frac); })();
+      const log = { address: '0x55d398326f99059fF775485246999027B3197955', blockNumber: '0x' + (1000 - 20).toString(16), transactionHash: evmReceiptFor.hash, logIndex: '0x0',
+        topics: ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', '0x' + '0'.repeat(24) + '33'.repeat(20), '0x' + '0'.repeat(24) + String(evmReceiptFor.to).slice(2).toLowerCase()],
+        data: '0x' + raw.toString(16).padStart(64, '0') };
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { status: '0x1', blockNumber: log.blockNumber, logs: [log] } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }), { status: 200 });
   }
   throw new Error('Unexpected fetch: ' + u);
 }
@@ -84,7 +103,7 @@ async function orderCall(body) {
   const cid = mkCaptcha('AB12');
   // 每个下单用不同 IP，避免测试本身触到同 IP 下单限流（限流由 mock-test 专项覆盖）
   const ip = '10.9.9.' + ((++capSeq) % 200 + 1);
-  return call('POST', '/api/orders', { ...body, captcha_id: cid, captcha_code: 'AB12' }, null, { 'CF-Connecting-IP': ip });
+  return call('POST', '/api/orders', { query_password: 'conc-test-pw', ...body, captcha_id: cid, captcha_code: 'AB12' }, null, { 'CF-Connecting-IP': ip });
 }
 let pass = 0, fail = 0;
 function check(name, cond, extra = '') { if (cond) { pass++; console.log('PASS:', name); } else { fail++; console.log('FAIL:', name, extra); } }
@@ -151,15 +170,15 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
 }
 
 // ===== 3. Cron 与管理员确认付款同时处理同一订单（真并行）=====
-// TRC20 卡密订单 + Tronscan 返回匹配到账：cron（scheduled）与管理员 confirm 并行，只能一个认领成功，订单只完成一次，卡只用一次。
+// BEP20 卡密订单 + EVM 扫描返回匹配到账：cron（scheduled）与管理员 confirm 并行，只能一个认领成功，订单只完成一次，卡只用一次。
 {
   // 补一张卡供本测试
   await call('POST', '/api/admin/cards/import', { product_id: pCard.id, codes: 'CONC-CARD-CRON-1' }, cookie);
-  // 历史 TRC20 订单（白名单生效前已存在）：直接插库，不走 API（新订单已禁止 TRC20）。
-  // 抢跑逻辑（cron 与管理员 confirm 争抢同一订单）与支付方式无关，故保留原断言。
+  // BEP20 订单：直接插库，不走 API。抢跑逻辑（cron 与管理员 confirm 争抢同一订单）与支付方式无关，故保留原断言。
   const cronOrderNo = 'AISCONCCRON1';
   const cronActual = 5.0037;
-  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 5, 5, ?, 'TXYZCRONPAY', datetime('now','+30 minutes'), ?, 'conc-cron@test.example', 'Binance', 'TRC20', 'TXYZCRONPAY', 'pending_payment', datetime('now'))").run(cronOrderNo, pCard.id, cronActual, JSON.stringify({ contact_email: 'conc-cron@test.example', delivery_email: 'conc-cron@test.example' }));
+  const CRON_ADDR = '0x' + '66'.repeat(20);
+  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 5, 5, ?, '" + CRON_ADDR + "', datetime('now','+30 minutes'), ?, 'conc-cron@test.example', 'Binance', 'BEP20', '" + CRON_ADDR + "', 'pending_payment', datetime('now'))").run(cronOrderNo, pCard.id, cronActual, JSON.stringify({ contact_email: 'conc-cron@test.example', delivery_email: 'conc-cron@test.example' }));
   const ord = q('SELECT * FROM orders WHERE order_no=?', cronOrderNo);
   // 下单时预留卡：手动将该卡预留给本历史订单（等价于下单时的 reserveCards）
   db.prepare("UPDATE cards SET reserved_order_id=? WHERE code='CONC-CARD-CRON-1'").run(ord.id);
@@ -168,7 +187,11 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const reservedCard = q('SELECT * FROM cards WHERE reserved_order_id=?', ord.id);
   check('cron-test: card reserved for this order', !!reservedCard, JSON.stringify(reservedCard));
   const txHash = 'a'.repeat(64); // 64 位十六进制链上哈希
-  tronscanTransfer = { to: ord.pay_address, amount: ord.actual_amount, hash: txHash };
+  // EVM 扫描日志：该 TXID 已向本订单收款地址付款（20 确认 > 15 要求），cron 扫描应发现并认领
+  const cronRaw = (() => { const parts = String(ord.actual_amount).split('.'); const frac = ((parts[1] || '') + '0'.repeat(18)).slice(0, 18); return BigInt(parts[0] + frac); })();
+  evmScanLogs = [{ address: '0x55d398326f99059fF775485246999027B3197955', blockNumber: '0x' + (1000 - 20).toString(16), transactionHash: txHash, logIndex: '0x0',
+    topics: ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', '0x' + '0'.repeat(24) + '33'.repeat(20), '0x' + '0'.repeat(24) + String(ord.pay_address).slice(2).toLowerCase()],
+    data: '0x' + cronRaw.toString(16).padStart(64, '0') }];
   const ctx = makeCtx();
   const [cronRes, adminRes] = await Promise.all([
     (async () => { try { await worker.scheduled({ cron: '*/1 * * * *' }, env, ctx); await ctx.drain(); return { ok: true }; } catch (e) { return { ok: false, error: String(e) }; } })(),
@@ -179,8 +202,31 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   check('cron vs admin: order completed exactly once', finalOrd.status === 'completed', JSON.stringify(finalOrd));
   check('cron vs admin: delivery is the reserved card', finalOrd.delivery_content === reservedCard.code, JSON.stringify(finalOrd));
   check('cron vs admin: card used once', (() => { const c = q('SELECT * FROM cards WHERE code=?', reservedCard.code); return c.is_used === 1 && c.order_id === ord.id; })());
-  check('cron vs admin: txid claimed once for this order', (() => { const t = q('SELECT * FROM txid_claims WHERE tx_hash=?', txHash); return t && t.order_id === ord.id; })());
-  tronscanTransfer = null;
+  // txid 认领：并行抢跑谁赢不确定（管理员赢则不认领 txid），故不在此处断言；cron 单跑认领由下方 §3b 确定性验证。
+  evmScanLogs = [];
+}
+
+// ===== 3b. Cron 单跑：EVM 扫描发现到账并认领 TXID（确定性，覆盖 §3 并行抢跑中 cron 路径的认领逻辑） =====
+{
+  await call('POST', '/api/admin/cards/import', { product_id: pCard.id, codes: 'CONC-CARD-CRON-2' }, cookie);
+  const cron2No = 'AISCONCCRON2';
+  const cron2Actual = 5.0041;
+  const CRON2_ADDR = '0x' + '77'.repeat(20);
+  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 5, 5, ?, '" + CRON2_ADDR + "', datetime('now','+30 minutes'), ?, 'conc-cron2@test.example', 'Binance', 'BEP20', '" + CRON2_ADDR + "', 'pending_payment', datetime('now'))").run(cron2No, pCard.id, cron2Actual, JSON.stringify({ contact_email: 'conc-cron2@test.example', delivery_email: 'conc-cron2@test.example' }));
+  const ord2 = q('SELECT * FROM orders WHERE order_no=?', cron2No);
+  db.prepare("UPDATE cards SET reserved_order_id=? WHERE code='CONC-CARD-CRON-2'").run(ord2.id);
+  const txHash2b = '2'.repeat(64); // 不与 §5 的 'b'*64、§5b 的 'c'*64、A-03 的 'd'/'e' 撞
+  const cron2Raw = (() => { const parts = String(ord2.actual_amount).split('.'); const frac = ((parts[1] || '') + '0'.repeat(18)).slice(0, 18); return BigInt(parts[0] + frac); })();
+  evmScanLogs = [{ address: '0x55d398326f99059fF775485246999027B3197955', blockNumber: '0x' + (1000 - 20).toString(16), transactionHash: txHash2b, logIndex: '0x0',
+    topics: ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', '0x' + '0'.repeat(24) + '33'.repeat(20), '0x' + '0'.repeat(24) + String(ord2.pay_address).slice(2).toLowerCase()],
+    data: '0x' + cron2Raw.toString(16).padStart(64, '0') }];
+  const ctx2 = makeCtx();
+  await worker.scheduled({ cron: '*/1 * * * *' }, env, ctx2); await ctx2.drain();
+  const finalOrd2 = q('SELECT * FROM orders WHERE id=?', ord2.id);
+  check('cron alone: order completed', finalOrd2.status === 'completed', JSON.stringify(finalOrd2));
+  check('cron alone: delivery is reserved card', finalOrd2.delivery_content === 'CONC-CARD-CRON-2', JSON.stringify(finalOrd2));
+  check('cron alone: txid claimed for this order', (() => { const t = q('SELECT * FROM txid_claims WHERE tx_hash=?', txHash2b); return t && t.order_id === ord2.id; })());
+  evmScanLogs = [];
 }
 
 // ===== 4. 两个发货请求同时处理同一订单（真并行）=====
@@ -238,24 +284,26 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
 {
   const pTx = q("SELECT * FROM products WHERE title='TXID测试商品'");
   const txHash3 = 'c'.repeat(64);
-  // 订单 C1：历史 TRC20 订单（直接插库，新订单已禁止 TRC20），经 /pay 提交（Tronscan 返回匹配到账）→ 认领
+  // 订单 C1：BEP20 订单（直接插库），经 /pay 提交（EVM 收据返回匹配到账）→ 认领
   const c1No = 'AISCONCTXID1';
-  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0021, 'TXYZTXIDPAY1', datetime('now','+30 minutes'), ?, 'tx-c1@test.example', 'Binance', 'TRC20', 'TXYZTXIDPAY1', 'pending_payment', datetime('now'))").run(c1No, pTx.id, JSON.stringify({ contact_email: 'tx-c1@test.example' }));
+  const C1_ADDR = '0x' + '44'.repeat(20);
+  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0021, '" + C1_ADDR + "', datetime('now','+30 minutes'), ?, 'tx-c1@test.example', 'Binance', 'BEP20', '" + C1_ADDR + "', 'pending_payment', datetime('now'))").run(c1No, pTx.id, JSON.stringify({ contact_email: 'tx-c1@test.example' }));
   const ordC1 = q('SELECT * FROM orders WHERE order_no=?', c1No);
-  tronscanTransfer = { to: ordC1.pay_address, amount: ordC1.actual_amount, hash: txHash3 };
+  evmReceiptFor = { to: ordC1.pay_address, amount: ordC1.actual_amount, hash: txHash3 };
   r = await call('POST', '/api/orders/' + ordC1.order_no + '/pay', { txid: txHash3 });
   check('order C1 claims txid via /pay', r.json && r.json.ok === true, JSON.stringify(r.json));
   check('txid claimed by order C1', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txHash3).order_id === ordC1.id);
-  // 订单 C2：历史 TRC20 订单（直接插库），Tronscan 返回匹配到账（同一 tx 哈希）
+  // 订单 C2：BEP20 订单（直接插库），EVM 收据返回匹配到账（同一 tx 哈希）——认领机制应 409 拒绝
   const c2No = 'AISCONCTXID2';
-  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0029, 'TXYZTXIDPAY2', datetime('now','+30 minutes'), ?, 'tx-c2@test.example', 'Binance', 'TRC20', 'TXYZTXIDPAY2', 'pending_payment', datetime('now'))").run(c2No, pTx.id, JSON.stringify({ contact_email: 'tx-c2@test.example' }));
+  const C2_ADDR = '0x' + '55'.repeat(20);
+  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0029, '" + C2_ADDR + "', datetime('now','+30 minutes'), ?, 'tx-c2@test.example', 'Binance', 'BEP20', '" + C2_ADDR + "', 'pending_payment', datetime('now'))").run(c2No, pTx.id, JSON.stringify({ contact_email: 'tx-c2@test.example' }));
   const ordC2 = q('SELECT * FROM orders WHERE order_no=?', c2No);
-  tronscanTransfer = { to: ordC2.pay_address, amount: ordC2.actual_amount, hash: txHash3 };
+  evmReceiptFor = { to: ordC2.pay_address, amount: ordC2.actual_amount, hash: txHash3 };
   r = await call('POST', '/api/orders/' + ordC2.order_no + '/pay', { txid: txHash3 });
   check('pay with stolen txid -> 409, not silently accepted', r.status === 409 && r.json && /已用于其他订单/.test(r.json.error || ''), 'status=' + r.status + ' body=' + JSON.stringify(r.json));
   check('order C2 still pending_payment after stolen-tx pay', q('SELECT status FROM orders WHERE id=?', ordC2.id).status === 'pending_payment');
   check('txid still belongs to C1 after steal attempt', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txHash3).order_id === ordC1.id);
-  tronscanTransfer = null;
+  evmReceiptFor = null;
 }
 
 // ===== 6. 上游订单创建超时后重试：不重复采购 =====
@@ -449,7 +497,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const cp = await callOld('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'old-db-pass-123' }, ocookie);
   check('old-db change-password ok', cp.json && cp.json.ok === true, JSON.stringify(cp.json));
   const mg = await callOld('GET', '/api/admin/migrate', null, ocookie);
-  check('old-db migrated to v14', mg.json && mg.json.ok === true && mg.json.current_version === 14, JSON.stringify(mg.json));
+  check('old-db migrated to v15', mg.json && mg.json.ok === true && mg.json.current_version === 15, JSON.stringify(mg.json));
   check('old-db: old order preserved', !!dbOld.prepare("SELECT * FROM orders WHERE order_no='AISOLD001'").get());
   check('old-db: old card preserved', !!dbOld.prepare("SELECT * FROM cards WHERE code='OLD-CARD-1'").get());
   check('old-db: old product preserved', !!dbOld.prepare("SELECT * FROM products WHERE slug='old-prod'").get());
@@ -513,7 +561,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const pA = dbNoAudit.prepare("SELECT id FROM products WHERE title='审计失败商品'").get().id;
   void pr;
   const cid = (() => { const id = 'cap-audit-' + Date.now(); const h = createHash('sha256').update('AB12').digest('hex'); const exp = new Date(Date.now() + 300000).toISOString().replace('T', ' ').slice(0, 19); dbNoAudit.prepare("INSERT INTO captcha_codes (id, code_hash, expires_at, attempts) VALUES (?,?,?,0)").run(id, h, exp); return id; })();
-  const oc = await callNoAudit('POST', '/api/orders', { product_id: pA, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'audit-fail@test.example' }, captcha_id: cid, captcha_code: 'AB12' });
+  const oc = await callNoAudit('POST', '/api/orders', { product_id: pA, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'audit-fail@test.example' }, query_password: 'audit-test-pw', captcha_id: cid, captcha_code: 'AB12' });
   check('audit-fail setup: order created', oc.json && oc.json.ok === true, JSON.stringify(oc.json));
   const ordAF = dbNoAudit.prepare('SELECT * FROM orders WHERE order_no=?').get(oc.json.order.order_no);
   const cancelAF = await callNoAudit('POST', '/api/admin/orders/' + ordAF.id + '/cancel', { reason: '审计失败测试' }, ck2);
@@ -562,85 +610,51 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const pTx3 = q("SELECT * FROM products WHERE title='TXID测试商品'");
   const txOld = 'd'.repeat(64);
   const txNew = 'e'.repeat(64);
-  // 历史 TRC20 订单（直接插库，新订单已禁止 TRC20）；测的是租约接管/旧 TXID 释放逻辑
+  // BEP20 订单（直接插库）；测的是租约接管/旧 TXID 释放逻辑
   const a03No = 'AISCONCA03';
-  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0033, 'TXYZTXIDPAY3', datetime('now','+30 minutes'), ?, 'a03@test.example', 'Binance', 'TRC20', 'TXYZTXIDPAY3', 'pending_payment', datetime('now'))").run(a03No, pTx3.id, JSON.stringify({ contact_email: 'a03@test.example' }));
+  const A03_ADDR = '0x' + '88'.repeat(20);
+  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0033, '" + A03_ADDR + "', datetime('now','+30 minutes'), ?, 'a03@test.example', 'Binance', 'BEP20', '" + A03_ADDR + "', 'pending_payment', datetime('now'))").run(a03No, pTx3.id, JSON.stringify({ contact_email: 'a03@test.example' }));
   const ordA03 = q('SELECT * FROM orders WHERE order_no=?', a03No);
   // 模拟：订单已认领旧 TXID（链上核验路径），但处理崩溃，租约过期
   db.prepare('INSERT INTO txid_claims (tx_hash, order_id) VALUES (?, ?)').run(txOld, ordA03.id);
   db.prepare("UPDATE orders SET tx_hash=?, claim_token='STALE-TOKEN', claimed_at=datetime('now','-10 minutes') WHERE id=?").run(txOld, ordA03.id);
-  // 新请求以新 TXID 经 /pay 接管（Tronscan 返回新 TXID 匹配到账）
-  tronscanTransfer = { to: ordA03.pay_address, amount: ordA03.actual_amount, hash: txNew };
+  // 新请求以新 TXID 经 /pay 接管（EVM 收据返回新 TXID 匹配到账）
+  evmReceiptFor = { to: ordA03.pay_address, amount: ordA03.actual_amount, hash: txNew };
   r = await call('POST', '/api/orders/' + ordA03.order_no + '/pay', { txid: txNew });
   check('A-03 takeover via /pay ok', r.json && r.json.ok === true, JSON.stringify(r.json));
   check('A-03: order tx_hash updated to new', q('SELECT tx_hash FROM orders WHERE id=?', ordA03.id).tx_hash === txNew);
   check('A-03: new txid claimed', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txNew).order_id === ordA03.id);
   check('A-03: old txid claim released (no orphan)', !q('SELECT * FROM txid_claims WHERE tx_hash=?', txOld));
-  tronscanTransfer = null;
+  evmReceiptFor = null;
 }
 
-// C-02：Tronscan 分页——匹配到账在第 2 页（第 1 页 50 笔均不匹配），轮询仍能找到
-{
-  const pTxC02 = q("SELECT * FROM products WHERE title='TXID测试商品'");
-  // 历史 TRC20 订单（直接插库，新订单已禁止 TRC20）；测的是 Tronscan 分页逻辑
-  const c02No = 'AISCONCC02';
-  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0041, 'TXYZTXIDPAY4', datetime('now','+30 minutes'), ?, 'c02@test.example', 'Binance', 'TRC20', 'TXYZTXIDPAY4', 'pending_payment', datetime('now'))").run(c02No, pTxC02.id, JSON.stringify({ contact_email: 'c02@test.example' }));
-  const ordC02 = q('SELECT * FROM orders WHERE order_no=?', c02No);
-  const txC02 = 'f'.repeat(64);
-  // 临时替换 fetch：Tronscan transfers 按 start 分页；其他请求走原 mock
-  const origFetch = env.__fetch;
-  const pageFetch = async (url, opts) => {
-    const u = String(url);
-    if (u.includes('tronscanapi.com/api/token_trc20/transfers')) {
-      const start = Number(new URL(u).searchParams.get('start') || 0);
-      if (start === 0) {
-        // 第 1 页：50 笔，金额均不匹配，时间戳为当前（不触发提前停页）
-        const rows = [];
-        for (let i = 0; i < 50; i++) rows.push({ to_address: ordC02.pay_address, tokenInfo: { tokenId: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', tokenDecimal: 6 }, quant: Math.round((ordC02.actual_amount + 1 + i) * 1e6), block_ts: Date.now(), confirmed: true, transactionHash: 'NONMATCH-' + i });
-        return new Response(JSON.stringify({ data: rows }), { status: 200 });
-      }
-      // 第 2 页：匹配到账
-      return new Response(JSON.stringify({ data: [{ to_address: ordC02.pay_address, tokenInfo: { tokenId: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', tokenDecimal: 6 }, quant: Math.round(ordC02.actual_amount * 1e6), block_ts: Date.now(), confirmed: true, transactionHash: txC02 }] }), { status: 200 });
-    }
-    return origFetch(url, opts);
-  };
-  env.__fetch = pageFetch;
-  globalThis.fetch = pageFetch;
-  const ctxC02 = makeCtx();
-  try { await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxC02); await ctxC02.drain(); } catch (e) { check('C-02 scheduled no throw', false, String(e)); }
-  env.__fetch = origFetch;
-  globalThis.fetch = origFetch;
-  check('C-02: match on page 2 found, order paid (pending_fulfill, manual product)', q('SELECT status FROM orders WHERE id=?', ordC02.id).status === 'pending_fulfill');
-  check('C-02: txid claimed from page 2', q('SELECT tx_hash FROM orders WHERE id=?', ordC02.id).tx_hash === txC02);
-}
-
-// A-04（第四轮更新）：EVM /pay 按各链确认策略（ERC20 需 12 确认，不再全链 1 确认）。
-// 收据区块 100：最新 100 → 0 确认，拒绝；最新 111 → 11 确认，仍拒绝；最新 112 → 12 确认，接受。
+// A-04（第四轮更新）：EVM /pay 按各链确认策略（BEP20 需 15 确认，不再全链 1 确认）。
+// 收据区块 100：最新 100 → 0 确认，拒绝；最新 114 → 14 确认，仍拒绝；最新 115 → 15 确认，接受。
 {
   const pTxA04 = q("SELECT * FROM products WHERE title='TXID测试商品'");
-  const txA04 = '1'.repeat(64); // 唯一 TXID（§4 用 'a'*64、§5 用 'b'*64、A-03 用 'd'/'e'、C-02 用 'f'，不得撞）
-  const ERC20_USDT = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
+  const txA04 = '1'.repeat(64); // 唯一 TXID（§3 用 'a'*64、§5 用 'b'*64、§5b 用 'c'*64、A-03 用 'd'/'e'，不得撞）
+  const BEP20_USDT_A04 = '0x55d398326f99059fF775485246999027B3197955';
   const TRANSFER0 = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
-  // 历史 ERC20 订单（直接插库，新订单已禁止 ERC20）；测的是 /pay 按各链确认策略（ERC20 需 12 确认）
+  // BEP20 订单（直接插库）；测的是 /pay 按各链确认策略（BEP20 需 15 确认）
   const a04No = 'AISCONCA04';
-  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0055, '0x3333333333333333333333333333333333333333', datetime('now','+30 minutes'), ?, 'a04@test.example', 'OKX', 'ERC20', '0x3333333333333333333333333333333333333333', 'pending_payment', datetime('now'))").run(a04No, pTxA04.id, JSON.stringify({ contact_email: 'a04@test.example' }));
+  db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0055, '0x3333333333333333333333333333333333333333', datetime('now','+30 minutes'), ?, 'a04@test.example', 'Binance', 'BEP20', '0x3333333333333333333333333333333333333333', 'pending_payment', datetime('now'))").run(a04No, pTxA04.id, JSON.stringify({ contact_email: 'a04@test.example' }));
   const ordA04 = q('SELECT * FROM orders WHERE order_no=?', a04No);
   const toTopic = '0x' + '000000000000000000000000' + String(ordA04.pay_address).slice(2).toLowerCase();
-  const amtHex = '0x' + BigInt(Math.round(Number(ordA04.actual_amount) * 1e6)).toString(16).padStart(64, '0');
+  const amtHex = '0x' + (() => { const parts = String(ordA04.actual_amount).split('.'); const frac = ((parts[1] || '') + '0'.repeat(18)).slice(0, 18); return BigInt(parts[0] + frac); })().toString(16).padStart(64, '0');
   let evmLatest = 100; // 最新区块（可推进，模拟确认数增长）
   const origFetch2 = env.__fetch;
   const evmFetch = async (url, opts) => {
     const u = String(url);
-    if (u.includes('llamarpc.com') || u.includes('ankr.com')) {
+    if (u.includes('bsc-dataseed')) {
       const body = JSON.parse(opts.body || '{}');
-      // ERC20 USDT 为 6 位精度（新 Worker 需 eth_call 读 decimals 才能核验）
+      // BEP20 USDT 为 18 位精度（新 Worker 需 eth_call 读 decimals 才能核验）
       if (body.method === 'eth_call') {
-        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + (6).toString(16).padStart(64, '0') }), { status: 200 });
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + (18).toString(16).padStart(64, '0') }), { status: 200 });
       }
       if (body.method === 'eth_getTransactionReceipt') {
         return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {
           status: '0x1', blockNumber: '0x64', // 收据区块 100
-          logs: [{ address: ERC20_USDT, topics: [TRANSFER0, '0x' + '0'.repeat(64), toTopic], data: amtHex }],
+          logs: [{ address: BEP20_USDT_A04, topics: [TRANSFER0, '0x' + '0'.repeat(64), toTopic], data: amtHex }],
         } }), { status: 200 });
       }
       if (body.method === 'eth_blockNumber') {
@@ -656,16 +670,16 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   check('A-04: EVM /pay 0-confirmation deferred (auto:false)', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
   check('A-04: order still pending_payment after 0-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_payment');
   check('A-04: 0-conf TXID NOT claimed', !q('SELECT * FROM txid_claims WHERE tx_hash=?', txA04));
-  // 11 确认（ERC20 需 12）：仍延迟，不接受
-  evmLatest = 111;
+  // 14 确认（BEP20 需 15）：仍延迟，不接受
+  evmLatest = 114;
   r = await call('POST', '/api/orders/' + ordA04.order_no + '/pay', { txid: txA04 });
-  check('A-04: EVM /pay 11-confirmation still deferred (ERC20 needs 12)', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
-  check('A-04: order still pending_payment after 11-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_payment');
-  // 12 确认：最新区块推进到 112，收据区块 100 <= 100 → 接受
-  evmLatest = 112;
+  check('A-04: EVM /pay 14-confirmation still deferred (BEP20 needs 15)', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
+  check('A-04: order still pending_payment after 14-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_payment');
+  // 15 确认：最新区块推进到 115，收据区块 100 <= 100 → 接受
+  evmLatest = 115;
   r = await call('POST', '/api/orders/' + ordA04.order_no + '/pay', { txid: txA04 });
-  check('A-04: EVM /pay 12-confirmation accepted', r.json && r.json.ok === true, JSON.stringify(r.json));
-  check('A-04: order paid after 12-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_fulfill');
+  check('A-04: EVM /pay 15-confirmation accepted', r.json && r.json.ok === true, JSON.stringify(r.json));
+  check('A-04: order paid after 15-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_fulfill');
   env.__fetch = origFetch2;
   globalThis.fetch = origFetch2;
 }

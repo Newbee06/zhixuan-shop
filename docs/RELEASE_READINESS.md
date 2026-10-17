@@ -678,3 +678,14 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 - 测试：app-icons 99/99（含 19 项查单新流程）、security 100/100、concurrency 114/114、release 90/90、d1-local 全过。提交 2326266，已部署 staging。
 - Staging 浏览器实测全部通过：订单 AISMVBXRPO98B06AF（邮箱 test-qf@example.com，密码 test1234），错密码报“查询密码错误”不显示卡密，正确密码显示 TEST-CARD-BROWSER-001；邮箱查询同样找到订单。测试站收款地址已填测试 dummy 地址（0x111…/0x222…），无真实资金。
 - 事故：首个浏览器任务误跑到 aisou.pro（对标站）并建了未付款订单 112261017125907404（1.0246 USDT，未付款、未输密码），已关停该任务；订单超时自动取消。教训：浏览器任务须在任务文中写明“只许访问测试站域名，严禁其他站点”。
+
+### 生产级修复总任务：v15（查询密码 salt + 支付收口删除 TRC20/ERC20，2026-10-17 晚）
+
+- **P0 查单**：查询密码必填（6–64 位）；存储改为每订单随机 16 字节 salt + PBKDF2(100k) 哈希（与管理员密码同方案）；邮箱查询入口禁用（关键词含邮箱返回通用空结果）；列表/概要永不含 `delivery_content`（管理端列表改为 `summary` 级别）。
+- **P0 /secret**：IP 限流 + 按单原子记数（`INSERT...SELECT...WHERE count < 5`，D1 串行化防并发绕过）；空密码 401；系统凭证订单 410；v14 无 salt 哈希订单 403 仅管理员流程；PBKDF2 校验失败通用 401。
+- **P1 支付收口（用户拍板：只保留欧易 X Layer + 币安 BEP20）**：TRC20 代码全部删除（`checkTrc20Payment`、Tronscan 调用、`USDT_TRC20_ID`、`TRONSCAN_MAX_PAGES`）；ERC20 从合约/确认数/RPC 默认配置中删除；BinanceUID 站内转账支付路径删除（下单校验已拒，`/pay` 分支与钱包分支为死代码，一并删除）。白名单封堵四处：`checkChainPayment`、`checkTxidPayment`、`/pay`、 `scanEvmChain`（`PAY_CHAINS` 检查）。旧 TRC20/ERC20/站内转账订单不自动认账（轮询跳过、`/pay` 拒绝），只保留超时自动取消，转管理员人工处理。旧设置键保留不删。
+- **修复**：下单 INSERT 占位符 19→20（加 salt 列时漏占位符，致下单 500，测试抓出）。
+- **测试**：app-icons 107/107（含 v15 查单 25 项）、security 101/101、concurrency 114/114（含 §3b cron 单跑认领、A-04 BEP20 15 确认）、release 90/90、mock 全过、payment-whitelist 全过、stock 17/17。浏览器验收测试重写为新合同（下单设必填密码 → 成功页无 token → 查询页 /secret 正确/错误密码路径，邮箱查为空）。
+- **审计**：订单状态机（全部条件 UPDATE + 已付款保护 + 退款不造假）、管理端鉴权（会话 7 天过期 + 改密拦截 + CSRF + 登录限流）均通过。
+- **文档**：新增 docs/ARCHITECTURE.md、docs/SECURITY.md、docs/PAYMENT_FLOW.md、docs/PRODUCTION_CHECKLIST.md、docs/RUNBOOK.md；README 更新为 v15（删 TRC20/ERC20/BinanceUID/查单凭证/邮箱查询描述）。
+- PR #1 仍 OPEN，未合并，未部署生产。真实链上验收仍 BLOCKED / NOT VERIFIED（无真实转账证据）。

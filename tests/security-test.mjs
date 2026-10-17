@@ -72,7 +72,7 @@ function mkCaptcha(codeStr) {
 }
 async function orderCall(body) {
   const cid = mkCaptcha('AB12');
-  return call('POST', '/api/orders', { ...body, captcha_id: cid, captcha_code: 'AB12' });
+  return call('POST', '/api/orders', { query_password: 'sec-test-pw', ...body, captcha_id: cid, captcha_code: 'AB12' });
 }
 let pass = 0, fail = 0;
 function check(name, cond, extra = '') { if (cond) { pass++; console.log('PASS:', name); } else { fail++; console.log('FAIL:', name, extra); } }
@@ -159,7 +159,8 @@ r = await orderCall({ product_id: pCard, quantity: 1, pay_method: 'OKX', pay_cha
 check('first card order ok (reserves the only card)', r.json && r.json.ok === true, JSON.stringify(r.json));
 const ordA = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
 check('first order has_query_password=1, no system query_token', r.json.order.has_query_password === 1 && !r.json.order.query_token);
-check('first order has query_password_hash stored (sha256, not plaintext)', !!ordA.query_password_hash && ordA.query_password_hash.length === 64 && !ordA.query_password_hash.includes('sec-pw-1'));
+check('first order has query_password_hash stored (PBKDF2 base64, not plaintext)', !!ordA.query_password_hash && ordA.query_password_hash.length === 44 && !ordA.query_password_hash.includes('sec-pw-1'));
+check('first order has random query_password_salt (16 bytes base64)', !!ordA.query_password_salt && ordA.query_password_salt.length === 24 && !ordA.query_password_salt.includes('sec-pw-1'));
 check('first order has no system token hash', !ordA.query_token_hash);
 r = await orderCall({ product_id: pCard, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'c2@test.example', delivery_email: 'c2@test.example' } });
 check('second card order blocked (no card left)', r.json && !r.json.ok && /库存不足/.test(r.json.error || ''), JSON.stringify(r.json));
@@ -311,7 +312,7 @@ check('exception_reason cleared after fulfill', q('SELECT exception_reason FROM 
 
 // ===== 8d. 迁移状态端点 =====
 r = await call('GET', '/api/admin/migrate', null, cookie);
-check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 14, JSON.stringify(r.json));
+check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 15, JSON.stringify(r.json));
 r = await call('POST', '/api/admin/migrate', {}, cookie);
 check('migrate POST idempotent', r.json && r.json.ok === true && r.json.applied.length === 0, JSON.stringify(r.json));
 

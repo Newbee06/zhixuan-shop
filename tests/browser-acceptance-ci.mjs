@@ -122,7 +122,7 @@ const orderRes = await page.evaluate(async () => {
   const qty = parseInt((document.getElementById('qty') || {}).value || '1', 10);
   const capCode = (document.getElementById('captchaCode') || {}).value || '';
   const contact = (document.getElementById('contact') || {}).value || '';
-  const r = await fetch('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: pid, quantity: qty, customer_fields: cust, contact, pay_method: 'Binance', pay_chain: 'BEP20', captcha_id: window._captchaId || '', captcha_code: capCode }) });
+  const r = await fetch('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: pid, quantity: qty, customer_fields: cust, contact, pay_method: 'Binance', pay_chain: 'BEP20', query_password: 'browser-ci-pw123', captcha_id: window._captchaId || '', captcha_code: capCode }) });
   return await r.json();
 });
 check('order created via API-in-page', orderRes.ok === true, JSON.stringify(orderRes).slice(0, 300));
@@ -132,47 +132,87 @@ if (!orderRes.ok) {
   process.exit(1);
 }
 const orderNo = orderRes.ok ? orderRes.order.order_no : '';
-const queryToken = orderRes.ok ? orderRes.order.query_token : '';
+const queryPassword = 'browser-ci-pw123';
 
-// ===== 3. 成功页：内存凭证展示 → 刷新后不恢复 =====
+// ===== 3. 成功页：内存订单展示 → 刷新后不恢复；无系统查单凭证 =====
 await page.evaluate((o) => {
   window._lastOrder = { order_no: o.order_no, total_usdt: o.total_usdt, actual_amount: o.actual_amount, pay_address: o.pay_address, wallet_address: o.wallet_address, expires_at: o.expires_at, pay_method: o.pay_method, pay_chain: o.pay_chain };
-  window._lastQueryToken = o.query_token;
 }, orderRes.order);
 await page.goto(BASE + '/#/success/' + orderNo, { waitUntil: 'networkidle' });
 await page.waitForTimeout(800);
-check('success page shows token from memory', (await page.content()).includes(queryToken.slice(0, 8)));
-check('success page: sessionStorage has no token',
+check('success page shows order number', (await page.content()).includes(orderNo));
+check('success page reminds to remember query password', (await page.content()).includes('请牢记您设置的查询密码'));
+check('success page: sessionStorage has no order/token',
   await page.evaluate(() => !sessionStorage.getItem('lastQueryToken') && !sessionStorage.getItem('lastOrder')));
-check('success page: localStorage has no token',
+check('success page: localStorage has no order/token',
   await page.evaluate(() => !localStorage.getItem('lastQueryToken') && !localStorage.getItem('lastOrder')));
 await page.reload({ waitUntil: 'networkidle' });
 await page.waitForTimeout(800);
-check('after reload: token NOT restored', !(await page.content()).includes(queryToken));
-check('after reload: shows use-saved-credential hint',
-  (await page.content()).includes('事先保存') || (await page.content()).includes('刷新页面后不再恢复'));
+check('after reload: storage still has no order/token',
+  await page.evaluate(() => !sessionStorage.getItem('lastQueryToken') && !sessionStorage.getItem('lastOrder') && !localStorage.getItem('lastQueryToken') && !localStorage.getItem('lastOrder')));
 
-// ===== 4. 查单页：POST 查单，URL 无凭证；错误凭证提示 =====
+// ===== 4. 查单页：订单号 + 验证码 → 列表；密码取卡密（未付款提示）；错误密码提示；邮箱不能查；URL 无凭证 =====
+async function freshQueryCaptcha() {
+  const c = await page.evaluate(async () => {
+    const r = await fetch('/api/captcha'); const j = await r.json();
+    const doc = new DOMParser().parseFromString(j.svg, 'image/svg+xml');
+    const code = Array.from(doc.querySelectorAll('text')).map((t) => t.textContent).join('');
+    window._qCaptchaId = j.captcha_id;
+    return { id: j.captcha_id, code };
+  });
+  return c;
+}
 await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
 await page.waitForTimeout(500);
-await page.fill('#qno', orderNo);
-await page.fill('#qtoken', queryToken);
-await page.click('button:has-text("查询")');
-await page.waitForTimeout(1200);
+{
+  const qc = await freshQueryCaptcha();
+  await page.fill('#qkeywords', orderNo);
+  await page.fill('#qCaptchaCode', qc.code);
+  await page.evaluate((id) => { window._qCaptchaId = id; }, qc.id);
+  await page.click('button:has-text("查询")');
+  await page.waitForTimeout(1200);
+}
 const qres = await page.evaluate(() => (document.getElementById('qres') || {}).innerHTML || '');
-check('lookup via UI: order detail shown', qres.includes(orderNo) || qres.includes('待付款') || qres.includes('精确应付'));
-check('lookup: URL has no token', !page.url().includes('token=') && !page.url().includes(queryToken.slice(0, 8)));
-await page.fill('#qtoken', 'wrongtoken123');
-await page.click('button:has-text("查询")');
+check('query via UI: order listed', qres.includes(orderNo));
+check('query via UI: password input shown', qres.includes('qpw-' + orderNo) || qres.includes('查询密码'));
+check('query: URL has no credential', !page.url().includes('password=') && !page.url().includes('token=') && !page.url().includes('browser-ci-pw123'));
+await page.fill('#qpw-' + orderNo, 'wrongpw123');
+await page.click('button:has-text("查看卡密")');
 await page.waitForTimeout(1000);
-check('lookup wrong token: error shown',
-  (await page.evaluate(() => (document.getElementById('qres') || {}).innerHTML || '')).includes('查单凭证错误')
-  || (await page.evaluate(() => (document.getElementById('qres') || {}).innerHTML || '')).includes('错误'));
+const qsecWrong = await page.evaluate((no) => (document.getElementById('qsec-' + no) || {}).innerHTML || '', orderNo);
+check('secret wrong password: error shown',
+  qsecWrong.includes('查询密码错误') || qsecWrong.includes('错误'));
+await page.fill('#qpw-' + orderNo, queryPassword);
+await page.click('button:has-text("查看卡密")');
+await page.waitForTimeout(1000);
+const qsecOk = await page.evaluate((no) => (document.getElementById('qsec-' + no) || {}).innerHTML || '', orderNo);
+check('secret correct password on unpaid order: not-paid hint, no card leak',
+  (qsecOk.includes('尚未付款') || qsecOk.includes('暂无交付内容')) && !qsecOk.includes('BROWSER-'));
+// 邮箱不能作为查询凭证
+await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
+await page.waitForTimeout(500);
+{
+  const qc = await freshQueryCaptcha();
+  await page.fill('#qkeywords', 'browser-ci@test.example');
+  await page.fill('#qCaptchaCode', qc.code);
+  await page.evaluate((id) => { window._qCaptchaId = id; }, qc.id);
+  await page.click('button:has-text("查询")');
+  await page.waitForTimeout(1200);
+}
+const qresEmail = await page.evaluate(() => (document.getElementById('qres') || {}).innerHTML || '');
+check('query by email: generic empty (email is not a credential)',
+  qresEmail.includes('未找到相关订单') && !qresEmail.includes(orderNo));
 // 空数据：查不存在的订单
-await page.fill('#qno', 'AIS-EMPTY-0000');
-await page.fill('#qtoken', 'emptytoken');
-await page.click('button:has-text("查询")');
-await page.waitForTimeout(1000);
+await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
+await page.waitForTimeout(500);
+{
+  const qc = await freshQueryCaptcha();
+  await page.fill('#qkeywords', 'AIS-EMPTY-0000');
+  await page.fill('#qCaptchaCode', qc.code);
+  await page.evaluate((id) => { window._qCaptchaId = id; }, qc.id);
+  await page.click('button:has-text("查询")');
+  await page.waitForTimeout(1000);
+}
 check('lookup missing order: error shown (not blank)',
   (await page.evaluate(() => (document.getElementById('qres') || {}).innerHTML || '')).length > 0);
 

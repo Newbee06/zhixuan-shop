@@ -514,7 +514,7 @@ async function renderProduct(id){
     html += '<label>激活邮箱（要开通会员的邮箱，必须填对） *</label><input id="activation_email" type="email" placeholder="要开通会员的邮箱"><label>再次确认激活邮箱 *</label><input id="activation_email_confirm" type="email" placeholder="再输一次激活邮箱"><label><input type="checkbox" id="activation_confirm" style="width:auto"> 我已确认：这是要开通的邮箱，填错无法开通</label>';
   }
   html += '<label>邮箱地址 *</label><input id="contact" type="email" placeholder="如 your@email.com"><div class="muted" style="margin-top:4px">用于订单联系；需要邮件交付的商品，也会使用该邮箱接收卡密或账号。</div>';
-  html += '<label>查询密码</label><input id="query_password" type="password" placeholder="设置查询订单的密码" autocomplete="new-password" maxlength="64"><div class="muted" style="margin-top:4px">查询卡密时需要输入该密码，请牢记；不设置则查询卡密时无需密码。</div>';
+  html += '<label>查询密码 *</label><input id="query_password" type="password" placeholder="设置查询订单的密码（至少 6 位）" autocomplete="new-password" minlength="6" maxlength="64" required><div class="muted" style="margin-top:4px">查询卡密时需要输入该密码，请牢记。未设置查询密码的订单只能联系客服处理。</div>';
   html += '<label>购买数量</label><div class="qty-row"><button class="qty-btn" onclick="changeQty(-1)">−</button><input id="qty" class="qty-input" type="number" value="1" min="1" max="99" oninput="updateTotal()"><button class="qty-btn" onclick="changeQty(1)">+</button></div>';
   // 人机验证：Turnstile 开启时渲染 Cloudflare Turnstile widget（服务端校验 token，fail-closed）；未开启时用 SVG 验证码。
   if (CFG && CFG.turnstile_enabled && CFG.turnstile_site_key) {
@@ -567,6 +567,10 @@ async function submitOrder(pid){
     capCode = el('captchaCode') ? el('captchaCode').value.trim() : '';
     if (!capCode){ toast('请填写图形验证码', 'error'); loadCaptcha(); return; }
   }
+  var qpVal = el('query_password') ? el('query_password').value.trim() : '';
+  if (!qpVal){ toast('请设置查询密码（查询卡密时需要输入，请牢记）', 'error'); return; }
+  if (qpVal.length < 6){ toast('查询密码至少 6 位', 'error'); return; }
+  if (qpVal.length > 64){ toast('查询密码过长（最多 64 字符）', 'error'); return; }
   var cust = {}; var ins = document.querySelectorAll('[data-k]');
   for (var i = 0; i < ins.length; i++) cust[ins[i].getAttribute('data-k')] = ins[i].value;
   // 第七轮：唯一通用邮箱输入框（#contact）统一映射：
@@ -592,7 +596,7 @@ async function submitOrder(pid){
   cust.activation_email = activationEmail; cust.activation_email_confirm = activationConfirm;
   var btn = document.querySelector('[data-pid="' + pid + '"]');
   setBtnLoading(btn, true);
-  var r = await api('/api/orders', 'POST', { product_id: Number(pid), quantity: qty, customer_fields: cust, contact: emailValue, pay_method: window._payMethod || (el('payMethod') ? el('payMethod').value : 'Binance'), pay_chain: window._payChain || (el('payChain') ? el('payChain').value : 'X Layer'), captcha_id: window._captchaId || '', captcha_code: capCode, turnstile_token: tsToken, query_password: (el('query_password') ? el('query_password').value.trim() : '') });
+  var r = await api('/api/orders', 'POST', { product_id: Number(pid), quantity: qty, customer_fields: cust, contact: emailValue, pay_method: window._payMethod || (el('payMethod') ? el('payMethod').value : 'Binance'), pay_chain: window._payChain || (el('payChain') ? el('payChain').value : 'X Layer'), captcha_id: window._captchaId || '', captcha_code: capCode, turnstile_token: tsToken, query_password: qpVal });
   setBtnLoading(btn, false);
   if (!r.ok){ toast(r.error || '下单失败', 'error'); if ((r.error || '').indexOf('验证码') !== -1) loadCaptcha(); return; }
   // 查询密码由买家自设（服务端只存哈希），下单成功页不再展示系统凭证；仅把有无密码记入内存用于提示。
@@ -606,11 +610,7 @@ async function renderSuccess(no){
   var qr = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(addr || '');
   var tut = ''; if (CFG && o) tut = CFG.pay_tutorials[o.pay_method] || '';
   var html = '<div class="glass"><div class="h2">下单成功</div><p>订单号：<b>' + escH(no) + '</b></p>';
-  if (o && o.has_query_password) {
-    html += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 请牢记您设置的查询密码</b><p class="muted" style="margin:6px 0 0">查询卡密时需要输入该密码。密码只存哈希，系统无法帮您找回，忘记请联系客服清除后重设。</p></div>';
-  } else {
-    html += '<p class="muted">您未设置查询密码，查询卡密时无需密码。用订单号或邮箱在“查询订单”页查询即可。</p>';
-  }
+  html += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 请牢记您设置的查询密码</b><p class="muted" style="margin:6px 0 0">查询卡密时需要输入该密码。忘记密码请联系客服重置。</p></div>';
   html += '<p>应付：<b>' + fmtCNY(actual) + '</b> <span class="muted">（实际按 ' + actual + ' USDT 精确金额付款，请一分不差）</span>（' + escH(o ? o.pay_method : '') + ' · ' + escH(payTokenLabel(o ? o.pay_chain : '')) + '）</p>';
   if (o && o.pay_chain === 'X Layer') html += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' X Layer 收款为 USDT0</b><p class="muted" style="margin:6px 0 0">请从欧易提币时选择 USDT0（X Layer 网络）转入上方地址。旧版 X Layer USDT 与 USDT0 是不同资产，转入旧版代币不会到账、无法自动发货。</p></div>';
   html += '<p>收款地址：</p><div class="codebox" id="addrBox">' + escH(addr) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(document.getElementById(\'addrBox\').textContent)">复制地址</button>';
@@ -632,7 +632,7 @@ async function submitTxid(no){
   toast(r.message || 'TXID 已提交', 'success');
 }
 function renderQuery(){
-  var html = '<div class="glass"><div class="h2">查询订单</div><p class="muted">输入订单号或下单时填写的邮箱查询订单；卡密需输入下单时设置的查询密码查看（未设密码则直接显示）。</p><label>订单号 / 邮箱</label><input id="qkeywords" placeholder="订单号或邮箱地址" autocomplete="off"><label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="qCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="qCaptchaImg" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" onclick="loadQueryCaptcha()"></div><div style="margin-top:12px"><button class="btn" onclick="doQueryList()">查询</button></div><div id="qres" style="margin-top:14px"></div></div>';
+  var html = '<div class="glass"><div class="h2">查询订单</div><p class="muted">输入订单号查询订单；卡密需输入下单时设置的查询密码查看。邮箱不能作为查询凭证。</p><label>订单号</label><input id="qkeywords" placeholder="订单号（AIS…）" autocomplete="off"><label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="qCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="qCaptchaImg" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" onclick="loadQueryCaptcha()"></div><div style="margin-top:12px"><button class="btn" onclick="doQueryList()">查询</button></div><div id="qres" style="margin-top:14px"></div></div>';
   el('app').innerHTML = html;
   loadQueryCaptcha();
 }
@@ -660,7 +660,7 @@ function renderQueryOrderDetail(o, legacy){
 async function doQueryList(){
   var kw = el('qkeywords') ? el('qkeywords').value.trim() : '';
   var capCode = el('qCaptchaCode') ? el('qCaptchaCode').value.trim() : '';
-  if (!kw) { toast('请输入订单号或邮箱', 'error'); return; }
+  if (!kw) { toast('请输入订单号', 'error'); return; }
   if (!capCode) { toast('请填写图形验证码', 'error'); loadQueryCaptcha(); return; }
   var r = await api('/api/orders/query', 'POST', { keywords: kw, captcha_id: window._qCaptchaId || '', captcha_code: capCode });
   if (!r.ok){ el('qres').innerHTML = '<div class="muted">' + escH(r.error) + '</div>'; loadQueryCaptcha(); return; }
@@ -679,11 +679,8 @@ async function doQueryList(){
     } else if (o.credential_type === 'token') {
       var tkId = 'qtk-' + escH(o.order_no);
       h += '<label>查单凭证（旧订单）</label><input id="' + tkId + '" placeholder="查单凭证" autocomplete="off"><div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" data-tk="' + tkId + '" onclick="doQueryLegacy(this.dataset.no, this.dataset.tk)">查看卡密</button></div><div id="qsec-' + escH(o.order_no) + '" style="margin-top:10px"></div>';
-    } else if (o.credential_type === 'legacy') {
-      h += '<p class="muted">旧订单：交付内容请联系客服提供订单号核实后获取。</p>';
     } else {
-      var npId = 'qnp-' + escH(o.order_no);
-      h += '<div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" onclick="doQuerySecret(this.dataset.no, null)">查看卡密</button></div><div id="qsec-' + escH(o.order_no) + '" style="margin-top:10px"></div>';
+      h += '<p class="muted">该订单未设置查询密码，交付内容请联系客服核实后获取。</p>';
     }
     h += '</div>';
   }
@@ -913,7 +910,7 @@ function orderActionButtons(o){
   else if (o.status === 'refund_pending') h += '<button class="btn danger" data-id="' + o.id + '" onclick="adminRefundConfirm(this.dataset.id)">确认已退款</button> <button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">发货（问题已解决时）</button>';
   else if (o.status === 'completed') h += '<span class="muted">已完成，仅查看</span>';
   else if (o.status === 'cancelled') h += '<span class="muted">已取消，仅查看</span>';
-  if (o.has_query_password) h += ' <button class="btn ghost small" data-id="' + o.id + '" onclick="adminClearQueryPassword(this.dataset.id)">清除查询密码</button>';
+  h += ' <button class="btn ghost small" data-id="' + o.id + '" onclick="adminResetQueryPassword(this.dataset.id)">重置查询密码</button>';
   return h;
 }
 async function adminOrderDetail(id){
@@ -972,11 +969,12 @@ async function adminException(id){
     toast(r.message || '已标记异常', 'success'); closeDrawer(); renderAdminOrders(window._orderFilter.page || 1);
   }});
 }
-async function adminClearQueryPassword(id){
-  showModal({ title: '清除查询密码', bodyHTML: '<p>清除后该订单查卡密无需密码。买家忘密码时使用，操作记入审计。</p>', confirmText: '确认清除', danger: true, onConfirm: async function(){
-    var r = await api('/api/admin/orders/' + id + '/clear-query-password', 'POST', {});
+async function adminResetQueryPassword(id){
+  showModal({ title: '重置查询密码', bodyHTML: '<p>为该订单设置新的查询密码（至少 6 位），设置后请将新密码告知买家。操作记入审计。</p>', confirmText: '确认重置', showInput: true, inputLabel: '新查询密码', inputPlaceholder: '至少 6 位', onConfirm: async function(pw){
+    if (!pw || pw.trim().length < 6){ toast('查询密码至少 6 位', 'error'); return false; }
+    var r = await api('/api/admin/orders/' + id + '/reset-query-password', 'POST', { new_password: pw.trim() });
     if (!r.ok){ toast(r.error, 'error'); return false; }
-    toast('查询密码已清除', 'success'); closeDrawer(); renderAdminOrders(window._orderFilter.page || 1);
+    toast('查询密码已重置，请将新密码告知买家', 'success'); closeDrawer(); renderAdminOrders(window._orderFilter.page || 1);
   }});
 }
 async function adminRefundConfirm(id){

@@ -61,7 +61,6 @@ let evmState = {
   decimals: { [USDT0_XLAYER.toLowerCase()]: 6, [OLD_XLAYER.toLowerCase()]: 6, [BEP20_USDT.toLowerCase()]: 18, [WRONG_CONTRACT.toLowerCase()]: 6 },
   failAll: false,
   receipt: null,
-  trc20Transfer: null, // { to, amount, hash }，供历史 TRC20 订单测试
 };
 async function mockFetch(url, opts = {}) {
   const u = String(url);
@@ -80,13 +79,6 @@ async function mockFetch(url, opts = {}) {
     if (body.method === 'eth_getLogs') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: evmState.logs }), { status: 200 });
     if (body.method === 'eth_getTransactionReceipt') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: evmState.receipt }), { status: 200 });
     return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }), { status: 200 });
-  }
-  if (u.includes('tronscanapi.com/api/token_trc20/transfers')) {
-    const toAddr = new URL(u).searchParams.get('toAddress');
-    if (evmState.trc20Transfer && evmState.trc20Transfer.to === toAddr) {
-      return new Response(JSON.stringify({ data: [{ to_address: toAddr, tokenInfo: { tokenId: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', tokenAbbr: 'USDT', tokenDecimal: 6 }, quant: Math.round(Number(evmState.trc20Transfer.amount) * 1e6), block_ts: Date.now(), confirmed: true, transactionHash: evmState.trc20Transfer.hash }] }), { status: 200 });
-    }
-    return new Response(JSON.stringify({ data: [] }), { status: 200 });
   }
   return new Response(JSON.stringify({}), { status: 200 });
 }
@@ -121,7 +113,7 @@ function mkCaptcha(codeStr) {
 }
 async function orderCall(body) {
   const cid = mkCaptcha('AB12');
-  return call('POST', '/api/orders', { ...body, captcha_id: cid, captcha_code: 'AB12' });
+  return call('POST', '/api/orders', { query_password: 'wl-test-pw', ...body, captcha_id: cid, captcha_code: 'AB12' });
 }
 function assert(cond, msg) { if (!cond) { console.error('FAIL: ' + msg); process.exitCode = 1; throw new Error(msg); } console.log('PASS: ' + msg); }
 function q(sql, ...a) { return db.prepare(sql).get(...a); }
@@ -151,7 +143,7 @@ async function newOrder(payMethod, payChain, contact) {
   db.prepare('DELETE FROM order_rate').run();
   return orderCall({ product_id: cardProd.id, quantity: 1, customer_fields: { contact_email: c, delivery_email: c }, contact: c, pay_method: payMethod, pay_chain: payChain });
 }
-function resetEvm() { evmState.latestBlock = 10000; evmState.logs = []; evmState.failAll = false; evmState.receipt = null; evmState.trc20Transfer = null; }
+function resetEvm() { evmState.latestBlock = 10000; evmState.logs = []; evmState.failAll = false; evmState.receipt = null; }
 
 // ===== 1. 两种白名单组合可正常创建订单 =====
 {
@@ -374,11 +366,15 @@ function resetEvm() { evmState.latestBlock = 10000; evmState.logs = []; evmState
   db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 10, 10, 10.0057, 'TXYZHISTORICAL', '2099-01-01 00:00:00', ?, 'hist@test.example', 'Binance', 'TRC20', 'TXYZHISTORICAL', 'pending_payment', datetime('now'))").run(histNo, cardProd.id, JSON.stringify({ contact_email: 'hist@test.example', delivery_email: 'hist@test.example' }));
   const hist = q('SELECT * FROM orders WHERE order_no=?', histNo);
   assert(hist && hist.pay_method === 'Binance' && hist.pay_chain === 'TRC20', '11. historical TRC20 order exists with original pay combo');
-  // 历史 TRC20 订单仍可经轮询核验到账（Tronscan mock）
-  evmState.trc20Transfer = { to: 'TXYZHISTORICAL', amount: 10.0057, hash: '8'.repeat(64) };
+  // 历史 TRC20 订单：TRC20 已删除，轮询不得自动认账（不调用任何外部核验），订单保持待付款，转人工审核。
   await runPoll();
   const histAfter = q('SELECT * FROM orders WHERE order_no=?', histNo);
-  assert(histAfter.status === 'completed' && histAfter.delivery_content && histAfter.delivery_content.startsWith('WL-KEY-'), '11. historical TRC20 order still fulfills via poll: ' + histAfter.status);
+  assert(histAfter.status === 'pending_payment' && !histAfter.delivery_content, '11. historical TRC20 order NOT auto-fulfilled via poll (manual review only): ' + histAfter.status);
+  // 历史 TRC20 订单 /pay 提交 TXID 应被拒绝，不记付款账本
+  const paysBefore = q('SELECT COUNT(*) AS c FROM payments').c;
+  r = await call('POST', '/api/orders/' + histNo + '/pay', { txid: '8'.repeat(64) });
+  assert(!r.json.ok && r.json.error.includes('不在首期支持范围内'), '11. historical TRC20 order /pay rejected: ' + JSON.stringify(r.json));
+  assert(q('SELECT COUNT(*) AS c FROM payments').c === paysBefore, '11. rejected /pay records no payment');
   // 历史 BinanceUID 订单：仍可经管理员确认恢复（不走白名单）
   db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES ('AISHIST0002', '', '', ?, '{}', 1, 10, 10, 10, '', '2099-01-01 00:00:00', ?, 'hist2@test.example', 'BinanceUID', '站内转账', '', 'pending_payment', datetime('now'))").run(cardProd.id, JSON.stringify({ contact_email: 'hist2@test.example', delivery_email: 'hist2@test.example' }));
   const hist2 = q("SELECT * FROM orders WHERE order_no='AISHIST0002'");
