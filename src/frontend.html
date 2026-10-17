@@ -671,15 +671,16 @@ async function doQueryList(){
     var o = list[i];
     h += '<div class="glass" style="margin-top:12px"><p><b>' + escH(o.product_title || '') + '</b> · ' + statusLabel(o.status) + ' · ' + fmtPrice(o.total_usdt) + '</p>';
     h += '<p class="muted">订单号：' + escH(o.order_no) + ' · 下单：' + escH(o.created_at || '') + (o.paid_at ? ' · 付款：' + escH(o.paid_at) : '') + ' · ' + escH(o.pay_method) + ' · ' + escH(o.pay_chain) + '</p>';
+    // 状态提示（与凭证输入解耦）：未付款订单也显示密码输入框，买家可在付款前验证密码是否正确；/secret 对未付款订单返回“尚未付款”。
     if (o.status === 'pending_payment') h += '<p class="muted">待付款：请按订单金额精确付款，付完等待自动发货。</p>';
     else if (!o.has_delivery) h += '<p class="muted">暂无交付内容，付款后等待 1-3 分钟自动发货。</p>';
-    else if (o.credential_type === 'password') {
+    if (o.credential_type === 'password') {
       var pwId = 'qpw-' + escH(o.order_no);
       h += '<label>查询密码</label><input id="' + pwId + '" type="password" placeholder="请输入查询密码" autocomplete="off"><div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" data-pw="' + pwId + '" onclick="doQuerySecret(this.dataset.no, this.dataset.pw)">查看卡密</button></div><div id="qsec-' + escH(o.order_no) + '" style="margin-top:10px"></div>';
     } else if (o.credential_type === 'token') {
       var tkId = 'qtk-' + escH(o.order_no);
       h += '<label>查单凭证（旧订单）</label><input id="' + tkId + '" placeholder="查单凭证" autocomplete="off"><div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" data-tk="' + tkId + '" onclick="doQueryLegacy(this.dataset.no, this.dataset.tk)">查看卡密</button></div><div id="qsec-' + escH(o.order_no) + '" style="margin-top:10px"></div>';
-    } else {
+    } else if (o.status !== 'pending_payment' && o.has_delivery) {
       h += '<p class="muted">该订单未设置查询密码，交付内容请联系客服核实后获取。</p>';
     }
     h += '</div>';
