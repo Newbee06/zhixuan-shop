@@ -19,7 +19,7 @@ PRODSELLER_BASE_URL = "https://prodseller.com/v1"
 
 [[rules]]
 type = "Text"
-globs = ["**/*.html"]
+globs = ["**/*.html", "**/*.svg"]
 fallthrough = true
 
 # 生产 cron（顶层 [triggers]，不要删：合并后生产部署靠它触发轮询/清理；staging 用 [env.staging.triggers]）。
@@ -44,7 +44,7 @@ PRODSELLER_BASE_URL = "https://prodseller.com/v1"
 
 [[env.staging.rules]]
 type = "Text"
-globs = ["**/*.html"]
+globs = ["**/*.html", "**/*.svg"]
 fallthrough = true
 
 [env.staging.triggers]

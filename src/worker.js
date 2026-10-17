@@ -3174,10 +3174,14 @@ async function handleApi(req, env, url, ctx) {
 }
 
 import FRONTEND_HTML from './frontend.html';
+import FAVICON_SVG from './favicon.svg';
 
 export default {
   async fetch(req, env, ctx) {
     var url = new URL(req.url);
+    if (url.pathname === '/favicon.svg' || url.pathname === '/favicon.ico') {
+      return new Response(FAVICON_SVG, { headers: { 'content-type': 'image/svg+xml', 'cache-control': 'public, max-age=86400' } });
+    }
     if (url.pathname === '/' || url.pathname === '/index.html') {
       return new Response(FRONTEND_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
     }
