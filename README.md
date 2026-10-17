@@ -4,23 +4,25 @@ AI 会员 / 代充 / 成品号 / 卡密商城，单 Worker + 单 D1，Cloudflare
 
 **线上状态（2026-10-16）**：已部署。Worker 名 `aisou-lite`、D1 名 `aisou-lite-db`（内部名未随品牌改名），前台站名 `智选`，地址 <https://aisou-lite.f-00a.workers.dev>。
 
+**⚠️ 后台重构与安全加固（2026-10-16）**：在分支 `feat/admin-overhaul-security` 上完成，**尚未合并到 main、尚未部署到线上**。线上仍跑旧版 main 代码。本任务不授权部署线上 Worker、修改生产 D1。上线前请按文末“部署注意事项”操作。
+
 ## 完整链路（一句话）
 
 客户付给你（USDT 到你的收款地址）→ CF cron 每 1 分钟轮询链上到账（精确金额匹配）→ 若商品 `source=prodseller` 则调 ProdSeller 拿货；若 `source=self` 则本地卡密自动发或人工发货 → 交付内容在站内查单页查看（**不发邮件**）。
 
-三条收款确认路径（CF 轮询 / 手动 TXID 核验 / 管理员确认收款）都复用同一个 `fulfillAfterPayment(env, order, txHash, ctx)`，不写三份重复发货逻辑。币安 UID 站内转账无链上 TXID，走手动兜底：客户提交币安订单 ID，管理员核对后点确认收款，同样走 `fulfillAfterPayment`（上游商品也要走 ProdSeller 拿货，不要只发本地卡密）。
+三条收款确认路径（CF 轮询 / 手动 TXID 核验 / 管理员确认收款）都复用同一个 `fulfillAfterPayment(env, order, txHash, ctx)`，不写三份重复发货逻辑。仅支持 OKX|USDT0·X Layer 与 Binance|USDT·BEP20 两种组合；TRC20 / ERC20 / 站内转账代码已删除，旧订单不自动认账、转管理员人工处理（见 docs/PAYMENT_FLOW.md）。
 
 ## 功能
 
-- 前台：商品列表（分类：代充 / 成品号 / 卡密 + 搜索）、商品详情、下单表单（自定义字段 + 数量 + Binance/OKX + X Layer/TRC20/ERC20/BEP20）、下单成功页（订单号 + **精确应付金额 actual_amount + 收款地址 + 20 分钟倒计时** + 复制 + QR + 支付教程链接，文案“付完不用做任何事，等 1-3 分钟自动发货”）、订单查询页（凭邮箱或订单号查状态与交付内容，**无查询密码**）。
-- 订单状态：`pending_payment / pending_fulfill / pending_activation / pending_upstream / completed / cancelled`。
+- 前台：商品列表（分类：代充 / 成品号 / 卡密 + 搜索）、商品详情、下单表单（自定义字段 + 数量 + OKX|X Layer / Binance|BEP20 + **必填查询密码 6-64 位**）、下单成功页（订单号 + **牢记查询密码提示** + **精确应付金额 actual_amount + 收款地址 + 20 分钟倒计时** + 复制 + QR + 支付教程链接，文案“付完不用做任何事，等 1-3 分钟自动发货”）、订单查询页（**仅订单号** + 图形验证码 → 订单列表（不含交付内容）；卡密按单走查询密码取；邮箱不是查询凭证；旧订单走管理员流程）。
+- 订单状态：`pending_payment / pending_fulfill / pending_activation / pending_upstream / completed / cancelled`。状态机由服务端统一校验：待付款订单不能直接发货；已完成/已取消为终态，不可发货/取消/重复确认；人工发货仅从待发货/激活待处理/上游异常进入（显式兜底）。
   - `pending_activation`：上游已付款（paid），等待轮询到 delivered 才发货，deliveredKey 出现前不发。
   - `pending_upstream`：上游暂不可发货（402 余额不足 / 409 缺货 / 429 限速 / 500），后台置顶告警，不发货。
 - 商品来源自营 + 上游并存（见下“商品来源”）。
 - **邮件已移除**：`sendEmail` 直接返回 `email_removed`，不再发任何邮件。交付内容只在站内查单页可见；设置里的 `email_from / email_enabled / delivery_mode` 为历史残留，不再生效。
-- 后台（单管理员）：PBKDF2（100000 次）+ salt + httpOnly session cookie，初始密码 `admin` 首次登录强制改密；左侧导航（数据 / 订单 / 商品 / 卡密 / 设置 / 上游），进后台默认打开“数据”页，统计卡只在“数据”页显示；商品 CRUD、卡密批量导入 / 禁用、订单确认收款 / 发货 / 取消、上游管理（同步 / 余额 / 导入 / 告警 / 上游订单）、设置。
-- 7 天清理：cron 每天跑，`fulfilled_at` 超过 7 天的已完成订单清空卡密 / 账号交付数据并标记 `data_expired`，前台按同样规则隐藏。
-- 支付：**CF 轮询自动发货**：下单生成 `actual_amount = 基础价 + 随机尾数 0.0001-0.0099`，锁定 20 分钟（`expires_at`），同地址同窗口唯一；cron 每 1 分钟查 D1 有无 `pending_payment`，无则零 RPC；有则查 Tronscan / 公开 RPC 匹配 to + 金额。超时自动取消，释放金额占用。
+- 后台（单管理员）：PBKDF2（100000 次）+ salt + httpOnly session cookie（HTTPS 下自动加 Secure，SameSite=Lax）；初始密码 `admin` 首次登录强制改密，**未改密的会话不能调用除改密/退出外的任何管理接口（后端拦截，不只靠前端隐藏）**；登录限流（同一 IP 15 分钟内失败 5 次封禁 15 分钟）；管理端写操作带 Origin 时必须同源（CSRF）；改密后作废除当前会话外的所有会话。左侧导航（数据总览 / 订单管理 / 商品管理 / 卡密库存 / 上游管理 / 系统设置 / 操作审计），进后台默认打开“数据总览”。订单按状态只显示合法操作按钮（后端同样独立校验）；商品为表格 + 弹窗表单；卡密支持筛选/分页/禁用/启用/导入统计；上游支持目录浏览 + 批量导入 + 售价预览；设置按类型分区并校验；所有关键操作（确认收款/发货/取消/上游重试/配置修改）记入 `admin_audit` 操作审计（不记密码、凭证、完整卡密、API Key）。
+- 7 天清理：cron 每天跑，`fulfilled_at` 超过 7 天的已完成订单清空卡密 / 账号交付数据并标记 `data_expired`，前台按同样规则隐藏；同时释放过期预留。
+- 支付：**CF 轮询自动发货**：下单生成 `actual_amount = 基础价 + 随机尾数 0.0001-0.0099`，锁定 20 分钟（`expires_at`），同地址同窗口唯一；cron 每 1 分钟查 D1 有无 `pending_payment`，无则零 RPC；有则查 EVM 公开 RPC 匹配 to + 金额（合约地址、Transfer 事件、收款地址、精确金额、确认数严格核验）。超时自动取消，释放金额占用与卡密预留。仅 OKX|X Layer（USDT0，6 位，1 确认）与 Binance|BEP20（USDT，18 位，15 确认）。
 - 下单防护：图形验证码（一次性、5 分钟过期、最多试 3 次）+ 同 IP 下单限流。
 
 ## 库存口径（前后台统一）
@@ -28,12 +30,13 @@ AI 会员 / 代充 / 成品号 / 卡密商城，单 Worker + 单 D1，Cloudflare
 | 商品类型 | 库存来源 |
 |---|---|
 | 对接商品（`source=prodseller`） | ProdSeller 同步的 `in_stock` |
-| 自营卡密 / 成品号（`source=self`，`stock_type=card`） | `cards` 表中 `is_used=0 AND is_disabled=0` 的真实数量 |
+| 自营卡密 / 成品号（`source=self`，`stock_type=card`） | `cards` 表中 `is_used=0 AND is_disabled=0 AND reserved_order_id IS NULL` 的可用数量（已预留不算可用） |
 | 自营人工发货（`source=self`，`stock_type=manual`） | 后台设置的 `in_stock`（有货/缺货） |
 
-- 后台商品 API 额外返回 `card_stock`，商品卡显示“卡密库存：N”，为 0 时提示“需补货”。
-- 下单时自营卡密 / 成品号会再次检查卡密数量，不足时返回“卡密库存不足，补货中”。
+- 后台商品 API 额外返回 `card_stock`（可用）、`card_reserved`（已预留）、`card_used`（已用）、`card_disabled`（禁用），卡密页按商品展示四项统计。
+- **卡密预留（防超卖）**：下单时立即预留所需数量的卡密（原子条件更新 `reserved_order_id IS NULL`，抢不到则回滚并删单报错，绝不静默创建注定无法交付的订单）；订单取消或支付超时后自动释放预留；发货时优先分配本订单预留的卡，预留丢失时兜底补抢，仍不足则转人工。预留卡不计入可用库存，其他订单无法重复预留同一张卡。
 - 发卡用条件更新 `WHERE is_used = 0`，已抢到的卡不足数量时回滚本次已领取卡，降低并发重复发同一张卡的风险。
+- 下单时服务端统一校验所有商品类型：对接商品 `in_stock=0`、人工商品 `in_stock=0`、卡密商品可用卡不足时均直接拦截，绕过前端按钮也无法下单。
 - 前台 `in_stock=0` 显示“缺货 · 补货中”并禁用购买按钮。
 
 ## 商品来源：自营 + 上游并存
@@ -57,12 +60,13 @@ AI 会员 / 代充 / 成品号 / 卡密商城，单 Worker + 单 D1，Cloudflare
 
 ## 后台商品表单说明（给管理员看的）
 
-- **slug**：新增商品时可留空，前端自动生成类似 `p-<时间编码>` 的唯一标识；手动填写时会转小写、去掉非法字符并用连字符连接。它是数据库里的唯一商品标识。**注意：编辑商品时改 slug 不会保存**（见“已知限制”）。
+- **slug**：新增商品时可留空，前端自动生成类似 `p-<时间编码>` 的唯一标识；手动填写时会转小写、去掉非法字符并用连字符连接。它是数据库里的唯一商品标识。编辑时也可以修改 slug，后端做唯一性校验（与其它商品冲突时报错）。
 - **上游商品 ID**：来源为“自营”时隐藏；来源为“上游”时显示。正常通过“上游”页同步、导入，系统自动填写。对接商品付款后靠该 ID 调 ProdSeller 下单拿货，**不需要手动添加卡密**。
-- **分类与发货方式联动**：选分类时自动设库存类型并提示——卡密/成品号 → “卡密自动发”（付款后从本地卡密库自动取货）；代充 → “人工发货”（付款后进入待发货，管理员在订单页填写交付内容）。
-- **自营卡密导入**：自营卡密/成品号商品卡有“导入卡密”按钮，点击跳到“卡密”页并自动预填商品 ID，管理员只需每行粘贴一条卡密/账号后导入。对接商品和自营人工代充不显示该按钮。
-- **商品分组**：对接商品默认折叠，自营商品默认展开，两组可独立展开/收起。
+- **分类与发货方式联动**：选分类时自动设库存类型并提示——卡密/成品号 → “卡密自动发”（付款后从本地卡密库自动取货）；代充 → “人工发货”（付款后进入待发货，管理员在订单页填写交付内容）。后端保存时统一规范化分类/来源/库存类型（自营卡密/成品号强制 `stock_type=card`），不只靠前端。
+- **自营卡密导入**：自营卡密/成品号商品有“导入卡密”按钮，点击跳到“卡密”页并自动预填商品 ID，管理员只需每行粘贴一条卡密/账号后导入。对接商品和自营人工代充不显示该按钮。导入返回新增/重复/无效/总行数统计（此前把循环次数误当成功数量已修复）。
+- **商品分组**：后台商品管理改为统一表格（搜索/筛选/分页/上下架），不再按来源分组折叠。
 - **人工库存状态**：人工发货商品表单有“有货/缺货”开关；卡密商品和对接商品不显示，由真实卡密数或上游同步决定。
+- **删除商品保护**：有关联订单的商品拒绝删除（提示先下架）；还有卡密的商品拒绝删除（提示先处理卡密）。
 
 ## ProdSeller 对接（服务端 Secret，绝不暴露前端）
 
@@ -116,7 +120,7 @@ AI 会员 / 代充 / 成品号 / 卡密商城，单 Worker + 单 D1，Cloudflare
 - 单 Worker + 单 D1 + 2 个 cron，Cloudflare 免费版，无付费功能，无 npm 构建链（vanilla JS + CSS 内嵌）。
 - `src/worker.js`：API + 路由（import 前端 HTML，Text 规则，无构建）。
 - `src/frontend.html`：前端（iOS 气泡琉璃风格：毛玻璃 + 大圆角 + 柔和高光 + 浅色/深色跟随系统 + 手机端适配）。
-- `schema.sql`：`products / cards / orders / settings / admin_meta / sessions / upstream_orders / upstream_cache / captcha_codes / order_rate`。
+- `schema.sql`：`products / cards / orders / settings / admin_meta / sessions / upstream_orders / upstream_cache / captcha_codes / order_rate / admin_audit / login_attempts / txid_claims / lookup_rate / schema_migrations / payments / scan_cursors / pay_rate / app_icons / secret_attempts`（含 `orders.query_token_hash`、`cards.reserved_order_id / reserved_at`）。
 - 全部参数化查询，输入校验；PBKDF2 迭代 100000（Workers 生产 WebCrypto 上限，不要用 120000）。
 - ProdSeller / Resend 密钥只走 `wrangler secret`，绝不进代码 / 前端 / 日志。Resend 密钥已不再使用（邮件移除）。
 
@@ -140,10 +144,9 @@ printf '%s' "$VAL" | npx wrangler secret put PRODSELLER_API_KEY
 
 ### RPC / 合约地址在哪改（后台 → 设置，不改代码）
 
-- `rpc_urls`：JSON，键是链，如 `{"X Layer":["https://xlayerrpc.okx.com"],"ERC20":[...],"BEP20":[...]}`。轮询 EVM 链时按此拉 `eth_getLogs`。
-- `usdt_contracts`：JSON，键是链，如 `{"X Layer":"0x你的XLayer合约","ERC20":"0xdAC17F...","BEP20":"0x55d398...","TRC20":"TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}`。TRC20 轮询走 Tronscan。
-- `usdt_addresses`：JSON，键是 `支付方式|链`，如 `Binance|X Layer`。改完保存即生效。
-- `binance_uid`：币安 UID 站内转账的收款 UID（后台设置）。
+- `rpc_urls`：JSON，键是链，如 `{"X Layer":["https://xlayerrpc.okx.com"],"BEP20":[...]}`。轮询 EVM 链时按此拉 `eth_getLogs`。仅 X Layer / BEP20 有效。
+- `usdt_contracts`：JSON，键是链，如 `{"X Layer":"0x779Ded0c9e1022225f8E0630b35a9b54bE713736","BEP20":"0x55d398326f99059fF775485246999027B3197955"}`。仅 X Layer / BEP20 有效。
+- `usdt_addresses`：JSON，键是 `支付方式|链`，如 `OKX|X Layer`、`Binance|BEP20`。改完保存即生效。
 
 ### 域名：阿里云买的 + 解析到 CF
 
@@ -188,25 +191,27 @@ npx wrangler deploy
 | GET | /api/products | 商品列表（含 `source / sell_price / requires_email_activation / delivery_method / in_stock`，库存按真实口径推导） |
 | GET | /api/products/:id | 商品详情（同上） |
 | POST | /api/orders | 下单（`customer_fields` 含 `contact_email / delivery_email / activation_email` 按需；需图形验证码） |
-| GET | /api/orders?contact=<邮箱> | 按邮箱查单（无查询密码） |
-| GET | /api/orders/:no | 按订单号查单（无查询密码） |
-| POST | /api/orders/:no/pay | 提交 TXID（可选兜底；币安 UID 填订单 ID 走手动核对） |
+| POST | /api/orders/query | 按订单号查单（需图形验证码），**只返回概要**（订单号/商品/金额/状态，不含交付内容）；邮箱不是查询凭证 |
+| POST | /api/orders/:no/secret | 按单取卡密（需查询密码 + 限流） |
+| POST | /api/orders/:no/pay | 提交 TXID（可选兜底；仅 OKX|X Layer / Binance|BEP20） |
 | POST | /api/admin/login | 后台登录 |
 | POST | /api/admin/logout | 退出 |
 | GET | /api/admin/me | 是否需改密 |
 | POST | /api/admin/change-password | 改密 |
 | GET | /api/admin/stats | 仪表盘统计（含 `pending_upstream / pending_activation`） |
-| GET | /api/admin/orders | 订单列表 |
+| GET | /api/admin/orders | 订单列表（支持搜索/状态/日期/分页） |
+| GET | /api/admin/orders/:id | 单订单管理员详情（后台抽屉用） |
+| GET | /api/admin/audit | 操作审计列表（支持 action / order_id / 分页） |
 | POST | /api/admin/orders/:id/confirm-payment | 确认收款（复用 `fulfillAfterPayment`：自营卡密自动发，上游走 ProdSeller） |
 | POST | /api/admin/orders/:id/fulfill | 发货（手动交付内容） |
 | POST | /api/admin/orders/:id/cancel | 取消 |
-| GET/POST | /api/admin/products | 商品列表 / 新增（含 `source / prodseller_id / cost_price / sell_price / requires_email_activation / delivery_method`；列表额外返回 `card_stock`） |
-| PUT/DELETE | /api/admin/products/:id | 商品编辑 / 删除（PUT 不更新 slug，见“已知限制”） |
-| GET | /api/admin/cards | 卡密列表 |
-| POST | /api/admin/cards/import | 卡密批量导入 |
-| POST | /api/admin/cards/:id/disable | 卡密禁用/启用 |
-| DELETE | /api/admin/cards/:id | 卡密删除 |
-| GET/POST | /api/admin/settings | 设置读取 / 保存 |
+| GET/POST | /api/admin/products | 商品列表 / 新增（含 `source / prodseller_id / cost_price / sell_price / requires_email_activation / delivery_method`；列表支持搜索/分类/来源/上下架/库存/分页，额外返回 `card_stock / card_reserved / card_used / card_disabled`） |
+| PUT/DELETE | /api/admin/products/:id | 商品编辑 / 删除（PUT 支持更新 slug，唯一性校验；删除前检查关联订单与卡密） |
+| GET | /api/admin/cards | 卡密列表（支持商品/状态/关键词/分页，状态含未用/已用/禁用/已预留） |
+| POST | /api/admin/cards/import | 卡密批量导入（只允许自营卡密/成品号商品；返回新增/重复/无效/总行数） |
+| POST | /api/admin/cards/:id/disable | 卡密禁用/启用（已用或已预留卡不能禁用） |
+| DELETE | /api/admin/cards/:id | 卡密删除（已用或已预留卡不能删除） |
+| GET/POST | /api/admin/settings | 设置读取 / 保存（保存前按类型校验全部字段，敏感键拒绝普通写入；修改记审计） |
 | POST | /api/admin/cleanup | 手动执行 7 天清理 |
 | POST | /api/admin/upstream/sync | 上游同步（缓存到 `upstream_cache`，限速 300/15min） |
 | GET | /api/admin/upstream/cache | 查看上游缓存 |
@@ -219,16 +224,49 @@ npx wrangler deploy
 ## 本地校验
 
 - `node --check src/worker.js` 通过；前端 `<script>` 提取后 `node --check` 通过；`schema.sql` 用 Python `sqlite3 executescript` 通过。
-- Mock 全链路（`tests/mock-test.mjs`，`node tests/mock-test.mjs`）：用 mock fetch 模拟 ProdSeller（delivered / paid / 402 / 409）、Tronscan、Resend，**未调任何真实接口**。覆盖：自营卡密 → 轮询确认 → 自动发货；上游普通 → 调 ProdSeller → 发货；上游激活 → paid → 轮询到 delivered → 发货；402 → 不发货 + 告警；409 → pending_upstream；重复轮询不重复发货；超时取消；管理员确认收款走 ProdSeller；`Idempotency-Key = order_no`。
+- Mock 全链路（`tests/mock-test.mjs`，`node tests/mock-test.mjs`）：用 mock fetch 模拟 ProdSeller（delivered / paid / 402 / 409）、EVM RPC、Resend，**未调任何真实接口**。覆盖：自营卡密 → 轮询确认 → 自动发货；上游普通 → 调 ProdSeller → 发货；上游激活 → paid → 轮询到 delivered → 发货；402 → 不发货 + 告警；409 → pending_upstream；重复轮询不重复发货；超时取消；管理员确认收款走 ProdSeller；`Idempotency-Key = order_no`。
 - 库存专项（`tests/stock-test.mjs`，`node tests/stock-test.mjs`）：覆盖真实库存口径（上游同步值 / 真实卡密数 / 人工库存）、卡密不足下单拦截、发卡条件更新与回滚。
+- 安全专项（`tests/security-test.mjs`，`node tests/security-test.mjs`）：覆盖未授权/伪造/过期 Session、初始改密拦截、退出失效、登录失败限流、人工/上游缺货拦截、卡密预留争抢与取消释放、待付款不可发货、已完成/已取消不可重复处理、查询密码正确/错误/缺失、邮箱不作为查询凭证、旧订单兼容路径、审计不含敏感数据。
 
-## 已知限制（待处理，未声称已修复）
+## 已知限制（`feat/admin-overhaul-security` 分支已修复以下 5 项，上线前请先合并部署）
 
-1. **通用缺货后端拦截未完成**：订单 API 只强制拦截“自营卡密/成品号库存不足”；自营人工商品或对接商品 `in_stock=0` 时，前台按钮会禁用，但直接调用订单 API 仍可能创建订单。应在订单 API 服务端统一用真实库存口径拦截所有缺货商品。
-2. **卡密未在下单时预留**：下单只检查库存，实际卡密要到账后才领取；多个不同邮箱可能在只有 1 张卡时同时建立待付款订单，第一笔付款拿走卡后，第二笔可能付款但无法发货。需设计卡密预留与订单超时释放，或明确采用其他防超卖方案。
-3. **现有商品数据仍有配置矛盾**：示例商品 `Cursor 成品号示例`（slug `cursor-account`）是 `category=account`、`stock_type=manual`；Worker 因 `category=account` 会按卡密自动发逻辑处理，但后台编辑表单仍可能显示“人工发货”。应将该商品标准化为 `stock_type=card`，并在服务端保存时强制校验/规范化分类与库存类型，不能只靠前端 onchange。
-4. **编辑 slug 的表单与后端不一致**：后台编辑表单仍显示可编辑 slug，但 Worker 的商品 PUT SQL 没有更新 slug，用户修改 slug 后实际不会保存。应选择：编辑时设为只读并解释，或服务端支持唯一性校验后更新。
-5. **后台人用流程仍可继续审计**：卡密导入 API 是否应拒绝对接商品/人工商品尚未加严格校验；删除商品后关联卡密如何处理尚未完整审计；订单卡可能对所有状态都显示确认收款/发货/取消按钮，后端会拒绝非法操作，但 UX 仍可能让人困惑，应按订单状态只显示当前可执行动作。
+1. ~~通用缺货后端拦截未完成~~ → **已修复**：订单 API 服务端统一用真实库存口径拦截所有缺货商品（对接商品 `in_stock=0`、人工商品 `in_stock=0`、卡密商品可用卡不足），绕过前端按钮也无法下单。
+2. ~~卡密未在下单时预留~~ → **已修复**：下单时立即原子预留卡密，取消/超时自动释放，发货优先分配本订单预留卡，预留卡不计入可用库存。
+3. ~~现有商品数据仍有配置矛盾~~ → **已修复**：示例商品 `cursor-account` 的 `stock_type` 已标准化为 `card`；服务端保存时强制校验/规范化分类与库存类型，不只靠前端 onchange。
+4. ~~编辑 slug 的表单与后端不一致~~ → **已修复**：服务端 PUT 支持更新 slug 并做唯一性校验。
+5. ~~后台人用流程仍可继续审计~~ → **已修复**：卡密导入只允许自营卡密/成品号商品；删除商品前检查关联订单与卡密；订单按状态只显示合法操作按钮（后端同样独立校验）；关键操作记入操作审计。
+
+**仍真实存在的限制**（未声称修复）：
+
+- 单管理员、无角色权限、无多账号；无售后工单、分销/分站、优惠券、秒杀。退款为人工流程（异常 → `refund_pending` → 系统外真实退款 → 管理员确认已退款并填凭证），系统不执行真实资金退款。
+- 国内支付（支付宝/微信）与发票未做；邮件通知已移除；TG Bot 自动通知未做（仅客服链接占位）。
+- 上游激活类商品仍依赖 ProdSeller 轮询，`deliveredKey` 出现前不发货；上游 402/409/429/500 与网络超时由 `pending_upstream` + 后台告警处理，需人工介入（重试用同一 Idempotency-Key，不重复采购）。
+- 查询密码由买家下单时自设（必填 6-64 位），服务端只存随机 salt + PBKDF2 哈希；忘记密码请联系客服重置（管理员重置，记审计）。旧订单（无 salt 哈希）仅走管理员流程。
+- 前台查单公开接口无登录，查询密码即唯一保护；请勿将订单号+查询密码截图外传。
+
+## 数据库迁移（版本化，兼容旧库，幂等、非破坏性）
+
+新库直接用 `schema.sql` 建表（已含 v1–v15 结构，版本预置到 v10）；**旧库无需手动迁移**，Worker 首次请求时自动按版本顺序执行 `migrations/0001–0015`（v11–v15 幂等运行，v11 种子图标）：
+
+- v1：订单轮询字段（`query_token_hash` 等兼容列）。
+- v2：商品上游字段（`in_stock` 等）。
+- v3：上游表（`upstream_orders`、`upstream_cache`）。
+- v4：安全加固（`admin_audit`、`login_attempts`、卡密预留列 `reserved_order_id` / `reserved_at`、索引）。
+- v5：验证码与限流（`captcha_codes`、`order_rate`）。
+- v6：认领 / TXID / 异常 / 查单限流（`orders.claim_token`、`claimed_at`、`exception_reason`、`refund_status`、`refund_ref`，`txid_claims`、`lookup_rate`、`schema_migrations`）。
+- v7：上游轮询租约（`orders.upstream_lock`、`upstream_lock_expires_at`）+ `upstream_orders.order_id` 去重（留最新行）与唯一索引。
+
+机制：每次 API 请求只轻量查 `schema_migrations` 当前版本；版本已最新时**不再执行 PRAGMA / DDL / 历史修复**；版本落后时才按序迁移，每个版本成功后才写入版本记录，失败抛带版本号的明确错误且**不标记成功**。管理员可经 `GET /api/admin/migrate` 查看版本、`POST /api/admin/migrate` 手动触发。
+
+所有迁移不删表、不改列类型、不清空数据。部署后建议先在测试库验证：登录→改密→下单→查单（凭证）→取消释放预留→审计列表，全部通过后再上线。
+
+## 部署注意事项（`feat/admin-overhaul-security` 分支）
+
+1. **不要直接部署本分支到生产**：先在 GitHub 上审 PR、合并到 main，再按“部署步骤”部署。本任务不授权直接部署。
+2. 部署后第一次打开后台，用 `admin` 登录会强制改密（至少 8 位）；改密后旧会话全部作废。
+3. 旧订单（无 salt 哈希）仅走管理员流程：客户联系客服核实交付内容；新订单从部署后开始用查询密码。
+4. 部署前备份生产 D1（`wrangler d1 export` 或 CF 面板快照），以防回滚。
+5. 回滚方案：重新部署 main 分支的旧版 Worker 即可；旧库新增的列和表可保留（新增表：`upstream_orders` / `upstream_cache` / `captcha_codes` / `order_rate` / `admin_audit` / `login_attempts` / `txid_claims` / `lookup_rate` / `payments` / `scan_cursors` / `pay_rate` / `app_icons` / `secret_attempts`；新增列：`query_token_hash` / `query_password_hash` / `query_password_salt` / `reserved_*` / `claim_token` / `claimed_at` / `exception_reason` / `refund_*` / `upstream_lock` / `upstream_lock_expires_at` / `app_icon_key` / `schema_migrations`），旧版代码不读取它们，不影响旧版运行。**v8 唯一索引 caveat**：回滚后新库的 v8 唯一索引（`idx_orders_amount_claim` / `idx_orders_contact_pending`）仍会约束旧版下单——旧版无 INSERT 重试逻辑，高并发下金额/联系人冲突时旧版下单会直接报 500。回滚前确认无高并发下单场景，或先评估 DROP 索引（须先人工评估重复数据，见 `migrations/README.md`）。
 
 ## 目录
 
@@ -236,7 +274,12 @@ npx wrangler deploy
 - `schema.sql` — 建表 + 默认设置 + 4 个示例商品 + 演示卡密
 - `src/worker.js` — Worker + API + 路由（含 `fulfillAfterPayment / pollUpstreamActivations / prodseller*`）
 - `src/frontend.html` — 前端（独立 HTML，经 Text import 引入，无构建）
-- `tests/mock-test.mjs` — mock 全链路测试（ProdSeller / Tronscan / Resend 均为 mock）
+- `tests/mock-test.mjs` — mock 全链路测试（ProdSeller / EVM RPC / Resend 均为 mock）
 - `tests/stock-test.mjs` — 库存口径专项测试
+- `tests/security-test.mjs` — 安全专项测试（鉴权/订单状态机/查询密码/卡密预留/审计）
+- `tests/concurrency-test.mjs` — 并发 / 故障恢复 / 迁移专项测试（真并行 + 屏障，验最终 DB 状态）
+- `tests/browser-acceptance.mjs` — 浏览器验收（需 playwright-core + 本机 Chromium + 本地 wrangler dev，见文件头注释）
+- `tests/d1-local-test.sh` — Wrangler D1 本地环境迁移验证（仅 `--local`，不碰生产库）
+- `migrations/` — 版本化迁移 SQL（0001–0015）与说明
 - `translations-zh.json / translations-zh.sql` — 上游商品中文标题/简介翻译（品牌名保留英文，链接/格式原样保留）
 - `README.md` — 本文件

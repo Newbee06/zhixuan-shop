@@ -22,5 +22,30 @@ type = "Text"
 globs = ["**/*.html"]
 fallthrough = true
 
+# 生产 cron（顶层 [triggers]，不要删：合并后生产部署靠它触发轮询/清理；staging 用 [env.staging.triggers]）。
 [triggers]
+crons = ["0 2 * * *", "*/1 * * * *"]
+
+# ---- Staging 环境（第六轮新增，独立测试资源；生产配置在上方，保持不动）----
+# staging Worker：zhixuan-shop-staging；staging D1：zhixuan-shop-staging-db（独立，与生产 D1 不同）。
+# staging 地址为独立 workers.dev 子域，不绑定生产自定义域名；prodseller_enabled 默认 0，poll_enabled 由部署后验收设置。
+[env.staging]
+name = "zhixuan-shop-staging"
+main = "src/worker.js"
+compatibility_date = "2024-01-01"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "zhixuan-shop-staging-db"
+database_id = "4fb3878b-02bf-4cac-b833-716c050242e6"
+
+[env.staging.vars]
+PRODSELLER_BASE_URL = "https://prodseller.com/v1"
+
+[[env.staging.rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true
+
+[env.staging.triggers]
 crons = ["0 2 * * *", "*/1 * * * *"]

@@ -2,3 +2,5 @@
 node_modules/
 *.log
 tests/_stock-worker-tmp.mjs
+# 本地浏览器验收截图，不进仓库
+acceptance/

@@ -4,6 +4,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 const dir = path.dirname(fileURLToPath(import.meta.url)) + '/..';
 const db = new DatabaseSync(':memory:');
+// schema.sql 自 v15 起不再建 schema_migrations 表（仅 INSERT 预置版本），与 Worker runMigrations 一致：先建表再执行 schema.sql。
+// 注意：schema.sql 缺 CREATE TABLE schema_migrations 是代码侧缺陷（已在最终汇报中精确报告），测试侧按运行时行为先建表，不改 schema.sql。
+db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
 db.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
 // schema.sql 不含运行时迁移的列（ensureProductColumns 才加），测试里先补上
 for (const col of ['in_stock INTEGER NOT NULL DEFAULT 1', 'sort INTEGER NOT NULL DEFAULT 0', 'prodseller_id TEXT NOT NULL DEFAULT \'\'', 'requires_email_activation INTEGER NOT NULL DEFAULT 0', 'delivery_method TEXT NOT NULL DEFAULT \'both\'']) {
@@ -19,12 +22,11 @@ function wrapStmt(sql) {
   };
   return api;
 }
-const env = { DB: { prepare: (sql) => wrapStmt(sql) }, PRODSELLER_API_KEY: 'test-key', RESEND_API_KEY: 'test-resend', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
+const env = { DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', RESEND_API_KEY: 'test-resend', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
 async function mockFetch(url, opts = {}) {
   const u = String(url);
   if (u.includes('api.resend.com')) return new Response(JSON.stringify({ id: 'mock-mail' }), { status: 200 });
   if (u.includes('prodseller.com')) return new Response(JSON.stringify({ error: 'unused' }), { status: 500 });
-  if (u.includes('tronscanapi.com')) return new Response(JSON.stringify({ data: [] }), { status: 200 });
   throw new Error('unexpected fetch ' + u);
 }
 const workerPath = path.join(dir, 'src/worker.js');
@@ -36,7 +38,7 @@ fs.writeFileSync(tmpWorker, code);
 const worker = await import(tmpWorker);
 import { createHash } from 'node:crypto';
 async function call(pathname, method = 'GET', body = null, headers = {}) {
-  const req = new Request('http://localhost' + pathname, { method, headers: { 'content-type': 'application/json', ...headers }, body: body ? JSON.stringify(body) : undefined });
+  const req = new Request('http://localhost' + pathname, { method, headers: { 'content-type': 'application/json', 'X-Admin-API': '1', ...headers }, body: body ? JSON.stringify(body) : undefined });
   const res = await worker.default.fetch(req, env, { waitUntil: () => {} });
   const text = await res.text();
   let j = null; try { j = JSON.parse(text); } catch (e) {}
@@ -52,16 +54,20 @@ function mkCaptcha(code) {
 }
 async function orderCall(body) {
   const cid = mkCaptcha('AB12');
-  return call('/api/orders', 'POST', { ...body, captcha_id: cid, captcha_code: 'AB12' });
+  return call('/api/orders', 'POST', { query_password: 'stock-test-pw', ...body, captcha_id: cid, captcha_code: 'AB12' });
 }
-// admin login
+// admin login + 首次改密（新规则：未改密的会话不能调管理接口）
 let loginRes = await call('/api/admin/login', 'POST', { password: 'admin' });
-const cookie = (loginRes.headers.get('set-cookie') || '').split(';')[0];
+let cookie = (loginRes.headers.get('set-cookie') || '').split(';')[0];
+let changeRes = await call('/api/admin/change-password', 'POST', { old_password: 'admin', new_password: 'test-admin-password-123' }, { Cookie: cookie });
+if (!changeRes.json || !changeRes.json.ok) { console.log('FAIL: change-password', JSON.stringify(changeRes.json)); process.exit(1); }
 const adminHeaders = { Cookie: cookie };
 let pass = 0, fail = 0;
 function check(name, cond, extra = '') { if (cond) { pass++; console.log('PASS:', name); } else { fail++; console.log('FAIL:', name, extra); } }
 
 // seed: self card product (in_stock column=1, 0 cards), self card product #2 (2 cards), self manual (in_stock=0), prodseller (in_stock=0)
+// 支付白名单：下单需有效 OKX|X Layer 收款地址（schema 种子为占位符，会拒单）
+db.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111' }));
 db.prepare("INSERT INTO products (slug,title,category,price_usdt,sell_price,source,stock_type,is_active,in_stock) VALUES ('self-card','自营卡密','card',1,1,'self','card',1,1)").run();
 db.prepare("INSERT INTO products (slug,title,category,price_usdt,sell_price,source,stock_type,is_active,in_stock) VALUES ('self-card2','自营卡密2','card',1,1,'self','card',1,1)").run();
 db.prepare("INSERT INTO products (slug,title,category,price_usdt,sell_price,source,stock_type,is_active,in_stock) VALUES ('self-manual','自营代充','recharge',1,1,'self','manual',1,0)").run();
@@ -95,11 +101,11 @@ check('order self card 0 cards rejected', r.json && r.json.ok === false && /库�
 r = await orderCall({ product_id: p2, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'a@b.com', delivery_email: 'a@b.com' } });
 check('order self card 2 cards ok', r.json && r.json.ok === true, JSON.stringify(r.json));
 
-// 5. order create: self manual in_stock=0 -> still allowed (manual, admin decides)
+// 5. order create: self manual in_stock=0 -> BLOCKED（新规则：人工缺货服务端必须阻止下单）
 r = await orderCall({ product_id: p3, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'other@b.com' } });
-check('order self manual in_stock=0 allowed (manual)', r.json && r.json.ok === true, JSON.stringify(r.json));
+check('order self manual in_stock=0 blocked', r.json && r.json.ok === false && /缺货/.test(r.json.error || ''), JSON.stringify(r.json));
 
-// 6. admin products: card_stock present
+// 6. admin products: card_stock = 可用数（已预留的卡不再算可用），card_reserved = 预留数
 r = await call('/api/admin/products', 'GET', null, adminHeaders);
 let adminList = null;
 if (r.json && r.json.products) adminList = r.json.products;
@@ -108,8 +114,25 @@ if (!adminList) {
 }
 if (adminList) {
   const m = {}; for (const p of adminList) m[p.slug] = p;
-  check('admin card_stock self-card2 = 2', m['self-card2'].card_stock === 2, JSON.stringify(m['self-card2']));
+  // Test 4 的订单已预留 1 张卡：可用 1（CODE-B），预留 1（CODE-A）
+  check('admin card_stock self-card2 = 1 (reserved excluded)', m['self-card2'].card_stock === 1, JSON.stringify(m['self-card2']));
+  check('admin card_reserved self-card2 = 1', m['self-card2'].card_reserved === 1, JSON.stringify(m['self-card2']));
   check('admin card_stock self-card = 0', m['self-card'].card_stock === 0);
+}
+
+// 6b. 取消 Test 4 的订单 -> 预留释放，card_stock 回到 2
+const reservedOrder = db.prepare("SELECT id FROM orders WHERE product_id=? AND status='pending_payment'").get(p2);
+if (reservedOrder) {
+  r = await call('/api/admin/orders/' + reservedOrder.id + '/cancel', 'POST', { reason: '测试释放预留' }, adminHeaders);
+  check('cancel pending order ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+  r = await call('/api/admin/products', 'GET', null, adminHeaders);
+  if (r.json && r.json.products) {
+    const m2 = {}; for (const p of r.json.products) m2[p.slug] = p;
+    check('after cancel, card_stock self-card2 back to 2', m2['self-card2'].card_stock === 2, JSON.stringify(m2['self-card2']));
+    check('after cancel, card_reserved self-card2 = 0', m2['self-card2'].card_reserved === 0, JSON.stringify(m2['self-card2']));
+  }
+} else {
+  check('reserved order exists for cancel test', false, 'no pending order for p2');
 }
 
 // 7. admin save: in_stock persists (PUT)
