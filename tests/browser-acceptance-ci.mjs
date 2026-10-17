@@ -500,6 +500,15 @@ for (const [w, h, label] of [[390, 844, '390'], [360, 740, '360']]) {
     return cb.left >= hb.left - 1 && cb.right <= hb.right + 1 && cb.top >= hb.top - 1 && cb.bottom <= hb.bottom + 1;
   });
   check(`mobile ${label} home: relax chip fully inside hero`, chipWithin === true, String(chipWithin));
+  // 横排 Hero：文案在左、视觉在右，并排不堆叠。
+  const rowLayout = await page.evaluate(() => {
+    const hero = document.querySelector('.home-hero');
+    const kids = hero ? hero.querySelectorAll(':scope > div') : [];
+    if (!hero || kids.length < 2) return null;
+    const a = kids[0].getBoundingClientRect(), b = kids[1].getBoundingClientRect();
+    return { dir: getComputedStyle(hero).flexDirection, sideBySide: a.right <= b.left + 2 && b.width > 100 };
+  });
+  check(`mobile ${label} home: hero row layout`, !!rowLayout && rowLayout.dir === 'row' && rowLayout.sideBySide, JSON.stringify(rowLayout));
 }
 
 // ===== 9. 控制台与接口失败 =====
