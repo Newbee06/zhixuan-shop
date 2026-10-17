@@ -1274,6 +1274,13 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   }
   // 防类名碰撞回归：商品页支付方式卡早已占用 .pay-card（含 margin:6px 0），成功页窄卡必须用独立类名 .pay-shell，否则居中会被后定义的 .pay-card 覆盖。
   check('payui: success card uses pay-shell not pay-card', frontendHtml.includes('glass pay-shell') && !frontendHtml.includes('glass pay-card'));
+  // 防重复 ID：查单详情（renderQueryOrderDetail）渲染在查询列表卡片内的 qsec 盒子里；
+  // 旧订单待付款时列表卡与详情会各出一份付款块，UID 必须不同，否则 countdown/addrBox 等 ID 重复。
+  {
+    const detStart = frontendHtml.indexOf('function renderQueryOrderDetail(');
+    const detSrc = frontendHtml.slice(detStart, frontendHtml.indexOf('function ', detStart + 10) >= 0 ? frontendHtml.indexOf('function ', detStart + 10) : frontendHtml.length);
+    check('payui: query detail uses distinct -detail uid', detSrc.includes("payBlockHTML(o, o.order_no + '-detail')"));
+  }
   // payTokenLabel 已含链名（'USDT0 · X Layer'），小字行不得再追加一次 pay_chain（payQrLogoHTML 另有一处 o.pay_chain 调用是正常的，不计入）。
   const payBlockSrc = frontendHtml.slice(frontendHtml.indexOf('function payBlockHTML'), frontendHtml.indexOf('function payBlockHTML') + 2500);
   const subLine = (payBlockSrc.match(/pay-amount-sub.*/) || [''])[0];
