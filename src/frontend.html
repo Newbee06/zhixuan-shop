@@ -6,15 +6,15 @@
 <title>智选</title>
 <style>
 :root{--bg:#f2f2f7;--card:rgba(255,255,255,.68);--card2:rgba(255,255,255,.9);--text:#1c1c1e;--sub:#6b7280;--line:rgba(255,255,255,.6);--accent:#0a84ff;--green:#34c759;--orange:#ff9f0a;--red:#ff453a;--radius:24px}
-@media (prefers-color-scheme:dark){html:not([data-theme]){--bg:#000;--card:rgba(28,28,30,.62);--card2:rgba(44,44,46,.85);--text:#f5f5f7;--sub:#a1a1aa;--line:rgba(255,255,255,.14)}html:not([data-theme]) .pcard-btn{background:rgba(109,92,255,.28);color:#b7adff}}
+@media (prefers-color-scheme:dark){html:not([data-theme]){--bg:#000;--card:rgba(28,28,30,.62);--card2:rgba(44,44,46,.85);--text:#f5f5f7;--sub:#a1a1aa;--line:rgba(255,255,255,.14)}html:not([data-theme]) .pcard-btn{background:rgba(48,209,88,.28);color:#7be3a8}html:not([data-theme]) .pcard-btn:disabled{background:rgba(255,69,58,.28);color:#ff9d97}}
 html[data-theme="dark"]{--bg:#000;--card:rgba(28,28,30,.62);--card2:rgba(44,44,46,.85);--text:#f5f5f7;--sub:#a1a1aa;--line:rgba(255,255,255,.14)}
-html[data-theme="dark"] .pcard-btn{background:rgba(109,92,255,.28);color:#b7adff}
+html[data-theme="dark"] .pcard-btn{background:rgba(48,209,88,.28);color:#7be3a8}html[data-theme="dark"] .pcard-btn:disabled{background:rgba(255,69,58,.28);color:#ff9d97}
 html[data-theme="dark"] .pcard-img{background:#1c1c1e}
 html[data-theme="dark"] .prod-img{background:#1c1c1e}
 html[data-theme="dark"] .detail-img-photo{background:#1c1c1e}
-@media (prefers-color-scheme:dark){html:not([data-theme]) .pcard-img,html:not([data-theme]) .prod-img,html:not([data-theme]) .detail-img-photo{background:#1c1c1e}html:not([data-theme]) .home-h1-accent,html:not([data-theme]) .home-section-star,html:not([data-theme]) .home-eyebrow b{color:#8ea6ff}html:not([data-theme]) .pcard-btn:disabled{background:rgba(127,127,127,.25);color:#a1a1aa}html:not([data-theme]) .pcard-btn-soldout{background:rgba(255,69,58,.20)!important;color:#ff9d99!important}html:not([data-theme]) .captcha-img{background:#2c2c2e!important}}
-html[data-theme="dark"] .pcard-btn:disabled{background:rgba(127,127,127,.25);color:#a1a1aa}
-html[data-theme="dark"] .pcard-btn-soldout{background:rgba(255,69,58,.20)!important;color:#ff9d99!important}
+@media (prefers-color-scheme:dark){html:not([data-theme]) .pcard-img,html:not([data-theme]) .prod-img,html:not([data-theme]) .detail-img-photo{background:#1c1c1e}html:not([data-theme]) .home-h1-accent,html:not([data-theme]) .home-section-star,html:not([data-theme]) .home-eyebrow b{color:#8ea6ff}html:not([data-theme]) .pcard-btn:disabled{background:rgba(255,69,58,.28);color:#ff9d97}html:not([data-theme]) .pcard-btn-soldout{background:rgba(255,69,58,.28)!important;color:#ff9d97!important}html:not([data-theme]) .captcha-img{background:#2c2c2e!important}}
+html[data-theme="dark"] .pcard-btn:disabled{background:rgba(255,69,58,.28);color:#ff9d97}
+html[data-theme="dark"] .pcard-btn-soldout{background:rgba(255,69,58,.28)!important;color:#ff9d97!important}
 html[data-theme="dark"] .captcha-img{background:#2c2c2e!important}
 .captcha-img{background:#f2f2f7}
 *{box-sizing:border-box}
@@ -113,8 +113,8 @@ html[data-theme="dark"] .home-h1-accent,html[data-theme="dark"] .home-section-st
 .pcard-foot{display:flex;flex-direction:column;gap:10px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(127,127,127,.15)}
 .pcard-price-label{font-size:11px;color:var(--sub)}
 .pcard-price{font-size:24px;font-weight:800;line-height:1.2}
-.pcard-btn{border:0;border-radius:12px;padding:12px 14px;font-size:14px;font-weight:700;cursor:pointer;background:#e8e4ff;color:#6d5cff;white-space:nowrap;text-align:center}
-.pcard-btn:disabled{background:rgba(127,127,127,.15);color:var(--sub);cursor:not-allowed}
+.pcard-btn{border:0;border-radius:12px;padding:12px 14px;font-size:14px;font-weight:700;cursor:pointer;background:#d6f5e0;color:#1a8f4a;white-space:nowrap;text-align:center}
+.pcard-btn:disabled{background:#ffe0e1;color:#d92b2b;cursor:not-allowed}
 .pcard-btn-soldout{background:#ffe0e1!important;color:#d92b2b!important}
 @media(max-width:640px){.pcard-title{font-size:12px;margin:8px 0 4px}.pcard-desc{font-size:9px;min-height:29px}.pcard{padding:8px}.pcard-img{margin-bottom:6px;aspect-ratio:4/2.7}.pcard-foot{gap:6px;margin-top:8px;padding-top:8px}.pcard-price-label{font-size:10px}.pcard-price{font-size:20px}.pcard-btn{font-size:12px;padding:10px 12px}.pcard-arrow{font-size:14px}.shop-grid{gap:10px}}
 .emoji{font-size:34px}

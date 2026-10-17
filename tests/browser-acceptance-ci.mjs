@@ -528,6 +528,9 @@ for (const [w, h, label] of [[390, 844, '390'], [360, 740, '360']]) {
   // 商品卡：名称 10px、介绍 8px（同类推荐复用同一 productCard，同款）。
   const cardType = await page.evaluate(() => { const t = document.querySelector('.pcard-title'); const d = document.querySelector('.pcard-desc'); const pr = document.querySelector('.pcard-price'); const b = document.querySelector('.pcard-btn'); return { title: t ? getComputedStyle(t).fontSize : null, desc: d ? getComputedStyle(d).fontSize : null, price: pr ? getComputedStyle(pr).fontSize : null, btn: b ? getComputedStyle(b).fontSize : null }; });
   check(`mobile ${label} shop: card title 12px desc 9px price 20px btn 12px`, cardType.title === '12px' && cardType.desc === '9px' && cardType.price === '20px' && cardType.btn === '12px', JSON.stringify(cardType));
+  // 购买按钮背景 微亮绿色（#d6f5e0）。
+  const btnBg = await page.evaluate(() => { const b = document.querySelector('.pcard-btn:not(:disabled)'); return b ? getComputedStyle(b).backgroundColor : null; });
+  check(`mobile ${label} shop: buy button light green bg`, btnBg === 'rgb(214, 245, 224)', btnBg);
 }
 
 // ===== 8b. P2-12：浏览器计算样式真实断言（深色售罄/Hero/合集标题/倒计时/App 图标/付款块/对齐/TXID+Turnstile/必填无请求）=====
