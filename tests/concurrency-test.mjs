@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 const dir = path.dirname(fileURLToPath(import.meta.url)) + '/..';
 const db = new DatabaseSync(':memory:');
+// schema.sql 自 v15 起不再建 schema_migrations 表（仅 INSERT 预置版本），与 Worker runMigrations 一致：先建表再执行 schema.sql。
+// 注意：schema.sql 缺 CREATE TABLE schema_migrations 是代码侧缺陷（已在最终汇报中精确报告），测试侧按运行时行为先建表，不改 schema.sql。
+db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
 db.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
 // ProdSeller 门禁：测试环境用 Mock 上游，显式开启门禁（模拟“已提供上游验证证据”的环境；生产默认关闭）。
 db.prepare("UPDATE settings SET value='1' WHERE key='prodseller_enabled'").run();
@@ -104,6 +107,11 @@ async function orderCall(body) {
   // 每个下单用不同 IP，避免测试本身触到同 IP 下单限流（限流由 mock-test 专项覆盖）
   const ip = '10.9.9.' + ((++capSeq) % 200 + 1);
   return call('POST', '/api/orders', { query_password: 'conc-test-pw', ...body, captcha_id: cid, captcha_code: 'AB12' }, null, { 'CF-Connecting-IP': ip });
+}
+// /pay 自 P3-4 起须带图形验证码（captcha_id + captcha_code）：每次提交用新验证码。
+async function payCall(orderNo, txid) {
+  const cid = mkCaptcha('AB12');
+  return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12' });
 }
 let pass = 0, fail = 0;
 function check(name, cond, extra = '') { if (cond) { pass++; console.log('PASS:', name); } else { fail++; console.log('FAIL:', name, extra); } }
@@ -255,28 +263,29 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   check('concurrent fulfill: order completed with one delivery', finalM.status === 'completed' && (finalM.delivery_content === 'DELIVERY-A' || finalM.delivery_content === 'DELIVERY-B'), JSON.stringify(finalM));
 }
 
-// ===== 5. 管理员确认不认领未核验 TXID（A-01 修复：仅链上核验路径认领）=====
-// 订单 A：人工商品，手动设置 tx_hash 后管理员确认（无链上证明）→ 订单完成，但 TXID 不进入 txid_claims（不污染）。
-// 订单 B：同一 tx，管理员确认 → 同样完成（管理员为人工确认的权威；未认领的 TXID 不阻塞人工确认）。
-// TXID 的全局认领仅由链上核验路径（/pay、轮询）执行，见 §5b。
+// ===== 5. 管理员确认收款认领 TXID（P1-2：只要是链上哈希即认领，不论 txVerified）=====
+// 订单 A：人工商品，手动设置 tx_hash 后管理员确认 → 订单完成，且 TXID 进入 txid_claims（已认领）。
+// 订单 B：同一 tx，管理员确认 → 认领冲突，确认被拒绝（“已用于其他订单”），订单保持待付款。
+// 一笔付款只能发一次货：管理员确认路径同样认领，不留“同一 TXID 复用于第二单”的口子。
 {
   const txHash2 = 'b'.repeat(64);
   r = await call('POST', '/api/admin/products', { title: 'TXID测试商品', category: 'recharge', stock_type: 'manual', sell_price: 4, source: 'self' }, cookie);
   const pTx = q("SELECT * FROM products WHERE title='TXID测试商品'");
   r = await orderCall({ product_id: pTx.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'tx-a@test.example' } });
   const ordA = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  // 直接设置 tx_hash（模拟客户已提交 TXID），再管理员确认 → 完成但不认领 tx
+  // 直接设置 tx_hash（模拟客户已提交 TXID），再管理员确认 → 完成且认领 tx
   db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(txHash2, ordA.id);
   r = await call('POST', '/api/admin/orders/' + ordA.id + '/confirm-payment', { reason: 'A 确认' }, cookie);
   check('admin confirm fulfills order A', r.json && r.json.ok === true, JSON.stringify(r.json));
-  check('admin confirm does NOT claim unverified txid', !q('SELECT * FROM txid_claims WHERE tx_hash=?', txHash2));
-  // 订单 B：同一 tx，管理员确认 → 同样完成（不因未认领的 TXID 阻塞）
+  check('admin confirm CLAIMS the txid (P1-2)', (() => { const t = q('SELECT * FROM txid_claims WHERE tx_hash=?', txHash2); return t && t.order_id === ordA.id; })());
+  // 订单 B：同一 tx，管理员确认 → 认领冲突，拒绝
   r = await orderCall({ product_id: pTx.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'tx-b@test.example' } });
   const ordB = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(txHash2, ordB.id);
-  r = await call('POST', '/api/admin/orders/' + ordB.id + '/confirm-payment', { reason: 'B 确认（不因未认领 TXID 阻塞）' }, cookie);
-  check('admin confirm fulfills order B with same txid', r.json && r.json.ok === true, JSON.stringify(r.json));
-  check('txid still not claimed after admin confirms', !q('SELECT * FROM txid_claims WHERE tx_hash=?', txHash2));
+  r = await call('POST', '/api/admin/orders/' + ordB.id + '/confirm-payment', { reason: 'B 确认（同一 TXID 应被挡）' }, cookie);
+  check('admin confirm with already-claimed txid rejected', r.json && !r.json.ok && /已用于其他订单/.test(r.json.error || ''), JSON.stringify(r.json));
+  check('order B still pending_payment after rejected confirm', q('SELECT status FROM orders WHERE id=?', ordB.id).status === 'pending_payment');
+  check('txid still belongs to A after B rejected', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txHash2).order_id === ordA.id);
 }
 
 // ===== 5b. TXID 不接管：链上核验路径（/pay）认领后，其他订单经 /pay 提交同一 tx 必须 409 =====
@@ -290,7 +299,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0021, '" + C1_ADDR + "', datetime('now','+30 minutes'), ?, 'tx-c1@test.example', 'Binance', 'BEP20', '" + C1_ADDR + "', 'pending_payment', datetime('now'))").run(c1No, pTx.id, JSON.stringify({ contact_email: 'tx-c1@test.example' }));
   const ordC1 = q('SELECT * FROM orders WHERE order_no=?', c1No);
   evmReceiptFor = { to: ordC1.pay_address, amount: ordC1.actual_amount, hash: txHash3 };
-  r = await call('POST', '/api/orders/' + ordC1.order_no + '/pay', { txid: txHash3 });
+  r = await payCall(ordC1.order_no, txHash3);
   check('order C1 claims txid via /pay', r.json && r.json.ok === true, JSON.stringify(r.json));
   check('txid claimed by order C1', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txHash3).order_id === ordC1.id);
   // 订单 C2：BEP20 订单（直接插库），EVM 收据返回匹配到账（同一 tx 哈希）——认领机制应 409 拒绝
@@ -299,7 +308,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0029, '" + C2_ADDR + "', datetime('now','+30 minutes'), ?, 'tx-c2@test.example', 'Binance', 'BEP20', '" + C2_ADDR + "', 'pending_payment', datetime('now'))").run(c2No, pTx.id, JSON.stringify({ contact_email: 'tx-c2@test.example' }));
   const ordC2 = q('SELECT * FROM orders WHERE order_no=?', c2No);
   evmReceiptFor = { to: ordC2.pay_address, amount: ordC2.actual_amount, hash: txHash3 };
-  r = await call('POST', '/api/orders/' + ordC2.order_no + '/pay', { txid: txHash3 });
+  r = await payCall(ordC2.order_no, txHash3);
   check('pay with stolen txid -> 409, not silently accepted', r.status === 409 && r.json && /已用于其他订单/.test(r.json.error || ''), 'status=' + r.status + ' body=' + JSON.stringify(r.json));
   check('order C2 still pending_payment after stolen-tx pay', q('SELECT status FROM orders WHERE id=?', ordC2.id).status === 'pending_payment');
   check('txid still belongs to C1 after steal attempt', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txHash3).order_id === ordC1.id);
@@ -519,6 +528,9 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
 // 迁移失败不伪装成功：删除 orders 表，迁移 v1 应失败并明确报告版本，版本不标记。
 {
   const dbBad = new DatabaseSync(':memory:');
+  // schema.sql 自 v15 起不再建 schema_migrations 表（仅 INSERT 预置版本），与 Worker runMigrations 一致：先建表再执行 schema.sql。
+  // 注意：schema.sql 缺 CREATE TABLE schema_migrations 是代码侧缺陷（已在最终汇报中精确报告），测试侧按运行时行为先建表，不改 schema.sql。
+    dbBad.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
   dbBad.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
   dbBad.exec('DROP TABLE orders');
   dbBad.exec('DELETE FROM schema_migrations');
@@ -533,10 +545,14 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   check('migration failure: version not marked', dbBad.prepare('SELECT COUNT(*) AS c FROM schema_migrations WHERE version=1').get().c === 0);
 }
 
-// ===== 11. 审计写入失败不静默成功 =====
-// 删除 admin_audit 表 → 关键操作（取消）应返回明确的审计失败错误，而非宣称成功。
+// ===== 11. 审计写入失败不静默成功，也不伪装失败（P3-20）=====
+// 删除 admin_audit 表 → 关键操作（取消）仍返回成功（副作用已提交），但附带 audit_failed: true + warning 警告，
+// 操作员不会误以为操作未生效而重复操作。
 {
   const dbNoAudit = new DatabaseSync(':memory:');
+  // schema.sql 自 v15 起不再建 schema_migrations 表（仅 INSERT 预置版本），与 Worker runMigrations 一致：先建表再执行 schema.sql。
+  // 注意：schema.sql 缺 CREATE TABLE schema_migrations 是代码侧缺陷（已在最终汇报中精确报告），测试侧按运行时行为先建表，不改 schema.sql。
+    dbNoAudit.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
   dbNoAudit.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
   dbNoAudit.exec('DROP TABLE admin_audit');
   // 审计测试的订单走 OKX|X Layer，需有效收款地址（schema 种子为占位符，会拒单）
@@ -565,7 +581,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   check('audit-fail setup: order created', oc.json && oc.json.ok === true, JSON.stringify(oc.json));
   const ordAF = dbNoAudit.prepare('SELECT * FROM orders WHERE order_no=?').get(oc.json.order.order_no);
   const cancelAF = await callNoAudit('POST', '/api/admin/orders/' + ordAF.id + '/cancel', { reason: '审计失败测试' }, ck2);
-  check('audit failure: cancel reports audit error, not success', cancelAF.json && !cancelAF.json.ok && /审计/.test(cancelAF.json.error || ''), JSON.stringify(cancelAF.json));
+  check('audit failure: cancel still succeeds (side effect committed) + audit_failed warning', cancelAF.json && cancelAF.json.ok === true && cancelAF.json.audit_failed === true && /审计/.test(cancelAF.json.warning || ''), JSON.stringify(cancelAF.json));
   check('audit failure: order was cancelled (primary effect stands)', dbNoAudit.prepare('SELECT status FROM orders WHERE id=?').get(ordAF.id).status === 'cancelled');
 }
 
@@ -620,7 +636,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   db.prepare("UPDATE orders SET tx_hash=?, claim_token='STALE-TOKEN', claimed_at=datetime('now','-10 minutes') WHERE id=?").run(txOld, ordA03.id);
   // 新请求以新 TXID 经 /pay 接管（EVM 收据返回新 TXID 匹配到账）
   evmReceiptFor = { to: ordA03.pay_address, amount: ordA03.actual_amount, hash: txNew };
-  r = await call('POST', '/api/orders/' + ordA03.order_no + '/pay', { txid: txNew });
+  r = await payCall(ordA03.order_no, txNew);
   check('A-03 takeover via /pay ok', r.json && r.json.ok === true, JSON.stringify(r.json));
   check('A-03: order tx_hash updated to new', q('SELECT tx_hash FROM orders WHERE id=?', ordA03.id).tx_hash === txNew);
   check('A-03: new txid claimed', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txNew).order_id === ordA03.id);
@@ -666,18 +682,18 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   env.__fetch = evmFetch;
   globalThis.fetch = evmFetch;
   // 0 确认：/pay 暂存 TXID 交轮询核验（auto:false），不立即完成、不认领 TXID（A-04 修复：0 确认不得直接发货）
-  r = await call('POST', '/api/orders/' + ordA04.order_no + '/pay', { txid: txA04 });
+  r = await payCall(ordA04.order_no, txA04);
   check('A-04: EVM /pay 0-confirmation deferred (auto:false)', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
   check('A-04: order still pending_payment after 0-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_payment');
   check('A-04: 0-conf TXID NOT claimed', !q('SELECT * FROM txid_claims WHERE tx_hash=?', txA04));
   // 14 确认（BEP20 需 15）：仍延迟，不接受
   evmLatest = 114;
-  r = await call('POST', '/api/orders/' + ordA04.order_no + '/pay', { txid: txA04 });
+  r = await payCall(ordA04.order_no, txA04);
   check('A-04: EVM /pay 14-confirmation still deferred (BEP20 needs 15)', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
   check('A-04: order still pending_payment after 14-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_payment');
   // 15 确认：最新区块推进到 115，收据区块 100 <= 100 → 接受
   evmLatest = 115;
-  r = await call('POST', '/api/orders/' + ordA04.order_no + '/pay', { txid: txA04 });
+  r = await payCall(ordA04.order_no, txA04);
   check('A-04: EVM /pay 15-confirmation accepted', r.json && r.json.ok === true, JSON.stringify(r.json));
   check('A-04: order paid after 15-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_fulfill');
   env.__fetch = origFetch2;

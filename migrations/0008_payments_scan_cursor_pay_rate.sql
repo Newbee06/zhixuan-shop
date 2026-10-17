@@ -12,6 +12,8 @@
 -- 5. idx_orders_contact_pending：联系人去重部分唯一索引（仅待付款且 contact 非空）
 --
 -- 注意：若旧库已有重复待付款金额，建 idx_orders_amount_claim 会失败，迁移不标记版本，需先手动处理重复订单（见 docs/RELEASE_READINESS.md 预检）。
+-- v8 版本记录（与其他镜像口径一致，见 0007）。
+INSERT OR IGNORE INTO schema_migrations (version) VALUES (8);
 
 CREATE TABLE IF NOT EXISTS payments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

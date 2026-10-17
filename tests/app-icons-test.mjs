@@ -16,6 +16,9 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 const dir = path.dirname(fileURLToPath(import.meta.url)) + '/..';
 const db = new DatabaseSync(':memory:');
+// schema.sql 自 v15 起不再建 schema_migrations 表（仅 INSERT 预置版本），与 Worker runMigrations 一致：先建表再执行 schema.sql。
+// 注意：schema.sql 缺 CREATE TABLE schema_migrations 是代码侧缺陷（已在最终汇报中精确报告），测试侧按运行时行为先建表，不改 schema.sql。
+db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
 db.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
 function wrapStmt(sql) {
   let params = [];
@@ -162,6 +165,20 @@ check('frontend has data-app-icon rendering', html.includes('data-app-icon') && 
 check('frontend loads /api/app-icons', html.includes("/api/app-icons") && html.includes('loadAppIcons'));
 check('frontend theme toggle refreshes icons', html.includes('refreshAppIcons()') && html.includes('function toggleTheme'));
 check('frontend productImgHtml prefers app icon', html.includes('function productImgHtml') && html.includes('p.app_icon_key'));
+// P2-17：ac82de2 回归（未付款订单也显示密码输入框）：doQueryList 内密码输入分支不在
+// pending_payment 的 else if 链内（密码输入分支是独立 if，与 pending_payment 提示块解耦）。
+{
+  const dqStart = html.indexOf('async function doQueryList');
+  const dqEnd = html.indexOf('async function doQuerySecret', dqStart);
+  const dqSrc = dqStart !== -1 && dqEnd !== -1 ? html.slice(dqStart, dqEnd) : '';
+  const pwIdx = dqSrc.indexOf("if (o.credential_type === 'password')");
+  const ppIdx = dqSrc.indexOf("if (o.status === 'pending_payment')");
+  check('P2-17: doQueryList found', !!dqSrc);
+  check('P2-17: password input branch is a standalone if (not else if)', pwIdx !== -1 && !dqSrc.includes("else if (o.credential_type === 'password')"));
+  const between = (ppIdx !== -1 && pwIdx !== -1 && pwIdx > ppIdx) ? dqSrc.slice(ppIdx, pwIdx) : '';
+  check('P2-17: password branch NOT inside pending_payment else-if chain (pending_payment block closed before it, no else if between)', ppIdx !== -1 && pwIdx > ppIdx && !between.includes('else if') && between.includes('}'));
+  check('P2-17: password branch renders qpw-<order_no> input', dqSrc.includes("qpw-' + escH(o.order_no)") || dqSrc.includes('qpw-'));
+}
 check('dark mode: image containers not white (pcard-img/prod-img/detail-img-photo)', html.includes('html[data-theme="dark"] .pcard-img{background:#1c1c1e}') && html.includes('html[data-theme="dark"] .prod-img{background:#1c1c1e}') && html.includes('html[data-theme="dark"] .detail-img-photo{background:#1c1c1e}'));
 check('mobile product form full-bleed alignment (modal edges = input edges)', html.includes('modal-fullbleed') && html.includes("fullBleed: true") && html.includes('.modal-backdrop.modal-fullbleed .modal{padding-left:0;padding-right:0}'));
 check('modal cannot scroll horizontally (overflow-x:hidden; icon grid min-width:0)', html.includes('overflow-x:hidden') && html.includes('border-radius:12px;min-width:0;'));
@@ -255,6 +272,11 @@ r = await call('POST', '/api/orders/' + qfNo2 + '/secret', { password: 'secondpw
 check('query-flow: secret old password 401 after reset', r.status === 401, JSON.stringify(r.json));
 r = await call('POST', '/api/orders/' + qfNo2 + '/secret', { password: 'newpw456' });
 check('query-flow: secret new password returns card after reset', r.json && r.json.ok && r.json.delivery_content === 'TEST-CARD-789', JSON.stringify(r.json));
+// P3-40：/secret 门限顺序：5 次尝试后用正确密码调 /secret，仍应 429（门限先于密码校验）。
+// 第二单此前已用 2 次（旧密码 401 + 新密码成功各记 1 次），再补 3 次错误凑满 5 次，第 6 次正确密码 → 429。
+for (let i = 0; i < 3; i++) await call('POST', '/api/orders/' + qfNo2 + '/secret', { password: 'wrongpw' });
+r = await call('POST', '/api/orders/' + qfNo2 + '/secret', { password: 'newpw456' });
+check('P3-40: /secret correct password after 5 attempts -> 429 (gate before password check)', r.status === 429, JSON.stringify(r.json));
 check('query-flow: frontend checkout has query_password field', html.includes('id="query_password"') && html.includes('设置查询订单的密码'));
 check('query-flow: frontend query page is keyword+list flow', html.includes('id="qkeywords"') && html.includes('doQueryList()') && html.includes('doQuerySecret(') && html.includes('doQueryLegacy('));
 check('query-flow: frontend query page says email is not a credential', html.includes('邮箱不能作为查询凭证'));

@@ -12,6 +12,9 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 const dir = path.dirname(fileURLToPath(import.meta.url)) + '/..';
 const db = new DatabaseSync(':memory:');
+// schema.sql 自 v15 起不再建 schema_migrations 表（仅 INSERT 预置版本），与 Worker runMigrations 一致：先建表再执行 schema.sql。
+// 注意：schema.sql 缺 CREATE TABLE schema_migrations 是代码侧缺陷（已在最终汇报中精确报告），测试侧按运行时行为先建表，不改 schema.sql。
+db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
 db.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
 function wrapStmt(sql) {
   let params = [];
@@ -356,6 +359,10 @@ function resetEvm() { evmState.latestBlock = 10000; evmState.logs = []; evmState
   await runPoll();
   let oB = q('SELECT * FROM orders WHERE id=?', ordB.id);
   assert(oB.status === 'completed', '10b. B order paid at block 9950 (before A cursor) is found via B own cursor: ' + oB.status);
+  // P3-41：成功扫描后游标已推进（永不推进游标的 bug 会让本断言失败，仅浪费 RPC）。
+  // 注：10a 中扫描因游标已超前而正确跳过（付款走逐单路径），不在此处断言推进。
+  let curB = q("SELECT last_block FROM scan_cursors WHERE chain=?", 'X Layer|' + ADDR_NEW.toLowerCase());
+  assert(curB && Number(curB.last_block) > 9900, '10b/P3-41. cursor advanced after successful scan (before=9900, after=' + (curB && curB.last_block) + ')');
   setSetting('usdt_addresses', JSON.stringify({ 'OKX|X Layer': ADDR_OKX, 'Binance|BEP20': ADDR_BIN }));
 }
 // ===== 11. 历史订单及旧数据不被破坏 =====

@@ -1,5 +1,9 @@
 -- aisou-lite schema (SQLite / Cloudflare D1)
--- 表：products, cards, orders, settings, admin_meta, sessions
+-- 表：products, cards, orders, settings, admin_meta, sessions,
+--     upstream_orders, upstream_cache, captcha_codes, order_rate,
+--     admin_audit, login_attempts, txid_claims, lookup_rate,
+--     schema_migrations, payments, scan_cursors, pay_rate,
+--     app_icons, secret_attempts
 -- 全部 IF NOT EXISTS，可重复执行；不要在此文件放任何真实 secret / 密码。
 
 CREATE TABLE IF NOT EXISTS products (
@@ -20,6 +24,8 @@ CREATE TABLE IF NOT EXISTS products (
   form_fields TEXT NOT NULL DEFAULT '[]',
   image_emoji TEXT NOT NULL DEFAULT '🤖',
   image_data TEXT NOT NULL DEFAULT '',
+  -- v11：App 图标键（关联 app_icons.app_key；为空 = 未匹配图标，走默认 emoji）
+  app_icon_key TEXT NOT NULL DEFAULT '',
   sort INTEGER NOT NULL DEFAULT 0,
   is_active INTEGER NOT NULL DEFAULT 1,
   in_stock INTEGER NOT NULL DEFAULT 1,
@@ -52,6 +58,11 @@ CREATE TABLE IF NOT EXISTS orders (
   -- 查单凭证哈希：新订单下单时生成高强度凭证，只存 SHA-256 哈希，只在创建时返回一次；旧订单为空，走旧密码兼容路径
   -- 新订单 query_password 写空值（不再生成明文六位查询密码），字段保留兼容旧订单
   query_token_hash TEXT NOT NULL DEFAULT '',
+  -- v14：买家自设查询密码的哈希（v14 为 SHA-256；v15 起为 salt + PBKDF2，见 query_password_salt）。绝不存明文。
+  query_password_hash TEXT NOT NULL DEFAULT '',
+  -- v15：每订单随机 16 字节 salt（base64），与 query_password_hash（PBKDF2 100000 次）配对。
+  -- salt 为空 + hash 非空 = v14 遗留无 salt 哈希（仅管理员流程，不走 /secret）。
+  query_password_salt TEXT NOT NULL DEFAULT '',
   -- 订单认领：claim_token（认领者令牌）+ claimed_at（认领时间，租约起点）。认领后处理者崩溃，超租约可被接管恢复。
   claim_token TEXT NOT NULL DEFAULT '',
   claimed_at TEXT,
@@ -135,15 +146,14 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 INSERT OR IGNORE INTO settings (key, value) VALUES
   ('site_name', '智选'),
   ('announcement', '示例公告：本店仅售卖自有合法货源的虚拟商品 / 代充服务，虚拟商品一经交付不退换，下单前请仔细阅读商品说明。'),
-  ('order_notice', '1. 请妥善保存订单号与查单凭证（下单成功页只展示一次），凭订单号 + 查单凭证查询订单与交付内容。\n2. 卡密 / 账号交付数据仅保留 7 天，请及时保存，逾期自动清空不补。\n3. 成品号收到后请第一时间修改密码。\n4. 虚拟商品一经交付，不因密码被修改、个人操作失误等原因提供售后。\n5. 本站仅支持 USDT 付款，请按页面展示的收款地址付款并提交 TXID。'),
+  ('order_notice', '1. 请妥善保存订单号与查询密码，凭订单号 + 查询密码查询订单与交付内容。\n2. 卡密 / 账号交付数据仅保留 7 天，请及时保存，逾期自动清空不补。\n3. 成品号收到后请第一时间修改密码。\n4. 虚拟商品一经交付，不因密码被修改、个人操作失误等原因提供售后。\n5. 本站仅支持 USDT 付款，请按页面展示的收款地址付款并提交 TXID。'),
   ('tg_link', 'https://t.me/your_support'),
-  ('usdt_addresses', '{"Binance|X Layer":"0xYOUR_BINANCE_XLAYER_ADDRESS","Binance|TRC20":"TYOUR_BINANCE_TRC20_ADDRESS","Binance|ERC20":"0xYOUR_BINANCE_ERC20_ADDRESS","Binance|BEP20":"0xYOUR_BINANCE_BEP20_ADDRESS","OKX|X Layer":"0xYOUR_OKX_XLAYER_ADDRESS","OKX|TRC20":"TYOUR_OKX_TRC20_ADDRESS","OKX|ERC20":"0xYOUR_OKX_ERC20_ADDRESS","OKX|BEP20":"0xYOUR_OKX_BEP20_ADDRESS"}'),
+  ('usdt_addresses', '{"Binance|BEP20":"0xYOUR_BINANCE_BEP20_ADDRESS","OKX|X Layer":"0xYOUR_OKX_XLAYER_ADDRESS"}'),
   ('pay_tutorials', '{"Binance":"https://example.com/tutorial-binance","OKX":"https://example.com/tutorial-okx"}'),
-  ('binance_uid', ''),
   ('poll_enabled', '1'),
   ('poll_lock_minutes', '20'),
-  ('rpc_urls', '{"X Layer":["https://xlayerrpc.okx.com"],"ERC20":["https://eth.llamarpc.com","https://rpc.ankr.com/eth"],"BEP20":["https://bsc-dataseed.binance.org","https://bsc-dataseed1.defibit.io"]}'),
-  ('usdt_contracts', '{"X Layer":"0x779Ded0c9e1022225f8E0630b35a9b54bE713736","ERC20":"0xdAC17F958D2ee523a2206206994597C13D831ec7","BEP20":"0x55d398326f99059fF775485246999027B3197955","TRC20":"TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}'),
+  ('rpc_urls', '{"X Layer":["https://xlayerrpc.okx.com"],"BEP20":["https://bsc-dataseed.binance.org","https://bsc-dataseed1.defibit.io"]}'),
+  ('usdt_contracts', '{"X Layer":"0x779Ded0c9e1022225f8E0630b35a9b54bE713736","BEP20":"0x55d398326f99059fF775485246999027B3197955"}'),
   ('upstream_markup', '1.2'),
   ('upstream_fixed', '0'),
   ('prodseller_base_url', 'https://prodseller.com/v1'),
@@ -155,7 +165,7 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('prodseller_enabled', '0'),
   ('turnstile_enabled', '0'),
   ('turnstile_site_key', ''),
-  ('chain_confirmations', '{"X Layer":1,"ERC20":12,"BEP20":15,"TRC20":19}');
+  ('chain_confirmations', '{"X Layer":1,"BEP20":15}');
 
 -- 种子商品：4 个示例，价格/说明均为占位，请替换为自己真实商品/价格/收款地址
 INSERT OR IGNORE INTO products (slug, title, category, price_usdt, stock_type, description, notice, form_fields, image_emoji, sort, is_active) VALUES
@@ -217,7 +227,9 @@ CREATE TABLE IF NOT EXISTS lookup_rate (
 );
 CREATE INDEX IF NOT EXISTS idx_lookup_rate_ip ON lookup_rate(ip, created_at);
 
--- 数据库迁移版本：新库由 schema.sql 直接建到最新，预置全部版本；旧库由 Worker 的 runMigrations 按版本递进升级。
+-- 数据库迁移版本：schema.sql 只建结构（已含 v11–v15 的表/列），版本预置到 v10；
+-- v11–v15 迁移在 Worker 首次请求时幂等运行（v11 种子 58 张图标、v12/v13 暗版刷新、v14/v15 列/表）。
+-- 不要把预置版本改到 15：否则 v11 迁移被跳过，新库 app_icons 为空表，图标选择器无数据。
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -265,7 +277,31 @@ CREATE TABLE IF NOT EXISTS pay_rate (
 );
 CREATE INDEX IF NOT EXISTS idx_pay_rate_key ON pay_rate(key, created_at);
 
+-- v6 补：订单认领索引（MIGRATIONS v6；旧版 schema.sql 漏建，终态结构补齐）
+CREATE INDEX IF NOT EXISTS idx_orders_claim ON orders(claim_token);
+
+-- v11：App 图标库（明/暗两版，每 App 两行，前端随主题切换）。
+-- 种子图标数据在 src/worker.js 的 APP_ICON_SEED 中（base64 体积大，不重复进 schema.sql）；
+-- v11 迁移在旧库升级时插入种子；新库用本文件建库后 app_icons 为空表，由管理员/后续种子流程填充。
+CREATE TABLE IF NOT EXISTS app_icons (
+  app_key TEXT NOT NULL,
+  theme TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  image_data TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (app_key, theme)
+);
+
+-- v14：按单取卡密尝试记录（order_no + ip + 时间），防针对单订单的密码爆破；/secret 按单原子记数。
+CREATE TABLE IF NOT EXISTS secret_attempts (
+  order_no TEXT NOT NULL,
+  ip TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_secret_attempts_order ON secret_attempts(order_no, created_at);
+
+-- v15 无新增表/索引（仅 orders.query_password_salt 列，见 orders 建表语句）。
 -- 金额唯一性：部分唯一索引，仅约束待付款订单（过期未取消的仍占位，轮询自动取消后释放）。
+-- v9：条件排除 BinanceUID 订单（无链上地址且金额无随机尾数，纳入约束会误判金额冲突）。
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_amount_claim ON orders(pay_address, actual_amount) WHERE status = 'pending_payment' AND pay_method != 'BinanceUID';
 -- 同联系方式去重原子化：部分唯一索引，仅约束待付款且 contact 非空的订单。
 CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_contact_pending ON orders(contact, product_id) WHERE status = 'pending_payment' AND contact != '';

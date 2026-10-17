@@ -120,7 +120,7 @@ AI 会员 / 代充 / 成品号 / 卡密商城，单 Worker + 单 D1，Cloudflare
 - 单 Worker + 单 D1 + 2 个 cron，Cloudflare 免费版，无付费功能，无 npm 构建链（vanilla JS + CSS 内嵌）。
 - `src/worker.js`：API + 路由（import 前端 HTML，Text 规则，无构建）。
 - `src/frontend.html`：前端（iOS 气泡琉璃风格：毛玻璃 + 大圆角 + 柔和高光 + 浅色/深色跟随系统 + 手机端适配）。
-- `schema.sql`：`products / cards / orders / settings / admin_meta / sessions / upstream_orders / upstream_cache / captcha_codes / order_rate / admin_audit / login_attempts`（含 `orders.query_token_hash`、`cards.reserved_order_id / reserved_at`）。
+- `schema.sql`：`products / cards / orders / settings / admin_meta / sessions / upstream_orders / upstream_cache / captcha_codes / order_rate / admin_audit / login_attempts / txid_claims / lookup_rate / schema_migrations / payments / scan_cursors / pay_rate / app_icons / secret_attempts`（含 `orders.query_token_hash`、`cards.reserved_order_id / reserved_at`）。
 - 全部参数化查询，输入校验；PBKDF2 迭代 100000（Workers 生产 WebCrypto 上限，不要用 120000）。
 - ProdSeller / Resend 密钥只走 `wrangler secret`，绝不进代码 / 前端 / 日志。Resend 密钥已不再使用（邮件移除）。
 
@@ -246,7 +246,7 @@ npx wrangler deploy
 
 ## 数据库迁移（版本化，兼容旧库，幂等、非破坏性）
 
-新库直接用 `schema.sql` 建表（已含 v1–v7 字段与 `schema_migrations` 初始记录）；**旧库无需手动迁移**，Worker 首次请求时自动按版本顺序执行 `migrations/0001–0007`：
+新库直接用 `schema.sql` 建表（已含 v1–v15 结构，版本预置到 v10）；**旧库无需手动迁移**，Worker 首次请求时自动按版本顺序执行 `migrations/0001–0015`（v11–v15 幂等运行，v11 种子图标）：
 
 - v1：订单轮询字段（`query_token_hash` 等兼容列）。
 - v2：商品上游字段（`in_stock` 等）。
@@ -266,7 +266,7 @@ npx wrangler deploy
 2. 部署后第一次打开后台，用 `admin` 登录会强制改密（至少 8 位）；改密后旧会话全部作废。
 3. 旧订单（无 salt 哈希）仅走管理员流程：客户联系客服核实交付内容；新订单从部署后开始用查询密码。
 4. 部署前备份生产 D1（`wrangler d1 export` 或 CF 面板快照），以防回滚。
-5. 回滚方案：重新部署 main 分支的旧版 Worker 即可；旧库的 `query_token_hash` / `reserved_*` / `admin_audit` / `login_attempts` / `claim_token` / `claimed_at` / `exception_reason` / `refund_*` / `txid_claims` / `lookup_rate` / `upstream_lock` / `upstream_lock_expires_at` / `schema_migrations` 列和表可保留，旧版代码不读取它们，不影响旧版运行。
+5. 回滚方案：重新部署 main 分支的旧版 Worker 即可；旧库新增的列和表可保留（新增表：`upstream_orders` / `upstream_cache` / `captcha_codes` / `order_rate` / `admin_audit` / `login_attempts` / `txid_claims` / `lookup_rate` / `payments` / `scan_cursors` / `pay_rate` / `app_icons` / `secret_attempts`；新增列：`query_token_hash` / `query_password_hash` / `query_password_salt` / `reserved_*` / `claim_token` / `claimed_at` / `exception_reason` / `refund_*` / `upstream_lock` / `upstream_lock_expires_at` / `app_icon_key` / `schema_migrations`），旧版代码不读取它们，不影响旧版运行。**v8 唯一索引 caveat**：回滚后新库的 v8 唯一索引（`idx_orders_amount_claim` / `idx_orders_contact_pending`）仍会约束旧版下单——旧版无 INSERT 重试逻辑，高并发下金额/联系人冲突时旧版下单会直接报 500。回滚前确认无高并发下单场景，或先评估 DROP 索引（须先人工评估重复数据，见 `migrations/README.md`）。
 
 ## 目录
 
@@ -280,6 +280,6 @@ npx wrangler deploy
 - `tests/concurrency-test.mjs` — 并发 / 故障恢复 / 迁移专项测试（真并行 + 屏障，验最终 DB 状态）
 - `tests/browser-acceptance.mjs` — 浏览器验收（需 playwright-core + 本机 Chromium + 本地 wrangler dev，见文件头注释）
 - `tests/d1-local-test.sh` — Wrangler D1 本地环境迁移验证（仅 `--local`，不碰生产库）
-- `migrations/` — 版本化迁移 SQL（0001–0007）与说明
+- `migrations/` — 版本化迁移 SQL（0001–0015）与说明
 - `translations-zh.json / translations-zh.sql` — 上游商品中文标题/简介翻译（品牌名保留英文，链接/格式原样保留）
 - `README.md` — 本文件

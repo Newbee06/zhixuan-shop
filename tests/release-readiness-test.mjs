@@ -7,6 +7,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const db = new DatabaseSync(':memory:');
+// schema.sql 自 v15 起不再建 schema_migrations 表（仅 INSERT 预置版本），与 Worker runMigrations 一致：先建表再执行 schema.sql。
+// 注意：schema.sql 缺 CREATE TABLE schema_migrations 是代码侧缺陷（已在最终汇报中精确报告），测试侧按运行时行为先建表，不改 schema.sql。
+db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
 db.exec(fs.readFileSync(path.join(dir, '..', 'schema.sql'), 'utf8'));
 let pass = 0, fail = 0;
 function check(name, cond, extra) { if (cond) { pass++; console.log('PASS: ' + name); } else { fail++; console.log('FAIL: ' + name + (extra ? ' ' + String(extra).slice(0, 600) : '')); } }
@@ -128,6 +131,11 @@ async function orderCall(prod, contact, method, chain) {
   const cid = await newCaptcha();
   return call('POST', '/api/orders', { product_id: prod.id, quantity: 1, customer_fields: { contact_email: contact, delivery_email: contact }, contact, pay_method: method || 'Binance', pay_chain: chain || 'BEP20', query_password: 'rr-test-pw', captcha_id: cid, captcha_code: 'AB12' });
 }
+// /pay 自 P3-4 起须带图形验证码（captcha_id + captcha_code）：每次提交用新验证码。
+async function payCall(orderNo, txid) {
+  const cid = await newCaptcha();
+  return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12' });
+}
 
 // 历史 BEP20 订单（直接插库，不走 API）：账本测试（§1–§3）测的是 /pay 账本/去重/对账逻辑，与下单方式无关，故保留原断言。
 // 需预留一张卡（等价于下单时的 reserveCards），否则 /pay 履约时无卡可发。
@@ -155,7 +163,7 @@ function insertHistBEP20Order(orderNo, actualAmount, contact, cardCode) {
   // 模拟 BEP20 到账（金额精确匹配，20 确认 > 15 要求）
   pushEvmPaymentLogRR(BEP20_PAY_ADDR_RR, ord.actual_amount, 'a'.repeat(64));
   // /pay 提交 TXID（核验通过 → 自动发货 → posted）
-  r = await call('POST', '/api/orders/' + ord.order_no + '/pay', { txid: 'a'.repeat(64) });
+  r = await payCall(ord.order_no, 'a'.repeat(64));
   check('1. /pay verified -> auto', r.json && r.json.ok === true && r.json.auto === true, JSON.stringify(r.json));
   const pays = qa('SELECT * FROM payments WHERE order_id=?', ord.id);
   check('1. payment recorded (1 row)', pays.length === 1, JSON.stringify(pays));
@@ -184,7 +192,7 @@ function insertHistBEP20Order(orderNo, actualAmount, contact, cardCode) {
   check('3. order2 created', !!ord, JSON.stringify(ord));
   // 第一笔付款（BEP20）
   pushEvmPaymentLogRR(BEP20_PAY_ADDR_RR, ord.actual_amount, 'b'.repeat(64));
-  r = await call('POST', '/api/orders/' + ord.order_no + '/pay', { txid: 'b'.repeat(64) });
+  r = await payCall(ord.order_no, 'b'.repeat(64));
   check('3. first payment posted', r.json && r.json.ok === true && r.json.auto === true, JSON.stringify(r.json));
   // 第二笔付款（不同 TXID，同一订单）：模拟管理员手动记录的重复付款（订单已完成，/pay 拒绝，但账本可直接记入账外记录）
   db.prepare("INSERT INTO payments (order_id, chain, pay_address, tx_hash, event_key, amount, status, reconcile_status, reconcile_note) VALUES (?,?,?,?,?,?,?, ?, ?)").run(ord.id, 'BEP20', '0x2222222222222222222222222222222222222222', 'c'.repeat(64), '', Number(ord.actual_amount), 'mismatch', 'pending', '重复付款，需人工对账');
@@ -230,7 +238,7 @@ function insertHistBEP20Order(orderNo, actualAmount, contact, cardCode) {
   evmLatest = 1001; // 区块 1000 有转账，最新 1001 → X Layer 需 1 确认，满足
   // 触发轮询（经 /api/admin 上游重试入口不触发链上轮询；直接调 worker 的 scheduled 逻辑等价：用 /pay 触发逐单核验 + 全局扫描由轮询触发）
   // 这里用 /pay 提交 TXID 验证逐单路径，同时验证账本记入；全局扫描游标通过模拟两次轮询验证（见 5b）
-  r = await call('POST', '/api/orders/' + ord.order_no + '/pay', { txid: 'd'.repeat(64) });
+  r = await payCall(ord.order_no, 'd'.repeat(64));
   check('5. EVM /pay verified', r.json && r.json.ok === true, JSON.stringify(r.json));
   // 5b. 游标：直接写游标再读（持久化），RPC 失败时游标不推进（通过 scanEvmChain 的失败路径验证需调轮询；这里验证游标读写）
   db.prepare("INSERT OR REPLACE INTO scan_cursors (chain, last_block) VALUES ('X Layer', 500)").run();
@@ -315,7 +323,7 @@ db.prepare('DELETE FROM order_rate').run();
   // 5 次提交（均用不存在的 TXID，核验失败暂存）→ 第 6 次应 429
   let lastStatus = 0, lastJson = null;
   for (let i = 0; i < 6; i++) {
-    const rr = await call('POST', '/api/orders/' + ord.order_no + '/pay', { txid: 'e'.repeat(60) + String(i) });
+    const rr = await payCall(ord.order_no, 'e'.repeat(60) + String(i));
     lastStatus = rr.status; lastJson = rr.json;
   }
   check('10. 6th /pay -> 429', lastStatus === 429 && lastJson && !lastJson.ok, JSON.stringify(lastJson));
@@ -327,6 +335,9 @@ db.prepare('DELETE FROM order_rate').run();
 {
   // 独立损坏库：删 orders 表 → 迁移 v1 的 ALTER 失败 → 500。主测试库不受影响。
   const dbBad = new DatabaseSync(':memory:');
+  // schema.sql 自 v15 起不再建 schema_migrations 表（仅 INSERT 预置版本），与 Worker runMigrations 一致：先建表再执行 schema.sql。
+  // 注意：schema.sql 缺 CREATE TABLE schema_migrations 是代码侧缺陷（已在最终汇报中精确报告），测试侧按运行时行为先建表，不改 schema.sql。
+    dbBad.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
   dbBad.exec(fs.readFileSync(path.join(dir, '..', 'schema.sql'), 'utf8'));
   dbBad.exec('DROP TABLE orders');
   const envBad = { DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbBad.prepare(sql); const r = st.get(...params); return r === undefined ? null : r; } catch (e) { throw e; } }, async all() { const st = dbBad.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbBad.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; } }; return api; }, async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } } };
@@ -370,8 +381,8 @@ db.prepare('DELETE FROM order_rate').run();
   check('14. order created', !!ord, JSON.stringify(ord));
   pushEvmPaymentLogRR(BEP20_PAY_ADDR_RR, ord.actual_amount, 'f'.repeat(64));
   const [p1, p2] = await Promise.all([
-    call('POST', '/api/orders/' + ord.order_no + '/pay', { txid: 'f'.repeat(64) }),
-    call('POST', '/api/orders/' + ord.order_no + '/pay', { txid: 'f'.repeat(64) }),
+    payCall(ord.order_no, 'f'.repeat(64)),
+    payCall(ord.order_no, 'f'.repeat(64)),
   ]);
   // 至少一个成功，订单只完成一次，付款记录只有一行（同一事件）
   const pays = qa('SELECT * FROM payments WHERE tx_hash=?', 'f'.repeat(64));
@@ -387,6 +398,9 @@ db.prepare('DELETE FROM order_rate').run();
   // 构造 v8 旧库：旧版金额唯一索引（未排除 BinanceUID）+ schema_migrations 1-8（仅 v9 待应用）
   // + 一笔待付款 BinanceUID 订单（pay_address=''、actual_amount=10）。
   const dbV9 = new DatabaseSync(':memory:');
+  // schema.sql 自 v15 起不再建 schema_migrations 表（仅 INSERT 预置版本），与 Worker runMigrations 一致：先建表再执行 schema.sql。
+  // 注意：schema.sql 缺 CREATE TABLE schema_migrations 是代码侧缺陷（已在最终汇报中精确报告），测试侧按运行时行为先建表，不改 schema.sql。
+    dbV9.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
   dbV9.exec(fs.readFileSync(path.join(dir, '..', 'schema.sql'), 'utf8'));
   dbV9.exec('DROP INDEX IF EXISTS idx_orders_amount_claim');
   dbV9.exec("CREATE UNIQUE INDEX idx_orders_amount_claim ON orders(pay_address, actual_amount) WHERE status = 'pending_payment'");

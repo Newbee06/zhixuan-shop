@@ -21,6 +21,10 @@ PYTHONPATH=/opt/muse/skills/custom-connector-setup/bin python3 ~/workspace/custo
 - 部署不跑 `schema.sql`，迁移靠请求触发（Worker 首次请求自动迁移）。
 - 部署后验证：`/api/config` 200、首页 200、schema-check `up_to_date: true`。
 
+## 生产部署（不在本文档授权范围内）
+
+生产部署须用户明确授权后另行执行，不在本文档授权范围内；本文档只覆盖 staging 部署、常用操作与回滚说明。
+
 ## 常用操作
 
 | 操作 | 方法 |
@@ -47,7 +51,9 @@ PYTHONPATH=/opt/muse/skills/custom-connector-setup/bin python3 ~/workspace/custo
 
 ## 回滚
 
-重新部署 main 分支的旧版 Worker 即可。旧库新增的列和表（`query_password_hash` / `query_password_salt` / `reserved_*` / `admin_audit` / `login_attempts` / `claim_token` / `claimed_at` / `exception_reason` / `refund_*` / `txid_claims` / `lookup_rate` / `upstream_lock` / `schema_migrations`）可保留，旧版代码不读取它们，不影响旧版运行。回滚前备份 D1。
+重新部署 main 分支的旧版 Worker 即可。旧库新增的列和表（新增表：`upstream_orders` / `upstream_cache` / `captcha_codes` / `order_rate` / `admin_audit` / `login_attempts` / `txid_claims` / `lookup_rate` / `payments` / `scan_cursors` / `pay_rate` / `app_icons` / `secret_attempts`；新增列：`query_token_hash` / `query_password_hash` / `query_password_salt` / `reserved_*` / `claim_token` / `claimed_at` / `exception_reason` / `refund_*` / `upstream_lock` / `upstream_lock_expires_at` / `app_icon_key` / `schema_migrations`）可保留，旧版代码不读取它们，不影响旧版运行。回滚前备份 D1。
+
+**v8 唯一索引 caveat**：回滚后新库的 v8 唯一索引（`idx_orders_amount_claim` / `idx_orders_contact_pending`）仍会约束旧版下单——旧版无 INSERT 重试逻辑，高并发下金额/联系人冲突时旧版下单会直接报 500。回滚前确认无高并发下单场景，或先评估 DROP 索引（须先人工评估重复数据，见 `migrations/README.md`）。
 
 ## 数据保留
 

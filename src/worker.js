@@ -111,7 +111,7 @@ function randomHex(n) {
 }
 function genOrderNo() {
   var t = Date.now().toString(36).toUpperCase();
-  var r = randomHex(3).toUpperCase();
+  var r = randomHex(8).toUpperCase();
   return 'AIS' + t + r;
 }
 // genQueryPassword 已删除：新订单不再生成明文六位查询密码（query_password 写空值），旧订单兼容路径保留。
@@ -127,6 +127,16 @@ async function sha256Hex(s){
   var bytes = new Uint8Array(buf); var out = '';
   for (var i = 0; i < bytes.length; i++) out += ('0' + bytes[i].toString(16)).slice(-2);
   return out;
+}
+// 恒定时间比较（P3-13）：比较哈希/口令时不因首个不同字节位置泄露信息；长度不同时仍走满循环。
+function timingSafeEqual(a, b) {
+  var x = String(a == null ? '' : a), y = String(b == null ? '' : b);
+  var xb = new TextEncoder().encode(x), yb = new TextEncoder().encode(y);
+  if (xb.length === 0 && yb.length === 0) return true;
+  var n = Math.max(xb.length, yb.length);
+  var diff = xb.length ^ yb.length;
+  for (var i = 0; i < n; i++) diff |= ((i < xb.length ? xb[i] : 0) ^ (i < yb.length ? yb[i] : 0));
+  return diff === 0;
 }
 function randBelow(n){ var b = new Uint8Array(1); crypto.getRandomValues(b); return b[0] % n; }
 function genCaptchaSVG(code){
@@ -210,7 +220,16 @@ async function addColumnIfMissing(env, table, colDef) {
   var info = await env.DB.prepare('PRAGMA table_info(' + table + ')').all();
   var exists = false;
   (info.results || []).forEach(function (r) { if (r.name === colName) exists = true; });
-  if (!exists) await env.DB.prepare('ALTER TABLE ' + table + ' ADD COLUMN ' + colDef).run();
+  if (exists) return;
+  try {
+    await env.DB.prepare('ALTER TABLE ' + table + ' ADD COLUMN ' + colDef).run();
+  } catch (e) {
+    // P3-28：并发首次迁移时两方同时 ALTER 会报 duplicate column；重查一次，列已存在则忽略，否则原错上抛。
+    var info2 = await env.DB.prepare('PRAGMA table_info(' + table + ')').all();
+    var exists2 = false;
+    (info2.results || []).forEach(function (r) { if (r.name === colName) exists2 = true; });
+    if (!exists2) throw e;
+  }
 }
 async function createTableIfMissing(env, sql) { await env.DB.prepare(sql).run(); }
 async function createIndexIfMissing(env, sql) { await env.DB.prepare(sql).run(); }
@@ -577,9 +596,19 @@ async function updatePayment(env, paymentId, fields) {
 async function getPaymentByEvent(env, chain, txHash, eventKey) {
   return await env.DB.prepare('SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(chain || '', txHash || '', eventKey || '').first().catch(function () { return null; });
 }
-async function getRequiredConfirmations(env, chain) {
+async function getRequiredConfirmations(env, chain, orderAmount) {
+  // P3-15：大额订单分级确认数（仅 X Layer）。订单金额 >= large_order_usdt（默认 100）时用
+  // large_order_confirmations（默认 12）；BEP20 始终走原有口径（默认 15），不分级。
+  // settings 覆盖：chain_confirmations 显式值仍优先于默认值，但大额分级优先于 chain_confirmations（大额安全优先）。
   try {
     var settings = await getAllSettings(env);
+    if (chain === 'X Layer' && orderAmount != null && isFinite(Number(orderAmount))) {
+      var threshold = Number(settings.large_order_usdt);
+      if (!isFinite(threshold) || threshold <= 0) threshold = 100;
+      var largeConf = Number(settings.large_order_confirmations);
+      if (!isFinite(largeConf) || largeConf < 1) largeConf = 12;
+      if (Number(orderAmount) >= threshold) return Math.floor(largeConf);
+    }
     var map = parseJsonSafe(settings.chain_confirmations, {});
     var v = Number(map[chain]);
     if (isFinite(v) && v >= 1) return Math.floor(v);
@@ -604,11 +633,12 @@ async function checkPayRateLimit(env, req, orderNo) {
     var ip = getClientIp(req);
     var winStart = new Date(Date.now() - PAY_RATE_WINDOW_MS).toISOString().replace('T', ' ').slice(0, 19);
     await env.DB.prepare('DELETE FROM pay_rate WHERE created_at < ?').bind(winStart).run().catch(function () {});
-    var oc = await env.DB.prepare('SELECT COUNT(*) as n FROM pay_rate WHERE key = ?').bind('order:' + orderNo).first();
-    if (oc && Number(oc.n) >= PAY_RATE_PER_ORDER) return '该订单提交 TXID 过于频繁，请稍后再试（后台轮询仍会继续核验）';
-    var ic = await env.DB.prepare('SELECT COUNT(*) as n FROM pay_rate WHERE key = ?').bind('ip:' + ip).first();
-    if (ic && Number(ic.n) >= PAY_RATE_PER_IP) return '提交过于频繁，请稍后再试';
-    await env.DB.prepare('INSERT INTO pay_rate (key, created_at) VALUES (?, ?), (?, ?)').bind('order:' + orderNo, nowISO(), 'ip:' + ip, nowISO()).run().catch(function () {});
+    // P3-5：原子记数（INSERT…SELECT…WHERE count < N，同 /secret 模式），消除先查后插的 TOCTOU 超限窗口。
+    // 先记订单维：超限则拒绝，不再记 IP 维；再记 IP 维：超限则拒绝（订单维已记一条，偏保守）。
+    var oi = await env.DB.prepare('INSERT INTO pay_rate (key, created_at) SELECT ?, ? WHERE (SELECT COUNT(*) FROM pay_rate WHERE key = ?) < ?').bind('order:' + orderNo, nowISO(), 'order:' + orderNo, PAY_RATE_PER_ORDER).run().catch(function () { return null; });
+    if (!oi || !oi.meta || oi.meta.changes !== 1) return '该订单提交 TXID 过于频繁，请稍后再试（后台轮询仍会继续核验）';
+    var ii = await env.DB.prepare('INSERT INTO pay_rate (key, created_at) SELECT ?, ? WHERE (SELECT COUNT(*) FROM pay_rate WHERE key = ?) < ?').bind('ip:' + ip, nowISO(), 'ip:' + ip, PAY_RATE_PER_IP).run().catch(function () { return null; });
+    if (!ii || !ii.meta || ii.meta.changes !== 1) return '提交过于频繁，请稍后再试';
     return null;
   } catch (e) { return null; }
 }
@@ -625,6 +655,9 @@ async function checkLoginGlobalRateLimit(env) {
     if (win && Date.now() - win > LOGIN_GLOBAL_WINDOW_MS) { cnt = 0; }
     if (cnt >= LOGIN_GLOBAL_MAX_FAIL) {
       await setAdminMeta(env, 'login_global_blocked_until', new Date(Date.now() + LOGIN_GLOBAL_BLOCK_MS).toISOString().replace('T', ' ').slice(0, 19));
+      // P2-7：锁定触发时失败计数清零，锁满即解锁，不延长（窗口计数不跨锁延续，避免锁定被反复延长至 ~15 分钟）。
+      await setAdminMeta(env, 'login_global_fail_count', '0');
+      await setAdminMeta(env, 'login_global_fail_window', String(Date.now()));
       return '登录尝试过多，全站登录已临时锁定，请 5 分钟后再试';
     }
     return null;
@@ -801,6 +834,9 @@ async function prodsellerFetch(env, settings, path, opts) {
   return { status: res.status, ok: res.ok, data: data, text: text };
 }
 async function prodsellerCreateOrder(env, settings, order, product, customerFields) {
+  // P1-1：门禁单点。所有调用方（fulfillAfterPayment、pollUpstreamActivations、管理员重试）都经此入口，
+  // 门禁关闭时一律不发起真实采购；调用方按 403/pending_upstream 处理，不重复下单。
+  if (String((settings && settings.prodseller_enabled) || '0') !== '1') return { status: 403, ok: false, data: null, text: '', error: '上游门禁关闭（prodseller_enabled != 1），未发起真实采购' };
   // 履约调用限流（第四轮 P0）：与同步共享 300/15min 计数。超限返回 429 语义，调用方按 pending_upstream + 下次轮询重试，
   // 不得因限流而误判为上游失败或重复采购。
   if (!(await checkUpstreamRateLimit(env))) return { status: 429, ok: false, data: null, text: '', error: '上游调用限流（300/15min），下次轮询重试' };
@@ -820,6 +856,61 @@ function upstreamStatusOf(data) {
   if (!data) return '';
   return String(data.status || data.state || '');
 }
+// P1-4：上游终态失败枚举（ProdSeller 连接器文档仅明确 paid → delivered；终态失败按审查报告口径
+// 取 cancelled/failed/expired/refunded，另含 canceled 美式拼写）。命中即停止轮询、转异常，不再重试。
+var UPSTREAM_TERMINAL_FAILURES = ['cancelled', 'canceled', 'failed', 'expired', 'refunded'];
+function isUpstreamTerminalFailure(st) { return UPSTREAM_TERMINAL_FAILURES.indexOf(String(st || '').toLowerCase()) !== -1; }
+// P1-10：delivered keys 行数（按换行拆分、去空行），完成前必须 >= 订单 quantity。
+function countDeliveredKeys(keys) {
+  if (!keys) return 0;
+  return String(keys).split('\n').map(function (s) { return s.trim(); }).filter(function (s) { return s.length > 0; }).length;
+}
+// P2-11：履约失败中的终态拒绝（不应阻塞扫描游标）。以代码中实际拒绝文案为准：
+// claimTxid 冲突“已用于其他订单”、订单已终态“订单已被处理”/“当前状态不可发货”。
+function isTerminalFulfillRejection(reason) {
+  var r = String(reason || '');
+  return r.indexOf('已用于其他订单') !== -1 || r.indexOf('订单已被处理') !== -1 || r.indexOf('当前状态不可发货') !== -1;
+}
+// P1-4：上游终态失败统一处理：转 refund_pending（停止轮询）+ exception_reason/admin_note 记录
+// 上游单号与状态 + 审计。调用方传入租约守卫（poll 用 upstream_lock，fulfill 用 claim_token）。
+async function applyUpstreamTerminalFailure(env, orderId, psId, st, whereSql, whereBinds) {
+  var msg = '上游订单终态失败（状态 ' + st + '，上游单号 ' + (psId || '无') + '），已停止轮询，转异常待退款处理';
+  var beforeRow = await env.DB.prepare('SELECT status FROM orders WHERE id = ?').bind(orderId).first().catch(function () { return null; });
+  var binds = [msg, msg, orderId].concat(whereBinds || []);
+  var stmt = env.DB.prepare("UPDATE orders SET status='refund_pending', refund_status='pending', exception_reason=?, admin_note=? WHERE id=? AND " + whereSql);
+  var upd2 = await stmt.bind.apply(stmt, binds).run();
+  if (upd2.meta && upd2.meta.changes === 1) {
+    await logAudit(env, orderId, 'upstream_terminal_failure', (beforeRow && beforeRow.status) || '', 'refund_pending', msg);
+    return { ok: true };
+  }
+  return { ok: false, reason: '订单已被其他操作处理' };
+}
+async function getLatestUpstream(env, orderId) {
+  try { return await env.DB.prepare('SELECT * FROM upstream_orders WHERE order_id = ? ORDER BY id DESC LIMIT 1').bind(orderId).first(); } catch (e) { return null; }
+}
+// P2-10/P2-15/P3-25：上游轮询失败状态（存 upstream_cache，key='upstream_fail:<orderId>'，不新增表/列）。
+// payload: {count, nextRetryAt(ms), lastError}。退避：2/4/8/16/30/30…分钟；成功后清零。
+async function getUpstreamFailState(env, orderId) {
+  try {
+    var row = await env.DB.prepare('SELECT payload FROM upstream_cache WHERE key = ?').bind('upstream_fail:' + orderId).first();
+    if (!row) return { count: 0, nextRetryAt: 0, lastError: '' };
+    var p = parseJsonSafe(row.payload || '{}', {});
+    return { count: Number(p.count) || 0, nextRetryAt: Number(p.nextRetryAt) || 0, lastError: String(p.lastError || '') };
+  } catch (e) { return { count: 0, nextRetryAt: 0, lastError: '' }; }
+}
+async function recordUpstreamFail(env, orderId, errorText) {
+  var st = await getUpstreamFailState(env, orderId);
+  var count = st.count + 1;
+  var delayMin = Math.min(Math.pow(2, count), 30);
+  var nextRetryAt = Date.now() + delayMin * 60000;
+  try {
+    await env.DB.prepare('INSERT INTO upstream_cache (key, payload, fetched_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, fetched_at = excluded.fetched_at').bind('upstream_fail:' + orderId, JSON.stringify({ count: count, nextRetryAt: nextRetryAt, lastError: String(errorText || '').slice(0, 200) }), nowISO()).run();
+  } catch (e) {}
+  return { count: count, nextRetryAt: nextRetryAt, delayMin: delayMin };
+}
+async function clearUpstreamFail(env, orderId) {
+  try { await env.DB.prepare('DELETE FROM upstream_cache WHERE key = ?').bind('upstream_fail:' + orderId).run(); } catch (e) {}
+}
 function upstreamKeysOf(data) {
   if (!data) return '';
   var k = data.deliveredKey || data.delivered_key || data.key || data.code || '';
@@ -830,13 +921,24 @@ function upstreamKeysOf(data) {
 }
 function upstreamAmountOf(data) { if (!data) return 0; return Number(data.amount || data.total || data.price || 0) || 0; }
 function upstreamDiscountOf(data) { if (!data) return 0; return Number(data.discount || 0) || 0; }
-async function upsertUpstreamOrder(env, orderId, psId, status, amount, keys) {
+async function upsertUpstreamOrder(env, orderId, psId, status, amount, keys, opts) {
   // SQLite UPSERT（ON CONFLICT）：单条语句原子写入，并发下不会产生重复行。
   // 依赖迁移 v7 的唯一索引 idx_upstream_orders_order_unique（upstream_orders.order_id 唯一）。
   // 空值保护（第四轮 P0）：已有非空上游订单号 / 已交付 keys 时，空字符串不得覆盖。
   // 原因：占位行（insufficient_balance / upstream_error 等）传入空 psId；若无条件覆盖，会把已成功的上游单号抹掉，
   // 导致后续轮询误判为“无上游单号”而重复创建采购。状态与金额仍可更新（状态流转是正常业务）。
+  // P2-13：租约条件写入。opts.claimToken（fulfillAfterPayment 的订单认领）或 opts.upstreamLock
+  // （pollUpstreamActivations 的上游轮询租约）任一传入时，先校验订单行仍持有该租约；租约已失
+  // （被接管/已完成）则放弃写入，避免过期处理者覆盖新处理者的上游单号/状态/keys。
+  opts = opts || {};
+  if (opts.claimToken || opts.upstreamLock) {
+    var leaseRow = await env.DB.prepare('SELECT claim_token, upstream_lock FROM orders WHERE id = ?').bind(orderId).first().catch(function () { return null; });
+    if (!leaseRow) return { ok: false, reason: 'lease_check_failed' };
+    if (opts.claimToken && String(leaseRow.claim_token || '') !== String(opts.claimToken)) return { ok: false, reason: 'lease_lost' };
+    if (opts.upstreamLock && String(leaseRow.upstream_lock || '') !== String(opts.upstreamLock)) return { ok: false, reason: 'lease_lost' };
+  }
   await env.DB.prepare('INSERT INTO upstream_orders (order_id, prodseller_order_id, status, amount, delivered_keys) VALUES (?, ?, ?, ?, ?) ON CONFLICT(order_id) DO UPDATE SET prodseller_order_id=CASE WHEN excluded.prodseller_order_id = \'\' THEN upstream_orders.prodseller_order_id ELSE excluded.prodseller_order_id END, status=excluded.status, amount=excluded.amount, delivered_keys=CASE WHEN excluded.delivered_keys = \'\' THEN upstream_orders.delivered_keys ELSE excluded.delivered_keys END').bind(orderId, psId || '', status || '', Number(amount) || 0, keys || '').run();
+  return { ok: true };
 }
 // ---- Resend 邮件（Workers 用 fetch，不用 SMTP）----
 async function sendEmail(env, to, subject, html) {
@@ -880,16 +982,49 @@ function deliverWithCtx(ctx, promise) {
   // 无 ctx（测试/手动路径）时等待完成，保证邮件失败可记录且不阻塞发货主流程（调用方已 catch）
   return promise.catch(function () {});
 }
+// P2-15：超期升级（告警，不改状态、不自动退款）：pending_activation 超 2 小时未 delivered、
+// pending_upstream 失败重试超 10 次时，写 exception_reason + admin_note + 审计告警，轮询继续。
+// 仅升级一次（admin_note 已含升级标记时跳过）；持有有效上游租约的订单跳过，避免与处理者竞态。
+async function escalateStaleUpstreamOrders(env) {
+  try {
+    var stale = await env.DB.prepare("SELECT * FROM orders WHERE status = 'pending_activation' AND COALESCE(paid_at, created_at) < datetime('now', '-2 hours') AND (upstream_lock IS NULL OR upstream_lock = '' OR upstream_lock_expires_at IS NULL OR upstream_lock_expires_at < datetime('now'))").all();
+    for (var i = 0; i < ((stale.results || []).length); i++) {
+      var o = stale.results[i];
+      if (String(o.admin_note || '').indexOf('已升级告警') !== -1) continue;
+      var msg = '上游激活超时（pending_activation 超过 2 小时未 delivered），已升级告警，请人工核查上游订单';
+      await env.DB.prepare("UPDATE orders SET exception_reason=?, admin_note=? WHERE id=? AND status='pending_activation'").bind(msg, (o.admin_note ? o.admin_note + '；' : '') + msg + '（已升级告警）', o.id).run();
+      await logAudit(env, o.id, 'upstream_escalation', 'pending_activation', 'pending_activation', msg);
+    }
+    var stuck = await env.DB.prepare("SELECT * FROM orders WHERE status = 'pending_upstream' AND (upstream_lock IS NULL OR upstream_lock = '' OR upstream_lock_expires_at IS NULL OR upstream_lock_expires_at < datetime('now'))").all();
+    for (var j = 0; j < ((stuck.results || []).length); j++) {
+      var o2 = stuck.results[j];
+      if (String(o2.admin_note || '').indexOf('已升级告警') !== -1) continue;
+      var fs = await getUpstreamFailState(env, o2.id);
+      if (fs.count < 10) continue;
+      var msg2 = '上游创建/轮询失败已达 ' + fs.count + ' 次（pending_upstream），已升级告警，请人工核查上游订单';
+      await env.DB.prepare("UPDATE orders SET exception_reason=?, admin_note=? WHERE id=? AND status='pending_upstream'").bind(msg2, (o2.admin_note ? o2.admin_note + '；' : '') + msg2 + '（已升级告警）', o2.id).run();
+      await logAudit(env, o2.id, 'upstream_escalation', 'pending_upstream', 'pending_upstream', msg2);
+    }
+  } catch (e) {}
+}
 async function pollUpstreamActivations(env, ctx, opts) {
   // opts.orderId：管理员重试单笔订单时只处理该订单（避免误处理其他订单）；Cron 不传，处理全部待处理订单。
   var onlyOrderId = opts && opts.orderId ? Number(opts.orderId) : 0;
   var settings = await getAllSettings(env);
   var out = { checked: 0, delivered: 0, retried: 0, still_pending: 0 };
+  // P2-15：每轮先做超期升级（告警），再处理队列。
+  await escalateStaleUpstreamOrders(env);
   var rows;
   if (onlyOrderId) {
     rows = await env.DB.prepare("SELECT * FROM orders WHERE id = ? AND status IN ('pending_activation','pending_upstream') ORDER BY id ASC LIMIT 1").bind(onlyOrderId).all();
   } else {
-    rows = await env.DB.prepare("SELECT * FROM orders WHERE status IN ('pending_activation','pending_upstream') ORDER BY id ASC LIMIT 100").all();
+    // P2-10：退避中的订单（失败计数 + nextRetryAt 未到）不占轮询名额；显式单笔重试（onlyOrderId）绕过退避。
+    // json_extract 失败时（如旧 SQLite）回退到无过滤查询，轮询不因此中断。
+    try {
+      rows = await env.DB.prepare("SELECT * FROM orders WHERE status IN ('pending_activation','pending_upstream') AND NOT EXISTS (SELECT 1 FROM upstream_cache WHERE key = 'upstream_fail:' || orders.id AND CAST(json_extract(payload, '$.nextRetryAt') AS INTEGER) > ?) ORDER BY id ASC LIMIT 100").bind(Date.now()).all();
+    } catch (e) {
+      rows = await env.DB.prepare("SELECT * FROM orders WHERE status IN ('pending_activation','pending_upstream') ORDER BY id ASC LIMIT 100").all();
+    }
   }
   var list = rows.results || [];
   for (var i = 0; i < list.length; i++) {
@@ -907,29 +1042,56 @@ async function pollUpstreamActivations(env, ctx, opts) {
       out.checked++;
       var up = await env.DB.prepare('SELECT * FROM upstream_orders WHERE order_id = ? ORDER BY id DESC LIMIT 1').bind(o.id).first();
       var psId = up ? up.prodseller_order_id : '';
+      // P1-11：已标记 no_psid_awaiting_manual 的订单（创建成功但响应无单号）绝不再次创建，等人工处理。
+      if (!psId && up && up.status === 'no_psid_awaiting_manual') { out.still_pending++; continue; }
       // pending_upstream 且尚无上游单号（402/429/500 后）：重试下单（Idempotency-Key=order_no 防重复扣费）
       if (!psId) {
         var cf0 = {}; try { cf0 = JSON.parse(o.customer_fields || '{}'); } catch (e) { cf0 = {}; }
         var cr = await prodsellerCreateOrder(env, settings, o, prod, cf0);
-        if (cr.status === 402) { await env.DB.prepare('UPDATE orders SET admin_note=? WHERE id=?').bind('上游余额不足（402），待充值后重试，不发货', o.id).run(); out.still_pending++; continue; }
-        if (cr.status === 409) { await env.DB.prepare('UPDATE orders SET admin_note=? WHERE id=?').bind('上游缺货（409），已转人工', o.id).run(); out.still_pending++; continue; }
-        if (cr.status === 429 || cr.status >= 500 || !cr.ok) { await env.DB.prepare('UPDATE orders SET admin_note=? WHERE id=?').bind('上游重试失败 HTTP ' + cr.status + '，下次轮询继续重试', o.id).run(); out.still_pending++; continue; }
+        // P1-1：门禁关闭（403）不重试、不记失败，仅更新备注等人工开闸。
+        if (cr.status === 403) { await env.DB.prepare('UPDATE orders SET admin_note=? WHERE id=? AND upstream_lock=?').bind('上游门禁关闭（prodseller_enabled != 1），未发起真实采购，等待人工处理', o.id, lockToken).run(); out.still_pending++; continue; }
+        if (cr.status === 402) { var f402 = await recordUpstreamFail(env, o.id, '上游余额不足 402'); await env.DB.prepare('UPDATE orders SET admin_note=? WHERE id=? AND upstream_lock=?').bind('上游余额不足（402），待充值后重试，不发货（轮询失败 ' + f402.count + ' 次，下次重试约 ' + f402.delayMin + ' 分钟后）', o.id, lockToken).run(); out.still_pending++; continue; }
+        if (cr.status === 409) { var f409 = await recordUpstreamFail(env, o.id, '上游缺货 409'); await env.DB.prepare('UPDATE orders SET admin_note=? WHERE id=? AND upstream_lock=?').bind('上游缺货（409），已转人工（轮询失败 ' + f409.count + ' 次）', o.id, lockToken).run(); out.still_pending++; continue; }
+        if (cr.status === 429 || cr.status >= 500 || !cr.ok) { var fErr = await recordUpstreamFail(env, o.id, '上游重试失败 HTTP ' + cr.status); await env.DB.prepare('UPDATE orders SET admin_note=? WHERE id=? AND upstream_lock=?').bind('上游重试失败 HTTP ' + cr.status + '，下次轮询继续重试（轮询失败 ' + fErr.count + ' 次，下次重试约 ' + fErr.delayMin + ' 分钟后）', o.id, lockToken).run(); out.still_pending++; continue; }
         var st0 = upstreamStatusOf(cr.data);
         var psId0 = (cr.data && (cr.data.id || cr.data.orderId || cr.data.order_id)) || '';
         var keys0 = upstreamKeysOf(cr.data);
-        await upsertUpstreamOrder(env, o.id, String(psId0 || ''), st0, upstreamAmountOf(cr.data), keys0);
-        if (st0 === 'delivered' && keys0) { var done0 = await env.DB.prepare("UPDATE orders SET status='completed', delivery_content=?, fulfilled_at=? WHERE id=? AND status IN ('pending_activation','pending_upstream')").bind(keys0, nowISO(), o.id).run(); if (done0.meta && done0.meta.changes > 0) { out.delivered++; var fresh0 = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(o.id).first(); await deliverWithCtx(ctx, sendOrderEmail(env, fresh0, prod, 'delivered', keys0)); } continue; }
+        await upsertUpstreamOrder(env, o.id, String(psId0 || ''), st0, upstreamAmountOf(cr.data), keys0, { upstreamLock: lockToken });
+        // P1-11：创建成功但响应无单号 → 置 pending_upstream + 人工标记，不盲目重建（连接器无按 order_no 查询接口）。
+        if (!psId0) {
+          await upsertUpstreamOrder(env, o.id, '', 'no_psid_awaiting_manual', upstreamAmountOf(cr.data), keys0, { upstreamLock: lockToken });
+          await env.DB.prepare('UPDATE orders SET admin_note=? WHERE id=? AND upstream_lock=?').bind('上游创建成功但响应无单号，已停止自动重试创建，需人工在上游后台按商城订单号核对上游订单后处理', o.id, lockToken).run();
+          out.still_pending++; continue;
+        }
+        await clearUpstreamFail(env, o.id);
+        // P1-4：上游终态失败 → 转异常 + 停止轮询。
+        if (isUpstreamTerminalFailure(st0)) { await applyUpstreamTerminalFailure(env, o.id, String(psId0), st0, "status IN ('pending_activation','pending_upstream') AND upstream_lock=?", [lockToken]); out.still_pending++; continue; }
+        if (st0 === 'delivered' && keys0) {
+          // P1-10：delivered 但 keys 行数 < quantity 时不完成，转 pending_activation + 告警。
+          if (countDeliveredKeys(keys0) < o.quantity) { await env.DB.prepare("UPDATE orders SET status='pending_activation', admin_note=? WHERE id=? AND upstream_lock=?").bind('上游已 delivered 但 keys 数量不足（' + countDeliveredKeys(keys0) + ' < ' + o.quantity + '），未完成，等补发/人工处理', o.id, lockToken).run(); out.still_pending++; continue; }
+          var done0 = await env.DB.prepare("UPDATE orders SET status='completed', delivery_content=?, fulfilled_at=?, claim_token='' WHERE id=? AND status IN ('pending_activation','pending_upstream')").bind(keys0, nowISO(), o.id).run(); if (done0.meta && done0.meta.changes > 0) { out.delivered++; var fresh0 = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(o.id).first(); await deliverWithCtx(ctx, sendOrderEmail(env, fresh0, prod, 'delivered', keys0)); } continue; }
         if (st0 === 'paid') { await env.DB.prepare("UPDATE orders SET status='pending_activation' WHERE id=?").bind(o.id).run(); out.still_pending++; continue; }
         out.still_pending++; continue;
       }
       // 已有上游单号：轮询 GET /v1/orders/:id 直到 delivered，deliveredKey 出现前不发
       var g = await prodsellerGetOrder(env, settings, psId);
-      if (!g.ok) { out.still_pending++; continue; }
+      // P3-25：GET 失败时记录失败原因与次数到 admin_note，404（上游订单不存在）单独处理；同时记退避。
+      if (!g.ok) {
+        var gErr = (g.status === 404) ? ('上游订单不存在（404），上游单号 ' + psId + '，请人工在上游后台核查') : ('上游轮询 GET 失败 HTTP ' + g.status);
+        var fGet = await recordUpstreamFail(env, o.id, gErr);
+        await env.DB.prepare('UPDATE orders SET admin_note=? WHERE id=? AND upstream_lock=?').bind(gErr + '（轮询失败 ' + fGet.count + ' 次，下次重试约 ' + fGet.delayMin + ' 分钟后）', o.id, lockToken).run();
+        out.still_pending++; continue;
+      }
+      await clearUpstreamFail(env, o.id);
       var st = upstreamStatusOf(g.data);
       var keys = upstreamKeysOf(g.data);
-      await upsertUpstreamOrder(env, o.id, psId, st, upstreamAmountOf(g.data), keys);
+      await upsertUpstreamOrder(env, o.id, psId, st, upstreamAmountOf(g.data), keys, { upstreamLock: lockToken });
+      // P1-4：上游终态失败 → 转异常 + 停止轮询。
+      if (isUpstreamTerminalFailure(st)) { await applyUpstreamTerminalFailure(env, o.id, psId, st, "status IN ('pending_activation','pending_upstream') AND upstream_lock=?", [lockToken]); out.still_pending++; continue; }
       if (st === 'delivered' && keys) {
-        var done = await env.DB.prepare("UPDATE orders SET status='completed', delivery_content=?, fulfilled_at=? WHERE id=? AND status IN ('pending_activation','pending_upstream')").bind(keys, nowISO(), o.id).run();
+        // P1-10：delivered 但 keys 行数 < quantity 时不完成，转 pending_activation + 告警。
+        if (countDeliveredKeys(keys) < o.quantity) { await env.DB.prepare("UPDATE orders SET status='pending_activation', admin_note=? WHERE id=? AND upstream_lock=?").bind('上游已 delivered 但 keys 数量不足（' + countDeliveredKeys(keys) + ' < ' + o.quantity + '），未完成，等补发/人工处理', o.id, lockToken).run(); out.still_pending++; continue; }
+        var done = await env.DB.prepare("UPDATE orders SET status='completed', delivery_content=?, fulfilled_at=?, claim_token='' WHERE id=? AND status IN ('pending_activation','pending_upstream')").bind(keys, nowISO(), o.id).run();
         if (done.meta && done.meta.changes > 0) { out.delivered++; var fresh = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(o.id).first(); await deliverWithCtx(ctx, sendOrderEmail(env, fresh, prod, 'delivered', keys)); }
       } else { out.still_pending++; }
     } catch (e) { out.still_pending++; continue; }
@@ -1065,7 +1227,11 @@ async function scanEvmChain(env, fetchFn, ctx, chain, pendingOrders) {
   var rpcMap = parseJsonSafe(settings.rpc_urls, {});
   var rpcs = rpcMap[chain] || DEFAULT_RPC_URLS[chain] || [];
   if (!isValidEvmAddress(contract) || !rpcs.length || !pendingOrders.length) return { scanned: 0, matched: 0, fulfilled: 0 };
-  var requiredConf = await getRequiredConfirmations(env, chain);
+  // P3-15：扫描用确认数按本链待付款订单的最大金额取分级值（有大额订单时整链用大额确认数，
+  // 避免大额付款在低确认数下被提前履约；小额订单随之多等几分钟，偏保守）。
+  var maxAmt = 0;
+  pendingOrders.forEach(function (o) { var a = Number(o.actual_amount || o.total_usdt) || 0; if (a > maxAmt) maxAmt = a; });
+  var requiredConf = await getRequiredConfirmations(env, chain, maxAmt || undefined);
   var out = { scanned: 0, matched: 0, fulfilled: 0 };
   // 按待付款订单的收款地址去重，只扫有待付款订单的地址，减少 RPC 调用。地址格式非法时跳过（不认账）。
   var addrSet = {};
@@ -1099,10 +1265,19 @@ async function scanEvmChain(env, fetchFn, ctx, chain, pendingOrders) {
         if (startBlock > endBlock) continue;
         var pageFrom = startBlock;
         var scannedTo = startBlock;
+        var pageBlocks = EVM_SCAN_PAGE_BLOCKS;
+        var blockedBlock = 0; // P2-11：页内非终态履约失败的最小事件区块，游标不越过它
         while (pageFrom <= endBlock) {
-          var pageTo = Math.min(pageFrom + EVM_SCAN_PAGE_BLOCKS - 1, endBlock);
+          var pageTo = Math.min(pageFrom + pageBlocks - 1, endBlock);
           var logs = await rpcCall(fetchFn, rpcs[ri], 'eth_getLogs', [{ address: contract, fromBlock: toHex(pageFrom), toBlock: toHex(pageTo), topics: [TRANSFER_TOPIC0, null, toTopic] }]);
           if (!Array.isArray(logs)) break; // 本 RPC 异常，停在本页，不推进游标，下次重试
+          // P3-29：返回条数触及常见截断上限（10000 条）时缩小页宽重扫同一页；已是最小页宽仍截断则
+          // 中断本轮（不推进游标越过该页），下次以更小页宽重扫，避免截断丢失的日志被游标越过。
+          if (logs.length >= 10000) {
+            if (pageBlocks > 10) { pageBlocks = Math.max(10, Math.floor(pageBlocks / 2)); continue; }
+            break;
+          }
+          var pageBlockedAt = 0;
           for (var li = 0; li < logs.length; li++) {
             var lg = logs[li];
             // 严格匹配合约地址：RPC 可能忽略 address 过滤返回无关日志，不得仅凭 topics 认账。
@@ -1127,8 +1302,18 @@ async function scanEvmChain(env, fetchFn, ctx, chain, pendingOrders) {
             out.matched++;
             // 账本：发现 → 核验通过 → 确认数足够 → 履约 → 入账。同一事件重复扫描时 recordPayment 返回已有行，不重复建行。
             var evKey = lg.logIndex != null ? String(lg.logIndex) : '';
-            var rec = await recordPayment(env, { order_id: matchedOrder.id, chain: chain, pay_address: addr, tx_hash: String(lg.transactionHash || ''), event_key: evKey, amount: amt, block_number: blk, confirmations: latest - blk, status: 'discovered', reconcile_note: '全局扫描发现' }).catch(function () { return null; });
-            var payRow = rec && rec.payment ? rec.payment : null;
+            // P3-27：先查 /pay 留下的 event_key='' 同交易行（同订单归属），回填 event_key，不再另建一行。
+            var payRow = null;
+            var existingEmpty = null;
+            try { existingEmpty = await env.DB.prepare("SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ''").bind(chain, String(lg.transactionHash || '')).first(); } catch (e) { existingEmpty = null; }
+            if (existingEmpty && (existingEmpty.order_id == null || Number(existingEmpty.order_id) === Number(matchedOrder.id))) {
+              var backfill = await updatePayment(env, existingEmpty.id, { event_key: evKey, order_id: matchedOrder.id, amount: amt, block_number: blk, confirmations: latest - blk, status: 'discovered', reconcile_note: '全局扫描发现（回填 event_key）' }).catch(function () { return { ok: false }; });
+              if (backfill && backfill.ok) payRow = Object.assign({}, existingEmpty, { event_key: evKey, order_id: matchedOrder.id, amount: amt, block_number: blk, confirmations: latest - blk, status: 'discovered' });
+            }
+            if (!payRow) {
+              var rec = await recordPayment(env, { order_id: matchedOrder.id, chain: chain, pay_address: addr, tx_hash: String(lg.transactionHash || ''), event_key: evKey, amount: amt, block_number: blk, confirmations: latest - blk, status: 'discovered', reconcile_note: '全局扫描发现' }).catch(function () { return null; });
+              payRow = rec && rec.payment ? rec.payment : null;
+            }
             if (payRow && payRow.status === 'posted') continue; // 已入账，跳过（防重复发货）
             if (payRow) { try { await updatePayment(env, payRow.id, { status: 'confirmed', confirmations: latest - blk }); } catch (e) {} }
             // 金额必须与订单预期精确匹配（amountsEqual），否则记 mismatch，不得履约（BigInt 已精确匹配，此处为二次防御）。
@@ -1140,11 +1325,18 @@ async function scanEvmChain(env, fetchFn, ctx, chain, pendingOrders) {
             if (r.ok && (r.mode === 'completed' || r.mode === 'pending_fulfill' || r.mode === 'out_of_stock' || r.mode === 'pending_activation' || r.mode === 'pending_upstream')) {
               out.fulfilled++;
               if (payRow) { try { await updatePayment(env, payRow.id, { status: 'posted' }); } catch (e) {} }
+            } else if (!r.ok && !isTerminalFulfillRejection(r.reason)) {
+              // P2-11：非终态履约失败（如瞬时 DB 错误）时记下该事件区块，游标不越过它，下次重扫；
+              // 终态拒绝（TXID 已被他单认领 / 订单已终态）不阻塞游标。
+              if (!pageBlockedAt || blk < pageBlockedAt) pageBlockedAt = blk;
             }
           }
+          if (pageBlockedAt && (!blockedBlock || pageBlockedAt < blockedBlock)) blockedBlock = pageBlockedAt;
           scannedTo = pageTo + 1;
           pageFrom = pageTo + 1;
         }
+        // P2-11：本轮有非终态履约失败时，游标只推进到最早失败事件所在区块，不越过它。
+        if (blockedBlock && blockedBlock < scannedTo) scannedTo = blockedBlock;
         // 整页成功后推进本地址游标（只推进，不回退；RPC 失败不推进，下次重试）。
         if (scannedTo > startBlock) {
           var curNow = await getScanCursor(env, cursorKey);
@@ -1165,7 +1357,7 @@ async function checkChainPayment(env, fetchFn, order) {
   var rpcMap = parseJsonSafe(settings.rpc_urls, {});
   var rpcs = rpcMap[order.pay_chain] || DEFAULT_RPC_URLS[order.pay_chain] || [];
   if (!rpcs.length) return null;
-  var reqConf = await getRequiredConfirmations(env, order.pay_chain);
+  var reqConf = await getRequiredConfirmations(env, order.pay_chain, order.actual_amount || order.total_usdt);
   return await checkEvmPayment(fetchFn, rpcs, contract, order.pay_address || order.wallet_address, order.actual_amount || order.total_usdt, { requiredConfirmations: reqConf });
 }
 async function checkTxidPayment(env, fetchFn, order, txid) {
@@ -1192,7 +1384,7 @@ async function checkTxidPayment(env, fetchFn, order, txid) {
           var latestHex = await rpcCall(fetchFn, rpcs[ri], 'eth_blockNumber', []);
           var latestBn = parseInt(latestHex, 16);
           var receiptBn = parseInt(receipt.blockNumber, 16);
-          var reqConfTxid = await getRequiredConfirmations(env, order.pay_chain);
+          var reqConfTxid = await getRequiredConfirmations(env, order.pay_chain, order.actual_amount || order.total_usdt);
           if (!isFinite(latestBn) || !isFinite(receiptBn) || receiptBn > latestBn - reqConfTxid) continue;
         } catch (e) { continue; }
         var logs = receipt.logs || [];
@@ -1231,6 +1423,8 @@ async function claimTxid(env, txHash, orderId) {
   // 并发下 INSERT 冲突（主键已存在）：重新读，确认归属
   var again = await env.DB.prepare('SELECT order_id FROM txid_claims WHERE tx_hash = ?').bind(txHash).first();
   if (again && Number(again.order_id) === Number(orderId)) return { ok: true };
+  // P3-30：重读为空 = 非冲突型 DB 错误（INSERT 失败且无占用行），不得谎称“已用于其他订单”。
+  if (!again) return { ok: false, reason: '认领失败，请重试' };
   return { ok: false, reason: '该交易哈希已用于其他订单（请勿重复提交；归属争议请在 D1 中核查 txid_claims 后手动处理）' };
 }
 async function claimOrderForPayment(env, orderId, txHash) {
@@ -1265,21 +1459,27 @@ async function markCardsUsed(env, orderId, cardIds, mode) {
   // mode='unreserved'：只标记未预留的卡（reserved_order_id IS NULL），防止抢走其他订单刚预留的卡。
   // SELECT 与 UPDATE 之间若无此条件，两个并发请求会抢走对方的预留卡。
   // D1 batch 一次提交标记多张卡（原子）；无 batch 的环境顺序执行（生产 D1 恒有 batch）。
+  // P1-6：返回成功标记的卡 id 列表（而非数量），补偿只还这些确切 id；按前缀 slice 补偿会漏还非前缀成功的卡。
   var stmts = [];
   for (var i = 0; i < cardIds.length; i++) {
     if (mode === 'reserved') stmts.push(env.DB.prepare('UPDATE cards SET is_used=1, order_id=?, reserved_order_id=NULL, reserved_at=NULL WHERE id=? AND is_used=0 AND reserved_order_id=?').bind(orderId, cardIds[i], orderId));
     else stmts.push(env.DB.prepare('UPDATE cards SET is_used=1, order_id=?, reserved_order_id=NULL, reserved_at=NULL WHERE id=? AND is_used=0 AND reserved_order_id IS NULL').bind(orderId, cardIds[i]));
   }
-  if (!stmts.length) return 0;
+  if (!stmts.length) return [];
   var results;
   if (env.DB.batch) results = await env.DB.batch(stmts);
   else { results = []; for (var j = 0; j < stmts.length; j++) results.push(await stmts[j].run()); }
-  var total = 0;
-  for (var k = 0; k < results.length; k++) total += Number((results[k] && results[k].meta && results[k].meta.changes) || 0);
-  return total;
+  var okIds = [];
+  for (var k = 0; k < results.length; k++) {
+    if (results[k] && results[k].meta && Number(results[k].meta.changes || 0) > 0) okIds.push(cardIds[k]);
+  }
+  return okIds;
 }
 async function unmarkCards(env, orderId, cardIds) {
   // 补偿：将本轮标记的卡恢复为预留态（仅本订单标记的卡）。
+  // P1-7：订单状态保护——订单已 completed 时绝不还卡（已交付的卡还回池子会造成同一张卡卖两次）。
+  var o = await env.DB.prepare('SELECT status FROM orders WHERE id = ?').bind(orderId).first().catch(function () { return null; });
+  if (o && o.status === 'completed') return;
   for (var i = 0; i < cardIds.length; i++) {
     await env.DB.prepare('UPDATE cards SET is_used=0, order_id=NULL, reserved_order_id=?, reserved_at=? WHERE id=? AND is_used=1 AND order_id=?').bind(orderId, nowISO(), cardIds[i], orderId).run();
   }
@@ -1299,8 +1499,8 @@ async function claimCardsForOrder(env, orderId, productId, qty) {
     for (var j = 0; j < rlist.length && cardIds.length + toMark.length < qty; j++) toMark.push(rlist[j]);
     if (toMark.length) {
       var marked = await markCardsUsed(env, orderId, toMark.map(function (c) { return c.id; }), 'reserved');
-      if (marked !== toMark.length) {
-        await unmarkCards(env, orderId, toMark.map(function (c) { return c.id; }).slice(0, marked));
+      if (marked.length !== toMark.length) {
+        await unmarkCards(env, orderId, marked);
         return { ok: false, reason: '卡密标记失败' };
       }
       for (var k = 0; k < toMark.length; k++) { cardIds.push(toMark[k].id); codes.push(toMark[k].code); newlyMarkedIds.push(toMark[k].id); }
@@ -1316,8 +1516,8 @@ async function claimCardsForOrder(env, orderId, productId, qty) {
       return { ok: false, reason: 'out_of_stock' };
     }
     var marked2 = await markCardsUsed(env, orderId, alist.map(function (c) { return c.id; }), 'unreserved');
-    if (marked2 !== alist.length) {
-      await unmarkCards(env, orderId, alist.map(function (c) { return c.id; }).slice(0, marked2));
+    if (marked2.length !== alist.length) {
+      await unmarkCards(env, orderId, marked2);
       await unmarkCards(env, orderId, newlyMarkedIds);
       return { ok: false, reason: '卡密标记失败' };
     }
@@ -1326,8 +1526,9 @@ async function claimCardsForOrder(env, orderId, productId, qty) {
   return { ok: true, cardIds: cardIds, newlyMarkedIds: newlyMarkedIds, codes: codes };
 }
 async function completeOrder(env, orderId, deliveryContent, statusSql, statusBinds) {
-  // 条件完成订单（防并发重复完成）。成功时清空认领令牌。
-  var sql = "UPDATE orders SET status='completed', delivery_content=?, fulfilled_at=?, claim_token='' WHERE id=? AND " + statusSql;
+  // 条件完成订单（防并发重复完成）。成功时清空认领令牌与过期异常标记（P3-24：自动发货完成
+  // 不残留 exception_reason，与手动发货行为一致）。
+  var sql = "UPDATE orders SET status='completed', delivery_content=?, fulfilled_at=?, claim_token='', exception_reason='' WHERE id=? AND " + statusSql;
   var stmt = env.DB.prepare(sql);
   var binds = [deliveryContent, nowISO(), orderId].concat(statusBinds || []);
   var upd = await stmt.bind.apply(stmt, binds).run();
@@ -1341,6 +1542,22 @@ async function releaseClaimedButUndeliveredCards(env, orderId) {
   if (o && o.status === 'completed') return;
   await env.DB.prepare('UPDATE cards SET is_used=0, order_id=NULL, reserved_order_id=NULL, reserved_at=NULL WHERE order_id=? AND is_used=1').bind(orderId).run();
 }
+// P1-6：手动发货 delivery 非空时，检查本订单名下 is_used=1 的残留卡。code 出现在本次交付内容
+// （按行精确匹配）中的视为已交付、保留；未出现的视为崩溃残留/误标，释放回可用池，返回释放/保留数，
+// 调用方把释放数记入审计，绝不静默丢弃。
+async function releaseResidualMarkedCards(env, orderId, delivery) {
+  var delivered = {};
+  String(delivery || '').split('\n').forEach(function (s) { var t = s.trim(); if (t) delivered[t] = 1; });
+  var rows = await env.DB.prepare('SELECT id, code FROM cards WHERE order_id = ? AND is_used = 1').bind(orderId).all().catch(function () { return { results: [] }; });
+  var released = 0, kept = 0;
+  for (var i = 0; i < (rows.results || []).length; i++) {
+    var c = rows.results[i];
+    if (delivered[String(c.code || '').trim()]) { kept++; continue; }
+    var upd = await env.DB.prepare('UPDATE cards SET is_used=0, order_id=NULL, reserved_order_id=NULL, reserved_at=NULL WHERE id=? AND is_used=1 AND order_id=?').bind(c.id, orderId).run().catch(function () { return null; });
+    if (upd && upd.meta && upd.meta.changes === 1) released++;
+  }
+  return { released: released, kept: kept };
+}
 async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
   // 统一发货入口：轮询 / 手动 TXID / 管理员确认收款三条路径复用，禁止三份重复发货逻辑。
   // 并发安全：TXID 原子认领 → 订单原子认领（成功才继续）→ 副作用（上游/卡密）→ 条件完成。认领失败立即返回，绝不产生副作用。
@@ -1353,16 +1570,24 @@ async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
   if (fresh.status !== 'pending_payment') return { ok: false, reason: '当前状态不可发货' };
   var o = fresh;
   var prod = await env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(o.product_id).first();
-  // 1. TXID 原子认领（仅链上已验证哈希才认领；管理员人工确认 txVerified=false 时不认领，避免未核验 TXID 永久污染 txid_claims）。
+  // 1. TXID 原子认领（P1-2：只要是链上哈希即认领，不论 txVerified。管理员人工确认时传入的
+  // 订单已存 TXID 若为真实链上付款也必须认领，否则同一笔付款可被第二笔订单重复使用。
+  // 伪造 TXID 认领无害——它永远通不过链上核验。BinanceUID 订单 ID 不是链上哈希，不认领）。
   // 严格先到先得：已有其他订单认领时拒绝，不接管（见 claimTxid）。
+  // P3-26：先认领 TXID、后认领订单；若订单认领失败，删除刚写入的 txid_claims 行，不留孤儿认领。
   var isChainHash = !!txHash && /^(0x)?[0-9a-fA-F]{64}$/.test(String(txHash)) && o.pay_method !== 'BinanceUID';
-  if (isChainHash && txVerified) {
+  var txClaimedHere = false;
+  if (isChainHash) {
     var tc = await claimTxid(env, txHash, o.id);
     if (!tc.ok) return { ok: false, reason: tc.reason };
+    txClaimedHere = true;
   }
   // 2. 订单原子认领（检查实际影响行数）
   var claim = await claimOrderForPayment(env, o.id, txHash);
-  if (!claim.ok) return { ok: false, reason: claim.reason };
+  if (!claim.ok) {
+    if (txClaimedHere) { try { await env.DB.prepare('DELETE FROM txid_claims WHERE tx_hash = ? AND order_id = ?').bind(txHash, o.id).run(); } catch (e) {} }
+    return { ok: false, reason: claim.reason };
+  }
   var claimToken = claim.claimToken;
   var claimWhere = "status='pending_payment' AND claim_token=?";
   var claimBinds = [claimToken];
@@ -1372,13 +1597,29 @@ async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
     var cf = {}; try { cf = JSON.parse(o.customer_fields || '{}'); } catch (e) { cf = {}; }
     // 崩溃恢复：已有上游单号时只轮询状态，绝不重复采购。
     var existingUp = await env.DB.prepare('SELECT * FROM upstream_orders WHERE order_id = ? ORDER BY id DESC LIMIT 1').bind(o.id).first();
+    // P1-11：上次创建成功但响应无单号时已置 no_psid_awaiting_manual 标记（无上游单号可查，
+    // 连接器亦无按业务单号查询的接口），此处绝不再次创建，等人工在上游后台核对后处理。
+    if (existingUp && !existingUp.prodseller_order_id && existingUp.status === 'no_psid_awaiting_manual') {
+      await env.DB.prepare("UPDATE orders SET status='pending_upstream', admin_note=? WHERE id=? AND claim_token=?").bind('上游创建成功但响应无单号，已停止自动重试创建，需人工在上游后台按商城订单号核对后处理', o.id, claimToken).run();
+      return { ok: true, mode: 'pending_upstream', reason: 'no_psid_awaiting_manual' };
+    }
     if (existingUp && existingUp.prodseller_order_id) {
       var g = await prodsellerGetOrder(env, settings, existingUp.prodseller_order_id);
       if (g.ok) {
         var gst = upstreamStatusOf(g.data);
         var gkeys = upstreamKeysOf(g.data);
-        await upsertUpstreamOrder(env, o.id, existingUp.prodseller_order_id, gst, upstreamAmountOf(g.data), gkeys);
+        await upsertUpstreamOrder(env, o.id, existingUp.prodseller_order_id, gst, upstreamAmountOf(g.data), gkeys, { claimToken: claimToken });
+        // P1-4：上游终态失败 → 转异常 + 停止轮询。
+        if (isUpstreamTerminalFailure(gst)) {
+          await applyUpstreamTerminalFailure(env, o.id, existingUp.prodseller_order_id, gst, "status='pending_payment' AND claim_token=?", [claimToken]);
+          return { ok: true, mode: 'refund_pending', reason: 'upstream_terminal_' + gst };
+        }
         if (gst === 'delivered' && gkeys) {
+          // P1-10：delivered 但 keys 行数 < quantity 时不完成，转 pending_activation + 告警，等补发/人工处理。
+          if (countDeliveredKeys(gkeys) < o.quantity) {
+            await env.DB.prepare("UPDATE orders SET status='pending_activation', admin_note=? WHERE id=? AND claim_token=?").bind('上游已 delivered 但 keys 数量不足（' + countDeliveredKeys(gkeys) + ' < ' + o.quantity + '），未完成，等补发/人工处理', o.id, claimToken).run();
+            return { ok: true, mode: 'pending_activation', reason: 'insufficient_keys' };
+          }
           var compG = await completeOrder(env, o.id, gkeys, claimWhere, claimBinds);
           if (!compG.ok) return { ok: false, reason: compG.reason };
           var freshG = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(o.id).first();
@@ -1398,31 +1639,54 @@ async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
     // ProdSeller 功能门禁（第四轮 P0）：门禁关闭时禁止发起真实采购，转 pending_upstream 等人工处理。
     if (String(settings.prodseller_enabled || '0') !== '1') {
       await env.DB.prepare("UPDATE orders SET status='pending_upstream', admin_note=? WHERE id=? AND claim_token=?").bind('上游门禁关闭（prodseller_enabled != 1），未发起真实采购，等待人工处理', o.id, claimToken).run();
-      await upsertUpstreamOrder(env, o.id, '', 'gateway_closed', 0, '');
+      await upsertUpstreamOrder(env, o.id, '', 'gateway_closed', 0, '', { claimToken: claimToken });
       return { ok: true, mode: 'pending_upstream', reason: 'gateway_closed' };
     }
     var cr = await prodsellerCreateOrder(env, settings, o, prod, cf);
+    // P1-1：门禁单点在 prodsellerCreateOrder 入口（403）；此处按门禁关闭处理，不当作上游错误重试。
+    if (cr.status === 403) {
+      await env.DB.prepare("UPDATE orders SET status='pending_upstream', admin_note=? WHERE id=? AND claim_token=?").bind('上游门禁关闭（prodseller_enabled != 1），未发起真实采购，等待人工处理', o.id, claimToken).run();
+      await upsertUpstreamOrder(env, o.id, '', 'gateway_closed', 0, '', { claimToken: claimToken });
+      return { ok: true, mode: 'pending_upstream', reason: 'gateway_closed' };
+    }
     if (cr.status === 402) {
       await env.DB.prepare("UPDATE orders SET status='pending_upstream', admin_note=? WHERE id=? AND claim_token=?").bind('上游余额不足（402），后台置顶告警，不发货', o.id, claimToken).run();
-      await upsertUpstreamOrder(env, o.id, '', 'insufficient_balance', 0, '');
+      await upsertUpstreamOrder(env, o.id, '', 'insufficient_balance', 0, '', { claimToken: claimToken });
       return { ok: true, mode: 'pending_upstream', reason: 'insufficient_balance' };
     }
     if (cr.status === 409) {
       await env.DB.prepare("UPDATE orders SET status='pending_upstream', admin_note=? WHERE id=? AND claim_token=?").bind('上游缺货（409），已标记缺货转人工', o.id, claimToken).run();
-      await upsertUpstreamOrder(env, o.id, '', 'out_of_stock', 0, '');
+      await upsertUpstreamOrder(env, o.id, '', 'out_of_stock', 0, '', { claimToken: claimToken });
       return { ok: true, mode: 'pending_upstream', reason: 'out_of_stock' };
     }
     if (cr.status === 429 || cr.status >= 500 || !cr.ok) {
       await env.DB.prepare("UPDATE orders SET status='pending_upstream', admin_note=? WHERE id=? AND claim_token=?").bind('上游调用失败 HTTP ' + cr.status + '，退避重试，下次轮询继续', o.id, claimToken).run();
-      await upsertUpstreamOrder(env, o.id, '', 'upstream_error', 0, '');
+      await upsertUpstreamOrder(env, o.id, '', 'upstream_error', 0, '', { claimToken: claimToken });
       return { ok: true, mode: 'pending_upstream', reason: 'upstream_error' };
     }
     var st = upstreamStatusOf(cr.data);
     var psId = (cr.data && (cr.data.id || cr.data.orderId || cr.data.order_id)) || '';
     var keys = upstreamKeysOf(cr.data);
-    await upsertUpstreamOrder(env, o.id, String(psId || ''), st, upstreamAmountOf(cr.data), keys);
+    await upsertUpstreamOrder(env, o.id, String(psId || ''), st, upstreamAmountOf(cr.data), keys, { claimToken: claimToken });
     if (cr.data && cr.data.discount != null) { await env.DB.prepare('UPDATE orders SET admin_note=? WHERE id=? AND claim_token=?').bind('上游订单 ' + String(psId || '') + ' 金额 ' + upstreamAmountOf(cr.data) + ' 折扣 ' + upstreamDiscountOf(cr.data), o.id, claimToken).run(); }
+    // P1-11：创建成功但响应无单号 → 不盲目重建。连接器无按业务单号（order_no）查询上游订单的接口，
+    // 无法按 order_no 查回上游单号；置 pending_upstream + 人工处理标记，轮询不再对该订单重复创建。
+    if (!psId) {
+      await env.DB.prepare("UPDATE orders SET status='pending_upstream', admin_note=? WHERE id=? AND claim_token=?").bind('上游创建成功但响应无单号，已停止自动重试创建，需人工在上游后台按商城订单号核对上游订单后处理', o.id, claimToken).run();
+      await upsertUpstreamOrder(env, o.id, '', 'no_psid_awaiting_manual', upstreamAmountOf(cr.data), keys, { claimToken: claimToken });
+      return { ok: true, mode: 'pending_upstream', reason: 'no_psid_awaiting_manual' };
+    }
+    // P1-4：上游终态失败 → 转异常 + 停止轮询。
+    if (isUpstreamTerminalFailure(st)) {
+      await applyUpstreamTerminalFailure(env, o.id, String(psId), st, "status='pending_payment' AND claim_token=?", [claimToken]);
+      return { ok: true, mode: 'refund_pending', reason: 'upstream_terminal_' + st };
+    }
     if (st === 'delivered' && keys) {
+      // P1-10：delivered 但 keys 行数 < quantity 时不完成，转 pending_activation + 告警。
+      if (countDeliveredKeys(keys) < o.quantity) {
+        await env.DB.prepare("UPDATE orders SET status='pending_activation', admin_note=? WHERE id=? AND claim_token=?").bind('上游已 delivered 但 keys 数量不足（' + countDeliveredKeys(keys) + ' < ' + o.quantity + '），未完成，等补发/人工处理', o.id, claimToken).run();
+        return { ok: true, mode: 'pending_activation', reason: 'insufficient_keys' };
+      }
       var compU = await completeOrder(env, o.id, keys, claimWhere, claimBinds);
       if (!compU.ok) return { ok: false, reason: compU.reason };
       var fresh2 = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(o.id).first();
@@ -1459,6 +1723,8 @@ async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
       await unmarkCards(env, o.id, cc.newlyMarkedIds);
       return { ok: false, reason: compC.reason };
     }
+    // P1-8：卡密分支完成成功后释放剩余预留（只动 is_used=0 的预留卡，不误动已用卡），不留 24h 冻结。
+    await releaseReservation(env, o.id);
     var fresh4 = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(o.id).first();
     await deliverWithCtx(ctx, sendOrderEmail(env, fresh4, prod, 'delivered', cc.codes.join('\n')));
     return { ok: true, mode: 'completed' };
@@ -1477,24 +1743,29 @@ async function runPolling(env, fetchFn, ctx) {
   fetchFn = fetchFn || fetch;
   var settings = await getAllSettings(env);
   if (String(settings.poll_enabled || '1') === '0') return { ok: true, skipped: 'poll_disabled', checked: 0, fulfilled: 0, expired: 0 };
-  var pending = await env.DB.prepare("SELECT * FROM orders WHERE status='pending_payment' AND pay_method != 'BinanceUID' ORDER BY id ASC LIMIT 100").all();
+  var pending = await env.DB.prepare("SELECT * FROM orders WHERE status='pending_payment' ORDER BY id ASC LIMIT 100").all();
   var list = pending.results || [];
   if (!list.length) return { ok: true, checked: 0, fulfilled: 0, expired: 0, note: 'no pending, zero RPC' };
   var fulfilled = 0, expired = 0, checked = 0;
   for (var i = 0; i < list.length; i++) {
     var o = list[i];
     try {
-      // 超时：仅未付款且未被认领的订单可自动取消；已确认付款（paid_at）或正在处理（claim_token）的订单绝不自动取消，走异常/恢复流程。
+      // 超时：未付款且未被认领的订单可自动取消；已确认付款（paid_at）或正在处理（claim_token）的订单绝不自动取消，走异常/恢复流程。
+      // P1-3：租约过期（claimed_at 超过 5 分钟，与 CLAIM_LEASE_MINUTES 口径一致）的陈旧认领也可取消，
+      // 避免处理者崩溃后订单永久钉死；claimed_at 为 NULL 时按原逻辑（视为未过期，仅未认领可取消）。
       if (o.expires_at && new Date(String(o.expires_at).replace(' ', 'T') + 'Z') < new Date()) {
-        var ex = await env.DB.prepare("UPDATE orders SET status='cancelled', admin_note=? WHERE id=? AND status='pending_payment' AND paid_at IS NULL AND (claim_token IS NULL OR claim_token='')").bind('支付超时自动取消（20分钟未到账）', o.id).run();
+        var ex = await env.DB.prepare("UPDATE orders SET status='cancelled', admin_note=? WHERE id=? AND status='pending_payment' AND ((paid_at IS NULL AND (claim_token IS NULL OR claim_token='')) OR (claimed_at IS NOT NULL AND claimed_at < datetime('now', '-" + CLAIM_LEASE_MINUTES + " minutes')))").bind('支付超时自动取消（20分钟未到账）', o.id).run();
         if (ex.meta && ex.meta.changes > 0) {
           expired++;
           await releaseReservation(env, o.id);
+          await releaseClaimedButUndeliveredCards(env, o.id);
           var auditOk = await logAudit(env, o.id, 'auto_cancel_timeout', 'pending_payment', 'cancelled', '支付超时自动取消，释放卡密预留');
           if (!auditOk) console.error('audit failed: auto_cancel_timeout order=' + o.id);
         }
         continue;
       }
+      // P2-12：BinanceUID 订单只做超时取消（上方），不链上核验。
+      if (o.pay_method === 'BinanceUID') continue;
       checked++;
       await env.DB.prepare('UPDATE orders SET last_checked_at=? WHERE id=?').bind(nowISO(), o.id).run();
       var hit = null;
@@ -1534,19 +1805,33 @@ async function runPolling(env, fetchFn, ctx) {
   return { ok: true, checked: checked, fulfilled: fulfilled, expired: expired };
 }
 function sanitizeOrderForPublic(o, level) {
-  // level: 'full' = 凭证验证通过的本人，可看交付内容；'summary' = 仅看订单概要，绝不返回交付内容与客户隐私字段。
-  // 内部字段（认领令牌、凭证哈希、旧查询密码）永不返回。
+  // level: 'full' = 凭证验证通过的本人，可看交付内容；'summary' = 仅看订单概要，绝不返回交付内容与客户隐私字段；
+  // 'admin' = 管理端详情，保留 exception_reason/refund_ref/admin_note 等管理员可见字段，仍剥离凭证哈希类字段。
+  // P3-2：默认 summary（fail-closed），调用方必须显式传 'full'/'admin' 才放宽。
+  // 内部字段（认领令牌、凭证哈希、旧查询密码、salt）永不返回。
   if (!o) return null;
   var out = Object.assign({}, o);
   delete out.query_password;
   delete out.query_token_hash;
+  delete out.query_password_salt;
   // 只暴露“是否设了查询密码”（与查询列表的 credential_type 同口径），不暴露哈希本身。
   out.has_query_password = (o.query_password_salt && o.query_password_hash) ? 1 : 0;
   delete out.query_password_hash;
   delete out.claim_token;
   delete out.claimed_at;
   try { out.product_snapshot = JSON.parse(o.product_snapshot || '{}'); } catch (e) { out.product_snapshot = {}; }
-  if (level === 'summary') {
+  if (level === 'admin') {
+    try { out.customer_fields = JSON.parse(o.customer_fields || '{}'); } catch (e) { out.customer_fields = {}; }
+    // 管理端详情：保留 admin_note / exception_reason / refund_ref / upstream_lock 等管理员可见字段。
+  } else if (level === 'full') {
+    try { out.customer_fields = JSON.parse(o.customer_fields || '{}'); } catch (e) { out.customer_fields = {}; }
+    // P2-1：full 分支同样删除 admin_note（内部备注不得泄露给买家）；退款凭证、异常原因、上游租约仅管理员可见。
+    delete out.admin_note;
+    delete out.refund_ref;
+    delete out.exception_reason;
+    delete out.upstream_lock;
+    delete out.upstream_lock_expires_at;
+  } else {
     delete out.delivery_content;
     delete out.customer_fields;
     delete out.contact;
@@ -1556,13 +1841,6 @@ function sanitizeOrderForPublic(o, level) {
     delete out.wallet_address;
     delete out.pay_address;
     // 内部字段不公开：退款凭证（退款交易哈希）、内部异常原因、上游处理租约。
-    delete out.refund_ref;
-    delete out.exception_reason;
-    delete out.upstream_lock;
-    delete out.upstream_lock_expires_at;
-  } else {
-    try { out.customer_fields = JSON.parse(o.customer_fields || '{}'); } catch (e) { out.customer_fields = {}; }
-    // 凭证验证通过的本人仍不返回内部字段（退款凭证、异常原因、上游租约仅管理员可见）。
     delete out.refund_ref;
     delete out.exception_reason;
     delete out.upstream_lock;
@@ -1754,8 +2032,14 @@ async function handleApi(req, env, url, ctx) {
   }
 
   // ---- 公开：图形验证码 ----
+  // P3-14：GET /api/captcha 加 IP 限流（30 次/10 分钟，原子记数，复用 pay_rate 表 captcha: 维），防无限制生成验证码行。
   if (path === '/api/captcha' && method === 'GET') {
     try { await env.DB.prepare('DELETE FROM captcha_codes WHERE expires_at < ?').bind(nowISO()).run(); } catch (e) {}
+    var capIp = getClientIp(req);
+    var capWin = new Date(Date.now() - 10 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+    try { await env.DB.prepare('DELETE FROM pay_rate WHERE created_at < ?').bind(capWin).run(); } catch (e) {}
+    var capIns = await env.DB.prepare('INSERT INTO pay_rate (key, created_at) SELECT ?, ? WHERE (SELECT COUNT(*) FROM pay_rate WHERE key = ?) < 30').bind('captcha:' + capIp, nowISO(), 'captcha:' + capIp).run().catch(function () { return null; });
+    if (!capIns || !capIns.meta || capIns.meta.changes !== 1) return err('验证码获取过于频繁，请 10 分钟后再试', 429);
     var code = '';
     for (var i = 0; i < 4; i++) code += CAPTCHA_CHARS[randBelow(CAPTCHA_CHARS.length)];
     var cid = randomHex(16);
@@ -1787,20 +2071,29 @@ async function handleApi(req, env, url, ctx) {
     if (typeof custEarly !== 'object') return err('客户字段无效');
     var contactIdentity = String(custEarly.contact_email || body.contact || custEarly.activation_email || '').trim().toLowerCase();
     if (contactIdentity) {
-      var pend = await env.DB.prepare("SELECT order_no, contact, customer_fields FROM orders WHERE status = 'pending_payment' AND expires_at > ?").bind(nowISO()).all();
-      for (var di = 0; di < (pend.results || []).length; di++) {
-        var po = pend.results[di]; var pcf = {}; try { pcf = JSON.parse(po.customer_fields || '{}'); } catch (e) { pcf = {}; }
-        var pIdent = String(pcf.contact_email || po.contact || '').trim().toLowerCase();
-        if (pIdent && pIdent === contactIdentity) return err('该联系方式已有一笔待付款订单（' + po.order_no + '），请先完成付款或等它超时取消后再下单');
+      // P3-19：按联系方式精确查询（contact 列 + customer_fields 的 contact_email/activation_email），
+      // 不再全量拉取待付款订单。P2-3：错误文案去掉订单号，不向未认证调用方泄露他人订单号。
+      var dupFound = false;
+      try {
+        var dupRow = await env.DB.prepare("SELECT id FROM orders WHERE status = 'pending_payment' AND expires_at > ? AND (LOWER(contact) = ? OR LOWER(json_extract(customer_fields, '$.contact_email')) = ? OR LOWER(json_extract(customer_fields, '$.activation_email')) = ?) LIMIT 1").bind(nowISO(), contactIdentity, contactIdentity, contactIdentity).first();
+        dupFound = !!dupRow;
+      } catch (e) {
+        // json_extract 不可用时回退全量比对（仅兼容路径）。
+        var pend = await env.DB.prepare("SELECT order_no, contact, customer_fields FROM orders WHERE status = 'pending_payment' AND expires_at > ?").bind(nowISO()).all();
+        for (var di = 0; di < (pend.results || []).length; di++) {
+          var po = pend.results[di]; var pcf = {}; try { pcf = JSON.parse(po.customer_fields || '{}'); } catch (e2) { pcf = {}; }
+          var pIdent = String(pcf.contact_email || po.contact || '').trim().toLowerCase();
+          if (pIdent && pIdent === contactIdentity) { dupFound = true; break; }
+        }
       }
+      if (dupFound) return err('该联系方式已有一笔待付款订单，请先完成付款或等它超时取消后再下单');
     }
-    // 同 IP 限流：10 分钟内最多下单 10 笔，防批量刷单
+    // 同 IP 限流：10 分钟内最多下单 10 笔，防批量刷单（P3-5：原子 INSERT…SELECT…WHERE count < N）。
     var clientIp = getClientIp(req);
     var winStart = new Date(Date.now() - ORDER_RATE_WINDOW_MS).toISOString().replace('T', ' ').slice(0, 19);
     try { await env.DB.prepare('DELETE FROM order_rate WHERE created_at < ?').bind(winStart).run(); } catch (e) {}
-    var rc = await env.DB.prepare('SELECT COUNT(*) as c FROM order_rate WHERE ip = ?').bind(clientIp).first();
-    if (rc && Number(rc.c) >= ORDER_RATE_LIMIT) return err('下单过于频繁，请 10 分钟后再试');
-    try { await env.DB.prepare('INSERT INTO order_rate (ip, created_at) VALUES (?, ?)').bind(clientIp, nowISO()).run(); } catch (e) {}
+    var oIns = await env.DB.prepare('INSERT INTO order_rate (ip, created_at) SELECT ?, ? WHERE (SELECT COUNT(*) FROM order_rate WHERE ip = ?) < ?').bind(clientIp, nowISO(), clientIp, ORDER_RATE_LIMIT).run().catch(function () { return null; });
+    if (!oIns || !oIns.meta || oIns.meta.changes !== 1) return err('下单过于频繁，请 10 分钟后再试');
 
     var prod = await env.DB.prepare('SELECT * FROM products WHERE id = ? AND is_active = 1').bind(productId).first();
     if (!prod) return err('商品不存在', 404);
@@ -1920,20 +2213,23 @@ async function handleApi(req, env, url, ctx) {
     var ip = getClientIp(req);
     var winStart = new Date(Date.now() - LOOKUP_RATE_WINDOW_MS).toISOString().replace('T', ' ').slice(0, 19);
     try { await env.DB.prepare('DELETE FROM lookup_rate WHERE created_at < ?').bind(winStart).run(); } catch (e) {}
-    var c = await env.DB.prepare('SELECT COUNT(*) as n FROM lookup_rate WHERE ip = ?').bind(ip).first();
-    if (c && Number(c.n) >= LOOKUP_RATE_LIMIT) return '查单过于频繁，请 10 分钟后再试';
-    try { await env.DB.prepare('INSERT INTO lookup_rate (ip, created_at) VALUES (?, ?)').bind(ip, nowISO()).run(); } catch (e) {}
+    // P3-5：原子记数（INSERT…SELECT…WHERE count < N，同 /secret 模式），消除先查后插的 TOCTOU 超限窗口。
+    var ins = await env.DB.prepare('INSERT INTO lookup_rate (ip, created_at) SELECT ?, ? WHERE (SELECT COUNT(*) FROM lookup_rate WHERE ip = ?) < ?').bind(ip, nowISO(), ip, LOOKUP_RATE_LIMIT).run().catch(function () { return null; });
+    if (!ins || !ins.meta || ins.meta.changes !== 1) return '查单过于频繁，请 10 分钟后再试';
     return null;
   }
   // 按邮箱查订单列表：已关闭（第四轮 P0，E-02）。邮箱本身不是身份凭证，仅凭邮箱即可枚举购买历史属隐私泄露。
   // 统一入口：订单号 + 高强度查单凭证（POST /api/orders/:no/lookup）。无邮箱 OTP 兼容路径（邮件已移除，无法发送 OTP）。
   if (path === '/api/orders' && method === 'GET') {
-    return err('邮箱查单已关闭，请使用订单号 + 查单凭证查询（下单成功页展示一次）', 410);
+    return err('邮箱查单已关闭，请使用订单号 + 查询密码查询（查询页输入订单号后按提示输入查询密码）', 410);
   }
   // GET 单订单：仅返回概要（不含交付内容与客户隐私），绝不经 URL 凭证返回敏感数据。
   // 完整详情必须走 POST /api/orders/:no/lookup（凭证在请求体中，不进 URL/日志）。
   var mOrderNo = path.match(/^\/api\/orders\/([^\/]+)$/);
   if (mOrderNo && method === 'GET') {
+    // P2-4：单订单 GET 同样加查单限流（与 /query 一致），防订单号枚举。
+    var rateErrSingle = await checkLookupRateLimit(env, req);
+    if (rateErrSingle) return err(rateErrSingle, 429);
     var no = decodeURIComponent(mOrderNo[1]);
     var ord = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ?').bind(no).first();
     if (!ord) return err('订单不存在', 404);
@@ -1950,16 +2246,24 @@ async function handleApi(req, env, url, ctx) {
     var noL = decodeURIComponent(mLookup[1]);
     var ordL = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ?').bind(noL).first();
     if (!ordL) return err('订单不存在', 404);
-    // 新订单（salted 查询密码）：禁止走老 /lookup 取完整详情，必须用 /secret + 查询密码（单一授权路径）。
-    if (ordL.query_password_salt && ordL.query_password_hash) return err('新订单请使用查询密码在查询页查看卡密', 401);
+    // P3-18：/lookup 错误文案统一为“查单凭证错误”，不区分新旧订单（新订单仍须走 /secret + 查询密码）。
+    if (ordL.query_password_salt && ordL.query_password_hash) return err('查单凭证错误', 401);
     // 旧订单（有系统凭证哈希）：验证凭证哈希，验证通过返回完整详情。
     if (ordL.query_token_hash) {
-      if ((await sha256Hex(cred)) !== ordL.query_token_hash) return err('查单凭证错误', 401);
+      if (!timingSafeEqual(await sha256Hex(cred), ordL.query_token_hash)) return err('查单凭证错误', 401);
       return json({ ok: true, order: sanitizeOrderForPublic(ordL, 'full') });
     }
     // 旧订单（无凭证哈希）：用旧查询密码验证，但只返回概要，不返回交付内容与客户隐私（需交付内容请联系客服）。
-    if (cred && cred === ordL.query_password && ordL.query_password) return json({ ok: true, order: sanitizeOrderForPublic(ordL, 'summary'), legacy: true });
-    return err('查单凭证或旧查询密码错误，请联系客服获取交付内容', 401);
+    // P2-2：明文验证成功后立即迁移为 salt+PBKDF2 哈希并清空明文 query_password 列（不做全量批量迁移）。
+    if (cred && ordL.query_password && timingSafeEqual(cred, ordL.query_password)) {
+      try {
+        var migSalt = bufToB64(crypto.getRandomValues(new Uint8Array(16)).buffer);
+        var migHash = await hashPassword(cred, migSalt);
+        await env.DB.prepare('UPDATE orders SET query_password_hash = ?, query_password_salt = ?, query_password = ? WHERE order_no = ?').bind(migHash, migSalt, '', noL).run();
+      } catch (e) {}
+      return json({ ok: true, order: sanitizeOrderForPublic(ordL, 'summary'), legacy: true });
+    }
+    return err('查单凭证错误', 401);
   }
   // POST 查单列表（P0）：仅接受订单号。邮箱查询已禁用（邮箱不是身份凭证，且邮件验证未实现）。
   // 关键词含 @（像邮箱）时返回与“订单不存在”相同的通用响应，不泄露其为邮箱。
@@ -1981,7 +2285,10 @@ async function handleApi(req, env, url, ctx) {
       var credType = 'legacy';
       if (o.query_password_salt && o.query_password_hash) credType = 'password';
       else if (o.query_token_hash) credType = 'token';
-      return { order_no: o.order_no, status: o.status, product_title: snap.title || '', quantity: o.quantity, total_usdt: o.total_usdt, pay_method: o.pay_method, pay_chain: o.pay_chain, created_at: o.created_at, paid_at: o.paid_at, credential_type: credType };
+      var item = { order_no: o.order_no, status: o.status, product_title: snap.title || '', quantity: o.quantity, total_usdt: o.total_usdt, pay_method: o.pay_method, pay_chain: o.pay_chain, created_at: o.created_at, paid_at: o.paid_at, credential_type: credType };
+      // P1-13：pending_payment 订单附带 pay_address（商家公开收款地址，非买家隐私），成功页刷新后仍能恢复付款信息。
+      if (o.status === 'pending_payment') item.pay_address = o.pay_address || '';
+      return item;
     });
     return json({ ok: true, orders: qList, total: qList.length });
   }
@@ -2010,10 +2317,12 @@ async function handleApi(req, env, url, ctx) {
     if (ordS.query_token_hash) return err('旧订单请使用订单号 + 查单凭证在原查询方式查询', 410);
     // legacy（无 salted 密码）：仅管理员流程，绝不匿名返回卡密。
     if (!ordS.query_password_salt || !ordS.query_password_hash) return err('该订单未设置查询密码，请联系客服处理', 403);
-    // PBKDF2 校验（与管理员密码同一方案）。错误 → 通用 401，不区分密码错/订单状态。
+    // PBKDF2 校验（与管理员密码同一方案，恒定时间比较）。错误 → 通用 401，不区分密码错/订单状态。
     var calcHash = '';
     try { calcHash = await hashPassword(pw, ordS.query_password_salt); } catch (e) { calcHash = ''; }
-    if (!calcHash || calcHash !== ordS.query_password_hash) return err('查询密码错误', 401);
+    if (!calcHash || !timingSafeEqual(calcHash, ordS.query_password_hash)) return err('查询密码错误', 401);
+    // P1-9：/secret 返回前校验 7 天过期（与 sanitizeOrderForPublic 同口径），过期则拒绝，不返回已过期应清空的卡密。
+    if (ordS.data_expired === 1 || isExpired7d(ordS.fulfilled_at)) return err('交付内容已过期（仅保留 7 天）', 410);
     // 认证通过后才返回状态相关信息：未付款/无交付 → 明确提示（已认证用户可看状态）。
     if (ordS.status !== 'completed' && !ordS.delivery_content) return err('订单尚未付款或暂无交付内容');
     return json({ ok: true, order_no: ordS.order_no, delivery_content: ordS.delivery_content || '' });
@@ -2030,22 +2339,30 @@ async function handleApi(req, env, url, ctx) {
     if (o2.status !== 'pending_payment') return err('当前状态不可提交 TXID');
     // 白名单封堵：仅首期两种组合可提交 TXID 核验；旧 TRC20/ERC20/站内转账订单请联系客服人工处理。
     if (!validPayCombo(o2.pay_method, o2.pay_chain)) return err('该订单的支付方式不在首期支持范围内，请联系客服处理');
+    // P3-4：/pay 增加验证码校验（字段名与下单一致：captcha_id / captcha_code；Turnstile 开启时走 Turnstile），
+    // 防知订单号者耗尽该订单的 /pay 配额。注意：验证码一次性，提交前需先取新验证码。
+    var settingsPay = await getAllSettings(env);
+    if (String(settingsPay.turnstile_enabled || '0') === '1') {
+      var tsErrPay = await verifyTurnstile(env, b.turnstile_token, getClientIp(req));
+      if (tsErrPay) return err(tsErrPay);
+    } else {
+      var capErrPay = await verifyCaptcha(env, b.captcha_id, b.captcha_code);
+      if (capErrPay) return err(capErrPay);
+    }
     // /pay 独立限流（第四轮 P0）：同一订单 10 分钟最多 5 次，同一 IP 10 分钟最多 20 次。
     // 受限不影响后台轮询继续核验已到账的付款，订单不会因限流永久无法处理。
     var payRateErr = await checkPayRateLimit(env, req, no2);
     if (payRateErr) return err(payRateErr, 429);
-    // 付款账本：提交时先记一笔 submitted（event_key 未知为空，核验后回填）。同一 (chain, tx_hash, '') 重复提交不重复建行。
-    // 非白名单订单已在上方拒绝，此处均为链上订单。
-    var payRec = null;
-    try { var pr = await recordPayment(env, { order_id: o2.id, chain: o2.pay_chain, pay_address: o2.pay_address || o2.wallet_address, tx_hash: txid, event_key: '', amount: o2.actual_amount || o2.total_usdt, status: 'submitted', reconcile_note: '用户经 /pay 提交' }); payRec = pr.payment || null; } catch (e) { payRec = null; }
+    // P3-3：核验失败不建账本行。账本行只在核验通过后建（verified），失败仅把 TXID 存订单（且仅当 txid 为空时）。
 
     // 链上：可选兜底，按需核验同一 TXID，成功即自动发货（链上核验通过 = 链上证明）。
     // TXID 认领严格先到先得：若该 TXID 已被其他订单认领，返回明确错误，不静默接受为“已提交”（否则客户误以为付款成功，实际订单永远无法认领）。
     var hit = null;
     try { hit = await checkTxidPayment(env, fetch, o2, txid); } catch (e) { hit = null; }
     if (hit && hit.txHash) {
-      // 核验通过：账本推进为 verified/confirmed（确认数由 checkTxidPayment 按该链确认策略保证，与 runPolling 一致）。
-      if (payRec) { try { await updatePayment(env, payRec.id, { status: 'verified', confirmations: 1 }); } catch (e) {} }
+      // 核验通过：建账本行（verified，event_key 未知为空，扫描时回填；确认数由 checkTxidPayment 按该链确认策略保证，与 runPolling 一致）。
+      var payRec = null;
+      try { var pr = await recordPayment(env, { order_id: o2.id, chain: o2.pay_chain, pay_address: o2.pay_address || o2.wallet_address, tx_hash: hit.txHash, event_key: '', amount: o2.actual_amount || o2.total_usdt, status: 'verified', reconcile_note: '用户经 /pay 提交并核验通过' }); payRec = pr.payment || null; } catch (e) { payRec = null; }
       var fr = await fulfillOrderByPayment(env, o2, hit.txHash, ctx, { txVerified: true });
       if (fr.ok && (fr.mode === 'completed' || fr.mode === 'pending_fulfill' || fr.mode === 'out_of_stock')) {
         if (payRec) { try { await updatePayment(env, payRec.id, { status: 'posted' }); } catch (e) {} }
@@ -2055,11 +2372,12 @@ async function handleApi(req, env, url, ctx) {
       if (fr.ok && fr.mode === 'out_of_stock') return json({ ok: true, message: '核验通过但库存不足，已转人工处理', auto: true });
       if (fr.reason && /已用于其他订单/.test(fr.reason)) {
         // 账本：该 TXID 已归属其他订单，标记 duplicate（需人工对账，不得静默接受）。
-        if (payRec) { try { await updatePayment(env, payRec.id, { status: 'duplicate', reconcile_status: 'pending', reconcile_note: 'TXID 已用于其他订单' }); } catch (e) {} }
+        try { var prDup = await recordPayment(env, { order_id: o2.id, chain: o2.pay_chain, pay_address: o2.pay_address || o2.wallet_address, tx_hash: hit.txHash, event_key: '', amount: o2.actual_amount || o2.total_usdt, status: 'duplicate', reconcile_status: 'pending', reconcile_note: 'TXID 已用于其他订单' }); } catch (e) {}
         return err('该交易哈希已用于其他订单，请勿重复提交；如确认归属有误请联系客服', 409);
       }
     }
-    await env.DB.prepare('UPDATE orders SET txid = ? WHERE order_no = ?').bind(txid, no2).run();
+    // P3-3 + P3-21：仅当 txid 为空时写入，且加 status='pending_payment' 状态守卫，不覆盖已提交的真实 TXID。
+    await env.DB.prepare("UPDATE orders SET txid = ? WHERE order_no = ? AND status='pending_payment' AND (txid IS NULL OR txid='')").bind(txid, no2).run();
     return json({ ok: true, message: 'TXID 已提交，轮询会在 1-3 分钟内自动核验；若链上还未确认请稍后再查', auto: false });
   }
 
@@ -2083,7 +2401,7 @@ async function handleApi(req, env, url, ctx) {
       mustChange = true;
     } else {
       var h = await hashPassword(pw, storedSalt || '');
-      if (h !== storedHash) { await recordLoginFail(env, loginIp); await recordLoginFailGlobal(env); return err('密码错误', 401); }
+      if (!timingSafeEqual(h, storedHash)) { await recordLoginFail(env, loginIp); await recordLoginFailGlobal(env); return err('密码错误', 401); }
     }
     await clearLoginAttempts(env, loginIp);
     var token = randomHex(32);
@@ -2094,6 +2412,9 @@ async function handleApi(req, env, url, ctx) {
     return resp;
   }
   if (path === '/api/admin/logout' && method === 'POST') {
+    // P3-11：logout 加 CSRF 校验（与通用管理端写操作同一扇门），防跨站请求登出管理员。
+    var csrfErrLogout = checkCsrf(req, url);
+    if (csrfErrLogout) return err(csrfErrLogout, 403);
     var tok = getCookie(req, 'session_token');
     if (tok) await env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(tok).run();
     var r2 = json({ ok: true });
@@ -2118,11 +2439,13 @@ async function handleApi(req, env, url, ctx) {
     var newPw = String(cb.new_password || '');
     if (newPw.length < 8) return err('新密码至少 8 位');
     if (newPw.length > 128) return err('新密码过长（最多 128 位）');
+    // P3-12：改密校验新密码 ≠ 旧密码。
+    if (newPw === oldPw) return err('新密码不能与旧密码相同');
     var sh = await getAdminMeta(env, 'password_hash');
     var ss = await getAdminMeta(env, 'password_salt');
     if (sh) {
       var hh = await hashPassword(oldPw, ss || '');
-      if (hh !== sh) return err('旧密码错误', 401);
+      if (!timingSafeEqual(hh, sh)) return err('旧密码错误', 401);
     } else if (oldPw !== 'admin') return err('旧密码错误', 401);
     var newSalt = bufToB64(crypto.getRandomValues(new Uint8Array(16)).buffer);
     var newHash = await hashPassword(newPw, newSalt);
@@ -2176,7 +2499,7 @@ async function handleApi(req, env, url, ctx) {
     var countSql = 'SELECT COUNT(*) as c FROM orders WHERE 1=1';
     var binds = [];
     if (st && ORDER_STATUSES.indexOf(st) !== -1) { sql += ' AND status = ?'; countSql += ' AND status = ?'; binds.push(st); }
-    if (q) { sql += ' AND (order_no LIKE ? OR contact LIKE ? OR txid LIKE ?)'; countSql += ' AND (order_no LIKE ? OR contact LIKE ? OR txid LIKE ?)'; binds.push('%' + q + '%', '%' + q + '%', '%' + q + '%'); }
+    if (q) { sql += ' AND (instr(order_no, ?) > 0 OR instr(contact, ?) > 0 OR instr(txid, ?) > 0)'; countSql += ' AND (instr(order_no, ?) > 0 OR instr(contact, ?) > 0 OR instr(txid, ?) > 0)'; binds.push(q, q, q); }
     if (dateFrom) { sql += ' AND created_at >= ?'; countSql += ' AND created_at >= ?'; binds.push(dateFrom); }
     if (dateTo) { sql += ' AND created_at <= ?'; countSql += ' AND created_at <= ?'; binds.push(dateTo + ' 23:59:59'); }
     sql += ' ORDER BY id DESC LIMIT ? OFFSET ?';
@@ -2196,7 +2519,7 @@ async function handleApi(req, env, url, ctx) {
   if (mAdminOrder && method === 'GET') {
     var oneOrd = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(Number(mAdminOrder[1])).first();
     if (!oneOrd) return err('订单不存在', 404);
-    return json({ ok: true, order: sanitizeOrderForPublic(oneOrd) });
+    return json({ ok: true, order: sanitizeOrderForPublic(oneOrd, 'admin') });
   }
   var mConfirm = path.match(/^\/api\/admin\/orders\/(\d+)\/confirm-payment$/);
   if (mConfirm && method === 'POST') {
@@ -2212,12 +2535,15 @@ async function handleApi(req, env, url, ctx) {
     if (!cr2.ok) return err(cr2.reason || '发货失败');
     var afterSt = (await env.DB.prepare('SELECT status FROM orders WHERE id = ?').bind(oid).first() || {}).status || oo.status;
     var auditOkC = await logAudit(env, oid, 'confirm_payment', 'pending_payment', afterSt, '管理员人工确认收款' + (confirmReason ? '，原因：' + confirmReason : ''));
-    if (!auditOkC) return err(auditFailMsg(oid, 'confirm_payment'), 500);
-    if (cr2.mode === 'completed') return json({ ok: true, message: '已确认收款并自动发货' });
-    if (cr2.mode === 'pending_activation') return json({ ok: true, message: '已确认收款，上游激活待处理（pending_activation），轮询等待 delivered' });
-    if (cr2.mode === 'pending_upstream') return json({ ok: true, message: '已确认收款，上游暂不可发货（' + (cr2.reason || '') + '），已转 pending_upstream' });
-    if (cr2.mode === 'out_of_stock') return json({ ok: true, message: '已确认收款但库存不足，已转人工处理' });
-    return json({ ok: true, message: '已确认收款，等待发货' });
+    // P3-20：审计失败不返回 500（副作用已提交）：记录日志 + 返回成功并附带 audit_failed 警告。
+    var auditExtraC = {};
+    if (!auditOkC) { console.error('audit failed: confirm_payment order=' + oid); auditExtraC = { audit_failed: true, warning: auditFailMsg(oid, 'confirm_payment') }; }
+    if (cr2.mode === 'completed') return json(Object.assign({ ok: true, message: '已确认收款并自动发货' }, auditExtraC));
+    if (cr2.mode === 'pending_activation') return json(Object.assign({ ok: true, message: '已确认收款，上游激活待处理（pending_activation），轮询等待 delivered' }, auditExtraC));
+    if (cr2.mode === 'pending_upstream') return json(Object.assign({ ok: true, message: '已确认收款，上游暂不可发货（' + (cr2.reason || '') + '），已转 pending_upstream' }, auditExtraC));
+    if (cr2.mode === 'out_of_stock') return json(Object.assign({ ok: true, message: '已确认收款但库存不足，已转人工处理' }, auditExtraC));
+    if (cr2.mode === 'refund_pending') return json(Object.assign({ ok: true, message: '已确认收款，但上游订单终态失败，已转异常待退款处理' }, auditExtraC));
+    return json(Object.assign({ ok: true, message: '已确认收款，等待发货' }, auditExtraC));
   }
   var mFulfill = path.match(/^\/api\/admin\/orders\/(\d+)\/fulfill$/);
   if (mFulfill && method === 'POST') {
@@ -2226,32 +2552,51 @@ async function handleApi(req, env, url, ctx) {
     var fo = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(fid).first();
     if (!fo) return err('订单不存在', 404);
     // 状态机：待付款订单不能直接发货（必须先确认收款）；已完成/已取消为终态，不可发货。
-    // 待发货 / 激活待处理 / 上游异常 / 退款待处理可由管理员手动发货（显式兜底，如上游卡住时手动交付；退款待处理发货后退款不再需要）。
     if (fo.status === 'pending_payment') return err('待付款订单不能直接发货，请先确认收款');
     if (fo.status === 'completed' || fo.status === 'cancelled') return err('当前状态不可发货');
+    // P1-12：refund_pending 禁直接手动发货（会清空退款标记、抹掉待退款义务）。如确认无需退款，
+    // 须先走单独的“撤销退款义务”动作（写明退款未执行 + 审计），再发货；本接口不提供该兜底。
+    if (fo.status === 'refund_pending') return err('退款待处理（refund_pending）订单不可直接手动发货：该订单已有待退款义务，直接发货会清空退款标记。如确认无需退款，请先单独撤销退款义务（写明退款未执行 + 审计）后再发货。', 409);
+    // P1-5：上游订单作废确认旗标。pending_activation/pending_upstream 且有上游单号时，必须由管理员先在
+    // 上游后台作废该上游订单，并在请求体中确认 upstream_voided === true（前端配合加复选框），否则 409；
+    // 无上游单号时不要求旗标。本系统不调用上游取消接口，只做确认旗标路径。
+    var foUp = await getLatestUpstream(env, fid);
+    var foPsId = foUp ? (foUp.prodseller_order_id || '') : '';
+    if ((fo.status === 'pending_activation' || fo.status === 'pending_upstream') && foPsId && fb.upstream_voided !== true) return err('请先在上游后台作废该上游订单，并确认 upstream_voided（上游单号：' + foPsId + '）', 409);
+    // P1-7：手动发货认领租约（条件 UPDATE，复用 upstream_lock，5 分钟过期）。并发手动发货/轮询处理同一订单时
+    // 只有一个能持有租约；租约过期后可接管。完成 UPDATE 同样带租约条件，失败时释放租约。
+    var fulfillLease = randomHex(16);
+    var fulfillLeaseExp = new Date(Date.now() + 5 * 60000).toISOString().replace('T', ' ').slice(0, 19);
+    var leaseF = await env.DB.prepare("UPDATE orders SET upstream_lock=?, upstream_lock_expires_at=? WHERE id=? AND status IN ('pending_fulfill','pending_activation','pending_upstream') AND (upstream_lock IS NULL OR upstream_lock='' OR upstream_lock_expires_at IS NULL OR upstream_lock_expires_at < datetime('now'))").bind(fulfillLease, fulfillLeaseExp, fid).run();
+    if (!leaseF.meta || leaseF.meta.changes !== 1) return err('当前状态不可发货（可能已被其他操作处理或正在被轮询处理，请稍后再试）');
+    var releaseFulfillLease = async function () { try { await env.DB.prepare('UPDATE orders SET upstream_lock=?, upstream_lock_expires_at=NULL WHERE id=? AND upstream_lock=?').bind('', fid, fulfillLease).run(); } catch (e) {} };
     var fp = await env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(fo.product_id).first();
     var delivery = String(fb.delivery_content || '').trim();
     var autoAssigned = null; // 自动发卡时记录本轮新标记的卡，供完成失败时补偿
     if (fp && fp.stock_type === 'card' && !delivery) {
       // 自动发卡：两阶段领取（可恢复）→ 条件完成。领取失败返回错误，不吃卡。
       var ccF = await claimCardsForOrder(env, fid, fo.product_id, fo.quantity);
-      if (!ccF.ok) return err(ccF.reason === 'out_of_stock' ? '卡密库存不足，请先导入卡密或手动填写交付内容' : ('卡密领取失败：' + ccF.reason));
+      if (!ccF.ok) { await releaseFulfillLease(); return err(ccF.reason === 'out_of_stock' ? '卡密库存不足，请先导入卡密或手动填写交付内容' : ('卡密领取失败：' + ccF.reason)); }
       delivery = ccF.codes.join('\n');
       autoAssigned = ccF.newlyMarkedIds;
     }
-    if (!delivery) return err('请填写交付内容');
+    if (!delivery) { await releaseFulfillLease(); return err('请填写交付内容'); }
     var fulfillNote = String(fb.admin_note || '').trim();
-    var upF = await env.DB.prepare("UPDATE orders SET status='completed', delivery_content=?, admin_note=?, paid_at=COALESCE(paid_at, ?), fulfilled_at=?, refund_status='', exception_reason='', claim_token='' WHERE id=? AND status IN ('pending_fulfill','pending_activation','pending_upstream','refund_pending')").bind(delivery, fulfillNote, nowISO(), nowISO(), fid).run();
+    var upF = await env.DB.prepare("UPDATE orders SET status='completed', delivery_content=?, admin_note=?, paid_at=COALESCE(paid_at, ?), fulfilled_at=?, refund_status='', exception_reason='', claim_token='', upstream_lock='', upstream_lock_expires_at=NULL WHERE id=? AND status IN ('pending_fulfill','pending_activation','pending_upstream') AND upstream_lock=?").bind(delivery, fulfillNote, nowISO(), nowISO(), fid, fulfillLease).run();
     if (!upF.meta || upF.meta.changes === 0) {
-      // 完成失败（并发下已被其他操作处理）：补偿本轮自动标记的卡
+      // 完成失败（并发下已被其他操作处理）：补偿本轮自动标记的卡（unmarkCards 有 completed 保护，已完成时不还卡）
       if (autoAssigned && autoAssigned.length) await unmarkCards(env, fid, autoAssigned);
+      await releaseFulfillLease();
       return err('当前状态不可发货（可能已被其他操作处理）');
     }
+    // P1-6：delivery 非空时检查本订单名下 is_used=1 的残留卡，未随本次交付发出的释放回可用池并记入审计。
+    var residual = await releaseResidualMarkedCards(env, fid, delivery);
     // 人工填写交付内容完成：释放该订单尚未使用的预留卡（必须在完成状态转换成功后释放，不提前、不释放他人卡）。
     // 自动发卡时预留卡已转为已用，releaseReservation 只释放 is_used=0 的预留卡，不会误释放已用卡。
     await releaseReservation(env, fid);
-    var auditOkF = await logAudit(env, fid, 'fulfill', fo.status, 'completed', '管理员手动发货' + (fulfillNote ? '，备注：' + fulfillNote : ''));
-    if (!auditOkF) return err(auditFailMsg(fid, 'fulfill'), 500);
+    var auditOkF = await logAudit(env, fid, 'fulfill', fo.status, 'completed', '管理员手动发货' + (fulfillNote ? '，备注：' + fulfillNote : '') + (foPsId && (fo.status === 'pending_activation' || fo.status === 'pending_upstream') ? '，上游单号：' + foPsId + '（已确认上游作废 upstream_voided）' : (foPsId ? '，上游单号：' + foPsId : '')) + (residual.released ? '，释放残留已标记卡 ' + residual.released + ' 张（未随本次交付发出）' : ''));
+    // P3-20：审计失败不返回 500：记录日志 + 返回成功并附带 audit_failed 警告。
+    if (!auditOkF) { console.error('audit failed: fulfill order=' + fid); return json({ ok: true, audit_failed: true, warning: auditFailMsg(fid, 'fulfill') }); }
     try { var fOrd = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(fid).first(); if (fOrd) await deliverWithCtx(ctx, sendOrderEmail(env, fOrd, fp, 'delivered', delivery)); } catch (e) {}
     return json({ ok: true });
   }
@@ -2264,20 +2609,24 @@ async function handleApi(req, env, url, ctx) {
     if (co.status === 'completed' || co.status === 'cancelled') return err('当前状态不可取消');
     // 已付款订单保护：pending_fulfill / pending_activation / pending_upstream / refund_pending 均为已付款状态，不得普通取消。
     // pending_payment 但 paid_at 已设置（已确认付款、处理中或处理崩溃待恢复）同样不得普通取消。
+    // P1-3：租约过期（claimed_at 超过 5 分钟）的陈旧认领可取消；claimed_at 为 NULL 时按原逻辑（视为未过期）。
     if (co.status !== 'pending_payment') {
       return err('已付款订单不能通过普通取消接口取消（当前状态：' + co.status + '）。如无法交付请走异常处理（标记退款待处理），本系统不执行真实退款，须在系统外退款后点“确认已退款”。', 409);
     }
-    if (co.paid_at) {
+    var leaseExpired = !!co.claimed_at && (new Date(String(co.claimed_at).replace(' ', 'T') + 'Z').getTime() < Date.now() - CLAIM_LEASE_MINUTES * 60000);
+    if (co.paid_at && !leaseExpired) {
       return err('该订单已确认付款（处理中），不能普通取消。如无法交付请走异常处理流程。', 409);
     }
     var cancelReason = String(cb2.reason || cb2.admin_note || '').trim();
-    // 条件取消：仅未付款、未被认领的待付款订单。并发下付款认领与取消只允许一个成功。
-    var upC = await env.DB.prepare("UPDATE orders SET status='cancelled', admin_note=? WHERE id=? AND status='pending_payment' AND paid_at IS NULL AND (claim_token IS NULL OR claim_token='')").bind(cancelReason, cid).run();
+    // 条件取消：未付款未认领的待付款订单，或租约过期的陈旧认领。并发下付款认领与取消只允许一个成功。
+    var upC = await env.DB.prepare("UPDATE orders SET status='cancelled', admin_note=? WHERE id=? AND status='pending_payment' AND (((paid_at IS NULL) AND (claim_token IS NULL OR claim_token='')) OR (claimed_at IS NOT NULL AND claimed_at < datetime('now', '-" + CLAIM_LEASE_MINUTES + " minutes')))").bind(cancelReason, cid).run();
     if (!upC.meta || upC.meta.changes === 0) return err('当前状态不可取消（可能已被其他操作处理或已确认付款）');
-    // 取消时释放本订单的卡密预留（仅 is_used=0 的预留卡）
+    // 取消时释放本订单的卡密预留（仅 is_used=0 的预留卡）与陈旧认领已标记未交付的卡。
     await releaseReservation(env, cid);
+    await releaseClaimedButUndeliveredCards(env, cid);
     var auditOkX = await logAudit(env, cid, 'cancel', co.status, 'cancelled', '管理员取消订单' + (cancelReason ? '，原因：' + cancelReason : ''));
-    if (!auditOkX) return err(auditFailMsg(cid, 'cancel'), 500);
+    // P3-20：审计失败不返回 500：记录日志 + 返回成功并附带 audit_failed 警告。
+    if (!auditOkX) { console.error('audit failed: cancel order=' + cid); return json({ ok: true, audit_failed: true, warning: auditFailMsg(cid, 'cancel') }); }
     return json({ ok: true });
   }
   // ---- 已付款订单异常处理（第二轮 P0）----
@@ -2295,19 +2644,26 @@ async function handleApi(req, env, url, ctx) {
     if (!exReason) return err('请填写异常原因');
     var exNote = String(eb.note || eb.admin_note || '').trim();
     var refundNeeded = !!eb.refund_needed;
+    // P1-5：exception 时把上游单号记入 admin_note + 审计（本系统不调用上游取消接口，如需取消请到上游后台作废）。
+    var exUp = await getLatestUpstream(env, eid);
+    var exPsId = exUp ? (exUp.prodseller_order_id || '') : '';
+    var exUpNote = exPsId ? ('上游单号：' + exPsId + '（如需取消请到上游后台作废）') : '';
+    var exAdminNote = (exNote ? exNote + '；' : '') + exUpNote;
     if (refundNeeded) {
       // 退款仅针对已付款订单：未付款（pending_payment / paid_at 为空）的订单没有收到钱，无需退款，应直接取消，不得制造幽灵退款义务。
       if (eo.status === 'pending_payment' || !eo.paid_at) return err('未付款订单无需退款，请直接取消订单');
-      var upE = await env.DB.prepare("UPDATE orders SET status='refund_pending', refund_status='pending', exception_reason=?, admin_note=? WHERE id=? AND status IN ('pending_fulfill','pending_activation','pending_upstream') AND paid_at IS NOT NULL").bind(exReason, exNote, eid).run();
+      var upE = await env.DB.prepare("UPDATE orders SET status='refund_pending', refund_status='pending', exception_reason=?, admin_note=? WHERE id=? AND status IN ('pending_fulfill','pending_activation','pending_upstream') AND paid_at IS NOT NULL").bind(exReason, exAdminNote, eid).run();
       if (!upE.meta || upE.meta.changes === 0) return err('当前状态不可标记异常（可能已被处理）');
-      var auditOkE = await logAudit(env, eid, 'order_exception', eo.status, 'refund_pending', '异常处理：标记退款待处理，原因：' + exReason + (exNote ? '，备注：' + exNote : ''));
-      if (!auditOkE) return err(auditFailMsg(eid, 'order_exception'), 500);
+      var auditOkE = await logAudit(env, eid, 'order_exception', eo.status, 'refund_pending', '异常处理：标记退款待处理，原因：' + exReason + (exNote ? '，备注：' + exNote : '') + (exUpNote ? '，' + exUpNote : ''));
+      if (!auditOkE) { console.error('audit failed: order_exception order=' + eid); return json({ ok: true, message: '已标记为退款待处理。注意：本系统不执行真实退款，请在系统外完成退款后点“确认已退款”。', audit_failed: true, warning: auditFailMsg(eid, 'order_exception') }); }
       return json({ ok: true, message: '已标记为退款待处理。注意：本系统不执行真实退款，请在系统外完成退款后点“确认已退款”。' });
     }
     // 不需要退款：仅记录异常原因与审计，状态不变（后续可重试 / 手动发货）。
-    await env.DB.prepare('UPDATE orders SET exception_reason=?, admin_note=? WHERE id=?').bind(exReason, exNote, eid).run();
-    var auditOkE2 = await logAudit(env, eid, 'order_exception_note', eo.status, eo.status, '异常记录（不退款）：' + exReason + (exNote ? '，备注：' + exNote : ''));
-    if (!auditOkE2) return err(auditFailMsg(eid, 'order_exception_note'), 500);
+    // P3-7：UPDATE 加状态守卫（不覆盖已完成订单的 admin_note）并检查 changes。
+    var upEN = await env.DB.prepare("UPDATE orders SET exception_reason=?, admin_note=? WHERE id=? AND status != 'completed'").bind(exReason, exAdminNote, eid).run();
+    if (!upEN.meta || upEN.meta.changes === 0) return err('当前状态不可标记异常（可能已被处理）');
+    var auditOkE2 = await logAudit(env, eid, 'order_exception_note', eo.status, eo.status, '异常记录（不退款）：' + exReason + (exNote ? '，备注：' + exNote : '') + (exUpNote ? '，' + exUpNote : ''));
+    if (!auditOkE2) { console.error('audit failed: order_exception_note order=' + eid); return json({ ok: true, message: '异常原因已记录，订单状态未变。', audit_failed: true, warning: auditFailMsg(eid, 'order_exception_note') }); }
     return json({ ok: true, message: '异常原因已记录，订单状态未变。' });
   }
   var mRefundConfirm = path.match(/^\/api\/admin\/orders\/(\d+)\/refund-confirm$/);
@@ -2319,13 +2675,18 @@ async function handleApi(req, env, url, ctx) {
     if (ro.status !== 'refund_pending') return err('仅退款待处理（refund_pending）订单可确认退款');
     var refundRef = String(rb.refund_ref || '').trim();
     if (!refundRef) return err('请填写退款凭证（退款交易哈希 / 转账记录编号），用于审计');
+    // P1-5：有上游单号时，确认退款前要求管理员先在上游后台作废该上游订单并确认 upstream_voided === true，
+    // 防退款后上游仍交付造成“退款 + 收货”双重得利；无上游单号时不要求旗标。本系统不调用上游取消接口。
+    var rfUp = await getLatestUpstream(env, rid);
+    var rfPsId = rfUp ? (rfUp.prodseller_order_id || '') : '';
+    if (rfPsId && rb.upstream_voided !== true) return err('请先在上游后台作废该上游订单，并确认 upstream_voided（上游单号：' + rfPsId + '）', 409);
     var refundNote = String(rb.note || rb.admin_note || '').trim();
     var upR = await env.DB.prepare("UPDATE orders SET status='cancelled', refund_status='refunded', refund_ref=?, admin_note=? WHERE id=? AND status='refund_pending'").bind(refundRef, refundNote, rid).run();
     if (!upR.meta || upR.meta.changes === 0) return err('当前状态不可确认退款（可能已被处理）');
     await releaseReservation(env, rid);
     await releaseClaimedButUndeliveredCards(env, rid);
-    var auditOkR = await logAudit(env, rid, 'refund_confirm', 'refund_pending', 'cancelled', '管理员确认已在系统外完成退款，退款凭证：' + refundRef + (refundNote ? '，备注：' + refundNote : ''));
-    if (!auditOkR) return err(auditFailMsg(rid, 'refund_confirm'), 500);
+    var auditOkR = await logAudit(env, rid, 'refund_confirm', 'refund_pending', 'cancelled', '管理员确认已在系统外完成退款，退款凭证：' + refundRef + (refundNote ? '，备注：' + refundNote : '') + (rfPsId ? '，上游单号：' + rfPsId + '（已确认上游作废 upstream_voided）' : ''));
+    if (!auditOkR) { console.error('audit failed: refund_confirm order=' + rid); return json({ ok: true, message: '已确认退款，订单已取消。', audit_failed: true, warning: auditFailMsg(rid, 'refund_confirm') }); }
     return json({ ok: true, message: '已确认退款，订单已取消。' });
   }
 
@@ -2343,8 +2704,10 @@ async function handleApi(req, env, url, ctx) {
     if (!rqO) return err('订单不存在', 404);
     var newSalt = bufToB64(crypto.getRandomValues(new Uint8Array(16)).buffer);
     var newHash = await hashPassword(newPw, newSalt);
-    await env.DB.prepare('UPDATE orders SET query_password_hash = ?, query_password_salt = ? WHERE id = ?').bind(newHash, newSalt, rqId).run();
-    await logAudit(env, rqId, 'reset_query_password', rqO.status, rqO.status, '管理员重置了该订单的查询密码');
+    // P3-6：同步清空遗留明文 query_password 列，并检查 logAudit 返回值。
+    await env.DB.prepare('UPDATE orders SET query_password_hash = ?, query_password_salt = ?, query_password = ? WHERE id = ?').bind(newHash, newSalt, '', rqId).run();
+    var auditOkRQ = await logAudit(env, rqId, 'reset_query_password', rqO.status, rqO.status, '管理员重置了该订单的查询密码');
+    if (!auditOkRQ) { console.error('audit failed: reset_query_password order=' + rqId); return json({ ok: true, message: '查询密码已重置，请将新密码告知买家', audit_failed: true, warning: auditFailMsg(rqId, 'reset_query_password') }); }
     return json({ ok: true, message: '查询密码已重置，请将新密码告知买家' });
   }
 
@@ -2406,7 +2769,7 @@ async function handleApi(req, env, url, ctx) {
     var psql = 'SELECT * FROM products WHERE 1=1';
     var pcountSql = 'SELECT COUNT(*) as c FROM products WHERE 1=1';
     var pbinds = [];
-    if (qP) { psql += ' AND (title LIKE ? OR slug LIKE ?)'; pcountSql += ' AND (title LIKE ? OR slug LIKE ?)'; pbinds.push('%' + qP + '%', '%' + qP + '%'); }
+    if (qP) { psql += ' AND (instr(title, ?) > 0 OR instr(slug, ?) > 0)'; pcountSql += ' AND (instr(title, ?) > 0 OR instr(slug, ?) > 0)'; pbinds.push(qP, qP); }
     if (['recharge', 'account', 'card'].indexOf(catP) !== -1) { psql += ' AND category = ?'; pcountSql += ' AND category = ?'; pbinds.push(catP); }
     if (['self', 'prodseller'].indexOf(srcP) !== -1) { psql += ' AND source = ?'; pcountSql += ' AND source = ?'; pbinds.push(srcP); }
     if (actP === '0' || actP === '1') { psql += ' AND is_active = ?'; pcountSql += ' AND is_active = ?'; pbinds.push(Number(actP)); }
@@ -2482,7 +2845,7 @@ async function handleApi(req, env, url, ctx) {
     if (cardCnt && Number(cardCnt.c) > 0) return err('该商品还有 ' + cardCnt.c + ' 条卡密，请先在卡密页删除或转移卡密后再删除商品', 409);
     await env.DB.prepare('DELETE FROM products WHERE id = ?').bind(delId).run();
     var auditOkDel = await logAudit(env, null, 'product_delete', '', '', '删除商品 ID ' + delId + '（' + String(delP.title || '') + '）');
-    if (!auditOkDel) return err(auditFailMsg(delId, 'product_delete'), 500);
+    if (!auditOkDel) { console.error('audit failed: product_delete product=' + delId); return json({ ok: true, audit_failed: true, warning: auditFailMsg(delId, 'product_delete') }); }
     return json({ ok: true });
   }
 
@@ -2501,7 +2864,7 @@ async function handleApi(req, env, url, ctx) {
     else if (cstatus === 'used') { csql += ' AND is_used = 1'; ccountSql += ' AND is_used = 1'; }
     else if (cstatus === 'disabled') { csql += ' AND is_disabled = 1'; ccountSql += ' AND is_disabled = 1'; }
     else if (cstatus === 'reserved') { csql += ' AND is_used = 0 AND is_disabled = 0 AND reserved_order_id IS NOT NULL'; ccountSql += ' AND is_used = 0 AND is_disabled = 0 AND reserved_order_id IS NOT NULL'; }
-    if (cq) { csql += ' AND (code LIKE ? OR CAST(id AS TEXT) LIKE ?)'; ccountSql += ' AND (code LIKE ? OR CAST(id AS TEXT) LIKE ?)'; cbinds.push('%' + cq + '%', '%' + cq + '%'); }
+    if (cq) { csql += ' AND (instr(code, ?) > 0 OR instr(CAST(id AS TEXT), ?) > 0)'; ccountSql += ' AND (instr(code, ?) > 0 OR instr(CAST(id AS TEXT), ?) > 0)'; cbinds.push(cq, cq); }
     csql += ' ORDER BY id DESC LIMIT ? OFFSET ?';
     var cStmt = env.DB.prepare(csql).bind.apply(env.DB.prepare(csql), cbinds.concat([cpageSize, (cpage - 1) * cpageSize]));
     var ccStmt = env.DB.prepare(ccountSql);
@@ -2509,6 +2872,8 @@ async function handleApi(req, env, url, ctx) {
     var cr = await cStmt.all();
     var cTotalRow = await ccStmt.first();
     var cTotal = Number((cTotalRow && cTotalRow.c) || 0);
+    // P3-10：卡密列表记审计（操作 + 商品 + 数量，不记 code）。审计失败不阻塞查询（读操作）。
+    await logAudit(env, null, 'cards_list', '', '', '查看卡密列表，商品ID：' + String(cpid || '全部') + '，状态：' + (cstatus || '全部') + '，数量：' + cTotal);
     return json({ ok: true, cards: cr.results || [], total: cTotal, page: cpage, page_size: cpageSize, total_pages: Math.max(1, Math.ceil(cTotal / cpageSize)) });
   }
   if (path === '/api/admin/cards/import' && method === 'POST') {
@@ -2532,8 +2897,14 @@ async function handleApi(req, env, url, ctx) {
       try {
         var ins = await env.DB.prepare('INSERT INTO cards (product_id, code) VALUES (?, ?)').bind(iPid, code).run();
         if (ins.meta && ins.meta.changes === 1) added++; else duplicate++;
-      } catch (e) { duplicate++; }
+      } catch (e) {
+        // P3-31：SELECT-then-INSERT 竞态下唯一约束冲突按“已存在”计入跳过数；其他 DB 错误计入无效，不静默误分类。
+        if (/UNIQUE constraint/i.test(String((e && e.message) || e || ''))) duplicate++; else invalid++;
+      }
     }
+    // P3-10：卡密导入记审计（操作 + 商品 + 数量，不记 code）。
+    var auditOkImp = await logAudit(env, null, 'cards_import', '', '', '导入卡密，商品ID：' + iPid + '，新增：' + added + '，已存在跳过：' + duplicate + '，无效：' + invalid);
+    if (!auditOkImp) return json({ ok: true, imported: added, added: added, duplicate: duplicate, invalid: invalid, total: lines.length, audit_failed: true, warning: auditFailMsg(null, 'cards_import') });
     return json({ ok: true, imported: added, added: added, duplicate: duplicate, invalid: invalid, total: lines.length });
   }
   var mCardDis = path.match(/^\/api\/admin\/cards\/(\d+)\/disable$/);
@@ -2626,20 +2997,28 @@ async function handleApi(req, env, url, ctx) {
   }
   if (path === '/api/admin/upstream/alerts' && method === 'GET') {
     // 后台置顶告警：pending_upstream 订单（402 余额不足 / 409 缺货 / 上游错误）
-    var al = await env.DB.prepare("SELECT * FROM orders WHERE status='pending_upstream' ORDER BY id ASC LIMIT 100").all();
-    return json({ ok: true, alerts: al.results || [] });
+    // P2-14：同时覆盖 pending_activation 超 30 分钟未 delivered 的订单，并区分“等待中”与“异常卡死”
+    // （alert_reason）。P3-8：走 sanitize summary 脱敏，不返回原始订单行。
+    var alUp = await env.DB.prepare("SELECT * FROM orders WHERE status='pending_upstream' ORDER BY id ASC LIMIT 100").all();
+    var alAct = await env.DB.prepare("SELECT * FROM orders WHERE status='pending_activation' AND COALESCE(paid_at, created_at) < datetime('now', '-30 minutes') ORDER BY id ASC LIMIT 100").all();
+    var alerts = [];
+    (alUp.results || []).forEach(function (x) { var s = sanitizeOrderForPublic(x, 'summary'); s.alert_reason = '上游待处理（pending_upstream）'; alerts.push(s); });
+    (alAct.results || []).forEach(function (x) { var s = sanitizeOrderForPublic(x, 'summary'); s.alert_reason = '上游已付款超 30 分钟未 delivered（pending_activation），等待中/异常卡死待核查'; alerts.push(s); });
+    return json({ ok: true, alerts: alerts });
   }
   var mUpRetry = path.match(/^\/api\/admin\/upstream\/orders\/(\d+)\/retry$/);
   if (mUpRetry && method === 'POST') {
     var rOrd = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(Number(mUpRetry[1])).first();
     if (!rOrd) return err('订单不存在', 404);
+    // P3-22：上游重试接口对非 pending_activation/pending_upstream 订单返回 409，不制造“重试成功”假象。
+    if (rOrd.status !== 'pending_activation' && rOrd.status !== 'pending_upstream') return err('仅 pending_activation / pending_upstream 订单可重试上游（当前状态：' + rOrd.status + '）', 409);
     var rb = await parseJsonBody(req);
     var retryReason = String(rb.reason || '').trim();
     var beforeRetry = rOrd.status;
     var pollRes = await pollUpstreamActivations(env, ctx, { orderId: Number(mUpRetry[1]) });
     var afterRetry = (await env.DB.prepare('SELECT status FROM orders WHERE id = ?').bind(Number(mUpRetry[1])).first() || {}).status || beforeRetry;
     var auditOkRetry = await logAudit(env, Number(mUpRetry[1]), 'upstream_retry', beforeRetry, afterRetry, '管理员重试上游轮询' + (retryReason ? '，原因：' + retryReason : ''));
-    if (!auditOkRetry) return err(auditFailMsg(Number(mUpRetry[1]), 'upstream_retry'), 500);
+    if (!auditOkRetry) { console.error('audit failed: upstream_retry order=' + Number(mUpRetry[1])); return json({ ok: true, poll: pollRes.poll || pollRes, audit_failed: true, warning: auditFailMsg(Number(mUpRetry[1]), 'upstream_retry') }); }
     return json({ ok: true, poll: pollRes.poll || pollRes });
   }
 
@@ -2678,7 +3057,7 @@ async function handleApi(req, env, url, ctx) {
       }
       if (key === 'rpc_urls') {
         var rk = Object.keys(parsed);
-        for (var j = 0; j < rk.length; j++) { if (!Array.isArray(parsed[rk[j]]) || !parsed[rk[j]].length) return 'rpc_urls 的 ' + rk[j] + ' 必须是非空 URL 数组'; for (var u = 0; u < parsed[rk[j]].length; u++) { if (typeof parsed[rk[j]][u] !== 'string' || parsed[rk[j]][u].indexOf('http') !== 0) return 'rpc_urls 的 ' + rk[j] + ' 包含无效 URL'; } }
+        for (var j = 0; j < rk.length; j++) { if (!Array.isArray(parsed[rk[j]]) || !parsed[rk[j]].length) return 'rpc_urls 的 ' + rk[j] + ' 必须是非空 URL 数组'; for (var u = 0; u < parsed[rk[j]].length; u++) { if (typeof parsed[rk[j]][u] !== 'string' || parsed[rk[j]][u].indexOf('https://') !== 0) return 'rpc_urls 的 ' + rk[j] + ' 必须使用 https:// 前缀（明文 http 可被中间人伪造链上日志）'; } }
       }
       if (key === 'usdt_contracts') {
         var ck = Object.keys(parsed);
@@ -2692,6 +3071,8 @@ async function handleApi(req, env, url, ctx) {
     }
     if (key === 'upstream_markup') { var mk = Number(v); if (!isFinite(mk) || mk <= 0 || mk > 100) return 'upstream_markup 必须是 0~100 之间的倍率'; return null; }
     if (key === 'upstream_fixed') { var fx = Number(v); if (!isFinite(fx) || fx < 0 || fx > 1000000) return 'upstream_fixed 必须是 0~1000000 之间的固定加价'; return null; }
+    if (key === 'large_order_usdt') { var lou = Number(v); if (!isFinite(lou) || lou <= 0 || lou > 1000000) return 'large_order_usdt 必须是 0~1000000 之间的大额阈值（USDT）'; return null; }
+    if (key === 'large_order_confirmations') { var loc = Number(v); if (!isFinite(loc) || loc < 1 || loc > 100 || Math.floor(loc) !== loc) return 'large_order_confirmations 必须是 1~100 的整数'; return null; }
     if (key === 'cny_rate') { var cr = Number(v); if (!isFinite(cr) || cr <= 0 || cr > 1000) return 'cny_rate 必须是 0~1000 之间的汇率'; return null; }
     if (key === 'poll_enabled') { if (v !== '0' && v !== '1') return 'poll_enabled 只能是 0 或 1'; return null; }
     if (key === 'tg_link') { if (v && v.indexOf('http') !== 0) return 'tg_link 必须是 URL'; return null; }
@@ -2729,7 +3110,7 @@ async function handleApi(req, env, url, ctx) {
       await env.DB.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind(keys[sj], String(entries[keys[sj]] == null ? '' : entries[keys[sj]])).run();
     }
     var auditOkS = await logAudit(env, null, 'settings_update', '', '', '修改设置：' + keys.join('、'));
-    if (!auditOkS) return err('设置已保存，但审计记录写入失败，请立即检查 admin_audit 表并手动补记（操作：settings_update）', 500);
+    if (!auditOkS) { console.error('audit failed: settings_update'); return json({ ok: true, audit_failed: true, warning: '设置已保存，但审计记录写入失败，请立即检查 admin_audit 表并手动补记（操作：settings_update）' }); }
     return json({ ok: true });
   }
   if (path === '/api/admin/cleanup' && method === 'POST') {
@@ -2767,7 +3148,8 @@ async function handleApi(req, env, url, ctx) {
     if (!payRow) return err('付款记录不存在', 404);
     if (payRow.status === 'posted') return err('已入账的付款无需对账');
     await updatePayment(env, payId, { status: 'reconciled', reconcile_status: 'resolved', reconcile_note: rNote });
-    await logAudit(env, payRow.order_id, 'payment_reconcile', payRow.status, 'reconciled', '人工对账付款记录 #' + payId + '：' + rNote);
+    var auditOkRecon = await logAudit(env, payRow.order_id, 'payment_reconcile', payRow.status, 'reconciled', '人工对账付款记录 #' + payId + '：' + rNote);
+    if (!auditOkRecon) { console.error('audit failed: payment_reconcile payment=' + payId); return json({ ok: true, audit_failed: true, warning: auditFailMsg(payRow.order_id, 'payment_reconcile') }); }
     return json({ ok: true });
   }
   // GET /api/admin/schema-check —— Schema 预检（只读）：校验实际 Schema 与目标版本是否一致，版本号与内容不一致时报告差异。

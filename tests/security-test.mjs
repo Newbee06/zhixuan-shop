@@ -7,6 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 const dir = path.dirname(fileURLToPath(import.meta.url)) + '/..';
 const db = new DatabaseSync(':memory:');
+// schema.sql 自 v15 起不再建 schema_migrations 表（仅 INSERT 预置版本），与 Worker runMigrations 一致：先建表再执行 schema.sql。
+// 注意：schema.sql 缺 CREATE TABLE schema_migrations 是代码侧缺陷（已在最终汇报中精确报告），测试侧按运行时行为先建表，不改 schema.sql。
+db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
 db.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
 // schema.sql 不含运行时迁移的列（ensureProductColumns / ensureSecurityTables 才加），测试里先补上
 for (const col of ['in_stock INTEGER NOT NULL DEFAULT 1', 'sort INTEGER NOT NULL DEFAULT 0', 'prodseller_id TEXT NOT NULL DEFAULT \'\'', 'requires_email_activation INTEGER NOT NULL DEFAULT 0', 'delivery_method TEXT NOT NULL DEFAULT \'both\'', 'source TEXT NOT NULL DEFAULT \'self\'', 'cost_price REAL NOT NULL DEFAULT 0', 'sell_price REAL NOT NULL DEFAULT 0', 'image_data TEXT NOT NULL DEFAULT \'\'']) {
@@ -306,9 +309,14 @@ check('order still pending_fulfill after note-only exception', q('SELECT status 
 r = await call('POST', '/api/admin/orders/' + ordP2.id + '/exception', { reason: '需退款测试', refund_needed: true }, cookie);
 check('exception2 -> refund_pending', r.json && r.json.ok === true);
 r = await call('POST', '/api/admin/orders/' + ordP2.id + '/fulfill', { delivery_content: 'MANUAL-DELIVERY-AFTER-EXCEPTION' }, cookie);
-check('refund_pending can be fulfilled', r.json && r.json.ok === true, JSON.stringify(r.json));
-check('refund_status cleared after fulfill', q('SELECT refund_status FROM orders WHERE id=?', ordP2.id).refund_status === '');
-check('exception_reason cleared after fulfill', q('SELECT exception_reason FROM orders WHERE id=?', ordP2.id).exception_reason === '');
+check('refund_pending cannot be fulfilled directly (P1-12)', r.status === 409 && r.json && !r.json.ok && /退款待处理/.test(r.json.error || ''), JSON.stringify(r.json));
+check('refund_status still pending after refused fulfill', q('SELECT refund_status FROM orders WHERE id=?', ordP2.id).refund_status === 'pending');
+// 走正常退款确认流程：无上游单号时无需 upstream_voided 旗标。
+r = await call('POST', '/api/admin/orders/' + ordP2.id + '/refund-confirm', { refund_ref: 'REFUND-TX-TEST-002' }, cookie);
+check('refund-confirm after refused fulfill ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+check('order cancelled after refund-confirm', q('SELECT status FROM orders WHERE id=?', ordP2.id).status === 'cancelled');
+check('refund_status is refunded', q('SELECT refund_status FROM orders WHERE id=?', ordP2.id).refund_status === 'refunded');
+check('refund_ref stored (second flow)', q('SELECT refund_ref FROM orders WHERE id=?', ordP2.id).refund_ref === 'REFUND-TX-TEST-002');
 
 // ===== 8d. 迁移状态端点 =====
 r = await call('GET', '/api/admin/migrate', null, cookie);

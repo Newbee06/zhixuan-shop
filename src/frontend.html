@@ -356,6 +356,9 @@ function copyText(t){
   fallbackCopy(t);
   function fallbackCopy(v){ var ta = document.createElement('textarea'); ta.value = v; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); done(); } catch (e) { toast('复制失败，请手动复制', 'error'); } ta.remove(); }
 }
+// 复制按钮统一走事件委托：按钮只带 data-copy-target="元素 id"（或 data-captcha-for="订单号" 刷新验证码），
+// 不再在 onclick 里拼 id / 拼内容，避免引号逃逸与注入。
+if (!window._copyDelegated) { window._copyDelegated = true; document.addEventListener('click', function(e){ var b = e.target && e.target.closest ? e.target.closest('[data-copy-target],[data-captcha-for]') : null; if (!b) return; var copyId = b.getAttribute('data-copy-target'); if (copyId) { var t = document.getElementById(copyId); if (t) copyText(t.textContent); return; } var capFor = b.getAttribute('data-captcha-for'); if (capFor) loadPayCaptchaFor(capFor); }); }
 // ---- Toast / Modal / Drawer（统一交互，替代原生 alert/confirm/prompt） ----
 function toast(msg, type){
   var wrap = el('toastWrap');
@@ -423,7 +426,7 @@ function paginationHTML(p, totalPages, fnName){
 }
 function fmtTime(s){ return s ? String(s).replace('T', ' ') : ''; }
 function catLabel(c){ if (c === 'recharge') return '代充'; if (c === 'account') return '成品号'; if (c === 'card') return '卡密'; return c; }
-function statusLabel(s){ if (s === 'pending_payment') return '待付款'; if (s === 'pending_fulfill') return '待发货'; if (s === 'pending_activation') return '激活待处理'; if (s === 'pending_upstream') return '待处理'; if (s === 'refund_pending') return '退款待处理'; if (s === 'completed') return '已完成'; if (s === 'cancelled') return '已取消'; return s; }
+function statusLabel(s){ if (s === 'pending_payment') return '待付款'; if (s === 'pending_fulfill') return '待发货'; if (s === 'pending_activation') return '激活待处理'; if (s === 'pending_upstream') return '待处理'; if (s === 'refund_pending') return '退款待处理'; if (s === 'completed') return '已完成'; if (s === 'cancelled') return '已取消'; return escH(s); }
 function fmtCountdown(exp){ if (!exp) return ''; var diff = Math.max(0, new Date(String(exp).replace(' ', 'T') + 'Z').getTime() - Date.now()); var m = Math.floor(diff / 60000); var s = Math.floor((diff % 60000) / 1000); return m + '分' + (s < 10 ? '0' : '') + s + '秒'; }
 function cnyRate(){ var r = CFG && CFG.cny_rate ? Number(CFG.cny_rate) : 7.2; return (isFinite(r) && r > 0) ? r : 7.2; }
 function fmtCNY(usdt){ return '¥' + (Number(usdt || 0) * cnyRate()).toFixed(2); }
@@ -605,30 +608,97 @@ async function submitOrder(pid){
 }
 async function renderSuccess(no){
   var o = window._lastOrder || null;
-  var addr = o ? o.wallet_address : ''; var total = o ? o.total_usdt : '';
-  var actual = o ? (o.actual_amount != null ? o.actual_amount : total) : '';
+  // P1-13：刷新后内存订单已清空（o 为 null）时，渲染“恢复支付信息”表单：
+  // 用订单号 + 图形验证码调查询接口恢复收款地址与精确应付金额（地址只写内存，不存 localStorage）。
+  if (!o) {
+    var recHtml = '<div class="glass"><div class="h2">恢复支付信息</div><p>订单号：<b>' + escH(no) + '</b></p>';
+    recHtml += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 请牢记您设置的查询密码</b><p class="muted" style="margin:6px 0 0">查询卡密时需要输入该密码。忘记密码请联系客服重置。</p></div>';
+    recHtml += '<p class="muted">页面已刷新，收款地址已随内存清空。请填写图形验证码恢复该订单的收款地址与精确应付金额。</p>';
+    recHtml += '<label>订单号</label><input id="recoverOrderNo" value="' + escH(no) + '" autocomplete="off">';
+    recHtml += '<label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="recoverCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="recoverCaptchaImg" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" onclick="loadRecoverCaptcha()"></div><div class="muted" style="margin-top:4px">看不清？点击图片刷新</div>';
+    recHtml += '<div style="margin-top:12px"><button class="btn" onclick="doRecoverPayment()">恢复支付信息</button> <a class="btn ghost" href="#/query">去查询订单</a></div><div id="recoverRes" style="margin-top:10px"></div></div>';
+    el('app').innerHTML = recHtml;
+    loadRecoverCaptcha();
+    return;
+  }
+  var addr = o.wallet_address || o.pay_address || '';
+  var actual = Number(o.actual_amount != null ? o.actual_amount : o.total_usdt) || 0;
   var qr = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=' + encodeURIComponent(addr || '');
   var tut = ''; if (CFG && o) tut = CFG.pay_tutorials[o.pay_method] || '';
   var html = '<div class="glass"><div class="h2">下单成功</div><p>订单号：<b>' + escH(no) + '</b></p>';
   html += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 请牢记您设置的查询密码</b><p class="muted" style="margin:6px 0 0">查询卡密时需要输入该密码。忘记密码请联系客服重置。</p></div>';
   html += '<p>应付：<b>' + fmtCNY(actual) + '</b> <span class="muted">（实际按 ' + actual + ' USDT 精确金额付款，请一分不差）</span>（' + escH(o ? o.pay_method : '') + ' · ' + escH(payTokenLabel(o ? o.pay_chain : '')) + '）</p>';
   if (o && o.pay_chain === 'X Layer') html += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' X Layer 收款为 USDT0</b><p class="muted" style="margin:6px 0 0">请从欧易提币时选择 USDT0（X Layer 网络）转入上方地址。旧版 X Layer USDT 与 USDT0 是不同资产，转入旧版代币不会到账、无法自动发货。</p></div>';
-  html += '<p>收款地址：</p><div class="codebox" id="addrBox">' + escH(addr) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(document.getElementById(\'addrBox\').textContent)">复制地址</button>';
+  html += '<p>收款地址：</p><div class="codebox" id="addrBox">' + escH(addr) + '</div><button class="btn small" style="margin-top:8px" data-copy-target="addrBox">复制地址</button>';
   // 地址为空（刷新后内存凭证已清空）时不渲染二维码图片：空 data 会让 qrserver 返回 400，
   // 浏览器记一条控制台错误，且图片本身是坏图。地址存在时才加载二维码。
   if (addr) html += '<div style="margin:12px 0"><img src="' + qr + '" width="180" height="180" alt="收款二维码"></div>';
   html += '<p>剩余支付时间：<b id="countdown">' + fmtCountdown(o ? o.expires_at : '') + '</b>（20 分钟锁定，超时订单自动取消）</p>';
   html += '<p class="muted">付完不用做任何事，等 1-3 分钟自动发货。系统按精确金额自动匹配到账，金额差 1 分钱都匹配不上。</p>';
-  html += '<p class="muted">教程：<a href="' + escH(tut) + '" target="_blank">支付教程</a></p>';
-  html += '<label>TXID（可选兜底：自动发货未到账时再提交）</label><input id="txid" placeholder="粘贴交易哈希（可选）"><div style="margin-top:10px"><button class="btn" data-no="' + escH(no) + '" onclick="submitTxid(this.dataset.no)">提交 TXID（可选）</button> <a class="btn ghost" href="#/query">去查询订单</a></div></div>';
+  if (tut) html += '<p class="muted">教程：<a href="' + escH(tut) + '" target="_blank" rel="noopener noreferrer">支付教程</a></p>';
+  html += '<label>TXID（可选兜底：自动发货未到账时再提交）</label><input id="txid" placeholder="粘贴交易哈希（可选）">';
+  html += '<label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="payCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="payCaptchaImg" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" onclick="loadPayCaptcha()"></div>';
+  html += '<div style="margin-top:10px"><button class="btn" data-no="' + escH(no) + '" onclick="submitTxid(this.dataset.no)">提交 TXID（可选）</button> <a class="btn ghost" href="#/query">去查询订单</a></div></div>';
   el('app').innerHTML = html;
+  loadPayCaptcha();
   if (o && o.expires_at) { clearInterval(window._cdTimer); window._cdTimer = setInterval(function(){ var c = el('countdown'); if (!c){ clearInterval(window._cdTimer); return; } c.textContent = fmtCountdown(o.expires_at); }, 1000); }
+}
+async function loadPayCaptcha(){
+  var img = el('payCaptchaImg'); if (!img) return;
+  try {
+    var r = await api('/api/captcha');
+    if (r.ok){ window._payCaptchaId = r.captcha_id; img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(r.svg); var cc = el('payCaptchaCode'); if (cc) cc.value = ''; }
+  } catch (e) {}
+}
+async function loadPayCaptchaFor(no){
+  var img = el('payCaptchaImg-' + no); if (!img) return;
+  try {
+    var r = await api('/api/captcha');
+    if (r.ok){ window._payCaptchaIds = window._payCaptchaIds || {}; window._payCaptchaIds[no] = r.captcha_id; img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(r.svg); var cc = el('payCaptchaCode-' + no); if (cc) cc.value = ''; }
+  } catch (e) {}
+}
+async function loadRecoverCaptcha(){
+  var img = el('recoverCaptchaImg'); if (!img) return;
+  try {
+    var r = await api('/api/captcha');
+    if (r.ok){ window._recoverCaptchaId = r.captcha_id; img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(r.svg); var cc = el('recoverCaptchaCode'); if (cc) cc.value = ''; }
+  } catch (e) {}
+}
+// P1-13：成功页刷新后用订单号 + 图形验证码调查询接口恢复支付信息（查询接口本身带验证码）。
+// 恢复出的收款地址只写内存 window._lastOrder，不写 localStorage / sessionStorage。
+async function doRecoverPayment(){
+  var no = el('recoverOrderNo') ? el('recoverOrderNo').value.trim() : '';
+  var capCode = el('recoverCaptchaCode') ? el('recoverCaptchaCode').value.trim() : '';
+  var box = el('recoverRes');
+  if (!no){ toast('请输入订单号', 'error'); return; }
+  if (!capCode){ toast('请填写图形验证码', 'error'); loadRecoverCaptcha(); return; }
+  var r = await api('/api/orders/query', 'POST', { keywords: no, captcha_id: window._recoverCaptchaId || '', captcha_code: capCode });
+  loadRecoverCaptcha();
+  if (!r.ok){ if (box) box.innerHTML = '<div class="muted">' + escH(r.error) + '</div>'; else toast(r.error, 'error'); return; }
+  var found = null;
+  for (var i = 0; i < (r.orders || []).length; i++){ if (String((r.orders[i] || {}).order_no) === String(no)) { found = r.orders[i]; break; } }
+  if (!found) found = (r.orders || [])[0] || null;
+  if (!found){ if (box) box.innerHTML = '<div class="muted">未找到该订单，请检查订单号。</div>'; return; }
+  if (found.status !== 'pending_payment'){ if (box) box.innerHTML = '<div class="muted">该订单当前状态为“' + escH(statusLabel(found.status)) + '”，不再需要付款。</div>'; return; }
+  if (!found.pay_address){ if (box) box.innerHTML = '<div class="muted">该订单的收款地址暂无法恢复，请联系客服提供收款地址（请勿重复下单）。</div>'; return; }
+  window._lastOrder = { order_no: found.order_no, total_usdt: found.total_usdt, actual_amount: found.actual_amount != null ? found.actual_amount : found.total_usdt, pay_address: found.pay_address, wallet_address: found.pay_address, expires_at: found.expires_at || '', pay_method: found.pay_method, pay_chain: found.pay_chain, has_query_password: 1 };
+  renderSuccess(found.order_no);
 }
 async function submitTxid(no){
   var txEl = el('txid') || el('qtxid-' + no) || el('qtxid');
   var tx = txEl ? txEl.value : '';
-  var r = await api('/api/orders/' + encodeURIComponent(no) + '/pay', 'POST', { txid: tx });
-  if (!r.ok){ toast(r.error, 'error'); return; }
+  // P3-4：/pay 提交 TXID 带图形验证码，字段名与下单验证码一致（captcha_id / captcha_code）。
+  // 验证码单次有效，/pay 用独立的新验证码，不复用查单验证码。
+  var body = { txid: tx };
+  var capInput = el('payCaptchaCode-' + no) || el('payCaptchaCode');
+  if (capInput) {
+    var capCode = capInput.value.trim();
+    if (!capCode){ toast('请填写图形验证码', 'error'); return; }
+    body.captcha_id = (window._payCaptchaIds && window._payCaptchaIds[no]) || window._payCaptchaId || '';
+    body.captcha_code = capCode;
+  }
+  var r = await api('/api/orders/' + encodeURIComponent(no) + '/pay', 'POST', body);
+  if (!r.ok){ toast(r.error, 'error'); if ((r.error || '').indexOf('验证码') !== -1) { if (el('payCaptchaCode-' + no)) loadPayCaptchaFor(no); else loadPayCaptcha(); } return; }
   toast(r.message || 'TXID 已提交', 'success');
 }
 function renderQuery(){
@@ -648,12 +718,12 @@ function renderQueryOrderDetail(o, legacy){
   var h = '<p><b>' + escH(snap.title || '') + '</b> · ' + statusLabel(o.status) + ' · ' + fmtPrice(o.total_usdt) + '</p><p class="muted">' + escH(o.pay_method) + ' · ' + escH(o.pay_chain) + ' · TXID：' + escH(o.txid || '未提交') + '</p>';
   if (legacy) h += '<p class="muted">旧订单：仅显示概要。交付内容请联系客服提供订单号核实后获取。</p>';
   if (o.data_expired) { h += '<p class="muted">交付数据已超过 7 天自动清空</p>'; }
-  else if (o.delivery_content) { var delId = 'delBox-' + escH(o.order_no); h += '<p>交付内容：</p><div class="codebox" id="' + delId + '">' + escH(o.delivery_content) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(document.getElementById(\x27' + delId + '\x27).textContent)">复制交付内容</button>'; }
+  else if (o.delivery_content) { var delId = 'delBox-' + escH(o.order_no); h += '<p>交付内容：</p><div class="codebox" id="' + delId + '">' + escH(o.delivery_content) + '</div><button class="btn small" style="margin-top:8px" data-copy-target="' + delId + '">复制交付内容</button>'; }
   else if (!legacy) { h += '<p class="muted">暂无交付内容，付款后等待 1-3 分钟自动发货（已付但未到账请检查金额与地址是否精确一致）</p>'; }
   if (o.status === 'pending_activation'){ h += '<p class=\'muted\'>已付款，正在等待激活返回交付内容，请不要重复下单。</p>'; }
   if (o.status === 'pending_upstream'){ h += '<p class=\'muted\'>暂不可发货，已转人工处理，请联系客服。</p>'; }
   if (o.status === 'refund_pending'){ h += '<p class=\'muted\'>该订单已标记退款待处理，正在处理退款，请联系客服确认退款进度。</p>'; }
-  if (o.status === 'pending_payment'){ h += '<p class=\'muted\'>精确应付：' + fmtCNY(o.actual_amount || o.total_usdt) + '（实际按 ' + (o.actual_amount || o.total_usdt) + ' USDT 付款） · 剩余：' + fmtCountdown(o.expires_at) + ' · 付完不用做任何事，等 1-3 分钟自动发货</p><label>提交 TXID（可选兜底）</label><input id="qtxid-' + escH(o.order_no) + '" placeholder="粘贴交易哈希"><div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" onclick="submitTxid(this.dataset.no)">提交 TXID</button></div>'; }
+  if (o.status === 'pending_payment'){ h += '<p class=\'muted\'>精确应付：' + fmtCNY(o.actual_amount || o.total_usdt) + '（实际按 ' + (o.actual_amount || o.total_usdt) + ' USDT 付款） · 剩余：' + fmtCountdown(o.expires_at) + ' · 付完不用做任何事，等 1-3 分钟自动发货</p><label>提交 TXID（可选兜底）</label><input id="qtxid-' + escH(o.order_no) + '" placeholder="粘贴交易哈希"><label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="payCaptchaCode-' + escH(o.order_no) + '" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="payCaptchaImg-' + escH(o.order_no) + '" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" data-captcha-for="' + escH(o.order_no) + '"></div><div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" onclick="submitTxid(this.dataset.no)">提交 TXID</button></div>'; }
   return h;
 }
 // 查询列表：关键词（订单号/邮箱）+ 验证码 → 订单概要列表；卡密按单走 /secret 或老 /lookup。
@@ -672,15 +742,19 @@ async function doQueryList(){
     h += '<div class="glass" style="margin-top:12px"><p><b>' + escH(o.product_title || '') + '</b> · ' + statusLabel(o.status) + ' · ' + fmtPrice(o.total_usdt) + '</p>';
     h += '<p class="muted">订单号：' + escH(o.order_no) + ' · 下单：' + escH(o.created_at || '') + (o.paid_at ? ' · 付款：' + escH(o.paid_at) : '') + ' · ' + escH(o.pay_method) + ' · ' + escH(o.pay_chain) + '</p>';
     // 状态提示（与凭证输入解耦）：未付款订单也显示密码输入框，买家可在付款前验证密码是否正确；/secret 对未付款订单返回“尚未付款”。
-    if (o.status === 'pending_payment') h += '<p class="muted">待付款：请按订单金额精确付款，付完等待自动发货。</p>';
-    else if (!o.has_delivery) h += '<p class="muted">暂无交付内容，付款后等待 1-3 分钟自动发货。</p>';
+    // P1-13：待付款订单在列表中直接显示收款地址（后端在 /api/orders/query 中对 pending_payment 订单附带 pay_address）与精确应付金额。
+    if (o.status === 'pending_payment') {
+      h += '<p class="muted">待付款：请按精确应付金额付款，付完等待自动发货。精确应付：' + fmtCNY(o.actual_amount != null ? o.actual_amount : o.total_usdt) + '（实际按 ' + (o.actual_amount != null ? o.actual_amount : o.total_usdt) + ' USDT 付款）</p>';
+      if (o.pay_address) h += '<p>收款地址：</p><div class="codebox" id="qpay-' + escH(o.order_no) + '">' + escH(o.pay_address) + '</div><button class="btn small" style="margin-top:8px" data-copy-target="qpay-' + escH(o.order_no) + '">复制收款地址</button>';
+    }
+    // P2-8：不再依赖后端不返回的 has_delivery；按 credential_type 分支，不再声称“暂无交付内容”。
     if (o.credential_type === 'password') {
       var pwId = 'qpw-' + escH(o.order_no);
       h += '<label>查询密码</label><input id="' + pwId + '" type="password" placeholder="请输入查询密码" autocomplete="off"><div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" data-pw="' + pwId + '" onclick="doQuerySecret(this.dataset.no, this.dataset.pw)">查看卡密</button></div><div id="qsec-' + escH(o.order_no) + '" style="margin-top:10px"></div>';
     } else if (o.credential_type === 'token') {
       var tkId = 'qtk-' + escH(o.order_no);
       h += '<label>查单凭证（旧订单）</label><input id="' + tkId + '" placeholder="查单凭证" autocomplete="off"><div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" data-tk="' + tkId + '" onclick="doQueryLegacy(this.dataset.no, this.dataset.tk)">查看卡密</button></div><div id="qsec-' + escH(o.order_no) + '" style="margin-top:10px"></div>';
-    } else if (o.status !== 'pending_payment' && o.has_delivery) {
+    } else if (o.credential_type === 'legacy') {
       h += '<p class="muted">该订单未设置查询密码，交付内容请联系客服核实后获取。</p>';
     }
     h += '</div>';
@@ -688,14 +762,14 @@ async function doQueryList(){
   el('qres').innerHTML = h;
   loadQueryCaptcha();
 }
-// 按单取卡密（新订单）：有密码则校验密码，无密码直接返回。
+// 按单取卡密（新订单）：空密码由后端 401 拒绝。
 async function doQuerySecret(no, pwInputId){
   var pw = pwInputId ? (el(pwInputId) ? el(pwInputId).value.trim() : '') : '';
   var r = await api('/api/orders/' + encodeURIComponent(no) + '/secret', 'POST', { password: pw });
   var box = el('qsec-' + no);
   if (!r.ok){ if (box) box.innerHTML = '<div class="muted">' + escH(r.error) + '</div>'; else toast(r.error, 'error'); return; }
   var delId = 'qdel-' + escH(no);
-  if (box) box.innerHTML = '<p>交付内容：</p><div class="codebox" id="' + delId + '">' + escH(r.delivery_content || '') + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(document.getElementById(\x27' + delId + '\x27).textContent)">复制交付内容</button>';
+  if (box) box.innerHTML = '<p>交付内容：</p><div class="codebox" id="' + delId + '">' + escH(r.delivery_content || '') + '</div><button class="btn small" style="margin-top:8px" data-copy-target="' + delId + '">复制交付内容</button>';
 }
 // 旧订单（系统凭证）由 doQueryLegacy 处理（新查询页列表内按单输入凭证）。
 async function doQueryLegacy(no, tkInputId){
@@ -705,6 +779,7 @@ async function doQueryLegacy(no, tkInputId){
   var box = el('qsec-' + no);
   if (!r.ok){ if (box) box.innerHTML = '<div class="muted">' + escH(r.error) + '</div>'; else toast(r.error, 'error'); return; }
   if (box) box.innerHTML = renderQueryOrderDetail(r.order, !!r.legacy);
+  if (r.order && r.order.status === 'pending_payment') loadPayCaptchaFor(no);
 }
 // ===== 管理后台（SaaS 风格：信息密度优先，统一 Toast/Modal/Drawer） =====
 async function renderAdmin(){
@@ -906,8 +981,8 @@ function orderActionButtons(o){
   if (o.status === 'pending_payment' && o.paid_at) h += '<button class="btn" data-id="' + o.id + '" onclick="adminConfirm(this.dataset.id)">确认收款（恢复处理）</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminException(this.dataset.id)">异常处理</button>';
   else if (o.status === 'pending_payment') h += '<button class="btn" data-id="' + o.id + '" onclick="adminConfirm(this.dataset.id)">确认收款</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminCancel(this.dataset.id)">取消订单（仅未付款）</button>';
   else if (o.status === 'pending_fulfill') h += '<button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">发货</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminException(this.dataset.id)">异常处理</button>';
-  else if (o.status === 'pending_activation') h += '<button class="btn ghost" data-id="' + o.id + '" onclick="adminUpstreamRetry(' + o.id + ')">重试上游轮询</button> <button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">手动发货（兜底）</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminException(this.dataset.id)">异常处理</button>';
-  else if (o.status === 'pending_upstream') h += '<button class="btn ghost" data-id="' + o.id + '" onclick="adminUpstreamRetry(' + o.id + ')">重试上游轮询</button> <button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">手动发货（兜底）</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminException(this.dataset.id)">异常处理</button>';
+  else if (o.status === 'pending_activation') h += '<button class="btn ghost" data-id="' + o.id + '" onclick="adminUpstreamRetry(' + o.id + ')">重试上游轮询</button> <button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id, \'pending_activation\')">手动发货（兜底）</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminException(this.dataset.id)">异常处理</button>';
+  else if (o.status === 'pending_upstream') h += '<button class="btn ghost" data-id="' + o.id + '" onclick="adminUpstreamRetry(' + o.id + ')">重试上游轮询</button> <button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id, \'pending_upstream\')">手动发货（兜底）</button> <button class="btn ghost danger" data-id="' + o.id + '" onclick="adminException(this.dataset.id)">异常处理</button>';
   else if (o.status === 'refund_pending') h += '<button class="btn danger" data-id="' + o.id + '" onclick="adminRefundConfirm(this.dataset.id)">确认已退款</button> <button class="btn" data-id="' + o.id + '" onclick="adminFulfill(this.dataset.id)">发货（问题已解决时）</button>';
   else if (o.status === 'completed') h += '<span class="muted">已完成，仅查看</span>';
   else if (o.status === 'cancelled') h += '<span class="muted">已取消，仅查看</span>';
@@ -931,7 +1006,7 @@ async function adminOrderDetail(id){
   if (o.exception_reason || o.refund_status) h += '<div class="drawer-section"><h4>异常 / 退款</h4><div class="drawer-kv"><span class="k">异常原因</span><span class="v">' + escH(o.exception_reason || '') + '</span><span class="k">退款状态</span><span class="v">' + escH(o.refund_status === 'pending' ? '退款待处理（须在系统外真实退款）' : (o.refund_status === 'refunded' ? '已确认退款' : o.refund_status || '无')) + '</span>' + (o.refund_ref ? '<span class="k">退款凭证</span><span class="v adm-mono">' + escH(o.refund_ref) + '</span>' : '') + '</div><p class="muted">本系统不执行真实退款。“确认已退款”仅表示管理员确认已在系统外完成退款，须填写退款凭证备查。</p></div>';
   h += '<div class="drawer-section"><h4>交付情况</h4>';
   if (o.data_expired) h += '<p class="muted">交付数据已超过 7 天自动清空</p>';
-  else if (o.delivery_content) h += '<div class="codebox">' + escH(o.delivery_content) + '</div><button class="btn small" style="margin-top:8px" onclick="copyText(' + escH(JSON.stringify(o.delivery_content)) + ')">复制交付内容</button>';
+  else if (o.delivery_content) h += '<div class="codebox" id="adminDelBox">' + escH(o.delivery_content) + '</div><button class="btn small" style="margin-top:8px" data-copy-target="adminDelBox">复制交付内容</button>';
   else h += '<p class="muted">暂无交付内容</p>';
   h += '</div>';
   h += '<div class="drawer-section"><h4>处理记录</h4>' + auditHtml + '</div>';
@@ -946,9 +1021,16 @@ async function adminConfirm(id){
     toast(r.message || '已确认', 'success'); closeDrawer(); renderAdminOrders(window._orderFilter.page || 1);
   }});
 }
-async function adminFulfill(id){
-  showModal({ title: '发货', bodyHTML: '<p>卡密类商品留空将自动从预留卡中发卡（旧订单无预留时抢可用卡）；代充 / 手动交付请填写交付内容。</p>', confirmText: '确认发货', showInput: true, inputLabel: '交付内容（卡密类可留空自动发卡）', inputPlaceholder: '账号 / 密码 / 兑换说明', onConfirm: async function(delivery){
-    var r = await api('/api/admin/orders/' + id + '/fulfill', 'POST', { delivery_content: delivery || '' });
+async function adminFulfill(id, status){
+  // P1-5：手动发货 pending_activation / pending_upstream 订单时，要求管理员先在上游后台作废该上游订单，
+  // 否则上游仍可能交付。勾选后请求体带 upstream_voided: true；未勾选由后端 409 拒绝，前端展示后端文案。
+  var needsVoid = (status === 'pending_activation' || status === 'pending_upstream');
+  var fulfillBody = '<p>卡密类商品留空将自动从预留卡中发卡（旧订单无预留时抢可用卡）；代充 / 手动交付请填写交付内容。</p>';
+  if (needsVoid) fulfillBody += '<p><label><input type="checkbox" id="fulfillVoided"> 已在上游后台作废该上游订单</label></p><p class="muted">如该订单有上游订单，须先在上游后台作废，否则上游仍可能交付。未勾选时后端将拒绝发货（409）。</p>';
+  showModal({ title: '发货', bodyHTML: fulfillBody, confirmText: '确认发货', showInput: true, inputLabel: '交付内容（卡密类可留空自动发卡）', inputPlaceholder: '账号 / 密码 / 兑换说明', onConfirm: async function(delivery){
+    var payload = { delivery_content: delivery || '' };
+    if (needsVoid) payload.upstream_voided = !!(el('fulfillVoided') && el('fulfillVoided').checked);
+    var r = await api('/api/admin/orders/' + id + '/fulfill', 'POST', payload);
     if (!r.ok){ toast(r.error, 'error'); return false; }
     toast('已发货', 'success'); closeDrawer(); renderAdminOrders(window._orderFilter.page || 1);
   }});
@@ -979,9 +1061,9 @@ async function adminResetQueryPassword(id){
   }});
 }
 async function adminRefundConfirm(id){
-  showModal({ title: '确认已退款', bodyHTML: '<p>请确认你已在系统外完成真实退款（转账 / 退币），再点确认。本操作仅记录“管理员确认已在系统外完成退款”这一事实，<b>不执行任何资金操作</b>，订单将转为已取消。</p>', confirmText: '确认已在系统外退款', danger: true, showInput: true, inputLabel: '退款凭证（必填：退款交易哈希 / 转账记录编号，记入审计）', inputPlaceholder: '如：0x… 或银行转账流水号', onConfirm: async function(ref){
+  showModal({ title: '确认已退款', bodyHTML: '<p>请确认你已在系统外完成真实退款（转账 / 退币），再点确认。本操作仅记录“管理员确认已在系统外完成退款”这一事实，<b>不执行任何资金操作</b>，订单将转为已取消。</p><p><label><input type="checkbox" id="refundVoided"> 已在上游后台作废该上游订单</label></p><p class="muted">如该订单有上游订单，须先在上游后台作废，否则上游仍可能交付。未勾选时后端将拒绝确认（409）。若该订单无上游订单，请直接勾选。</p>', confirmText: '确认已在系统外退款', danger: true, showInput: true, inputLabel: '退款凭证（必填：退款交易哈希 / 转账记录编号，记入审计）', inputPlaceholder: '如：0x… 或银行转账流水号', onConfirm: async function(ref){
     if (!ref || !ref.trim()){ toast('请填写退款凭证', 'error'); return false; }
-    var r = await api('/api/admin/orders/' + id + '/refund-confirm', 'POST', { refund_ref: ref.trim() });
+    var r = await api('/api/admin/orders/' + id + '/refund-confirm', 'POST', { refund_ref: ref.trim(), upstream_voided: !!(el('refundVoided') && el('refundVoided').checked) });
     if (!r.ok){ toast(r.error, 'error'); return false; }
     toast(r.message || '已确认退款', 'success'); closeDrawer(); renderAdminOrders(window._orderFilter.page || 1);
   }});

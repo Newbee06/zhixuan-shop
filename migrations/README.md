@@ -45,6 +45,13 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 | v6 | 第二轮（claim_token / claimed_at / exception_reason / refund_status / refund_ref / txid_claims / lookup_rate） |
 | v7 | 第二轮补（上游轮询租约列 upstream_lock / upstream_lock_expires_at；upstream_orders.order_id 去重 + 唯一索引） |
 | v8 | 第四轮（payments 付款账本 + scan_cursors 扫描游标 + pay_rate /pay 限流 + 金额/联系人部分唯一索引 + ProdSeller/Turnstile/确认数设置默认值） |
+| v9 | 第六轮（金额唯一索引排除 BinanceUID：DROP 后重建 `idx_orders_amount_claim`，条件加 `pay_method != 'BinanceUID'`） |
+| v10 | 第九轮（X Layer 合约占位符替换为核实的 USDT0 合约，仅精确占位符；管理员显式配置不动） |
+| v11 | 第十轮（App 图标库 `app_icons`（明/暗两版）+ `products.app_icon_key` + 标题自动匹配；种子在 `worker.js` 的 `APP_ICON_SEED`） |
+| v12 | 第十轮补丁（刷新 App 图标暗版：黑底白 Logo / 彩色 Logo 深底） |
+| v13 | 第十轮补丁 2（再次刷新 App 图标暗版：Telegram 泛洪填充去白底） |
+| v14 | 查单改 aisou.pro 方向（`orders.query_password_hash` + `secret_attempts` 按单取卡密尝试记录） |
+| v15 | P0（查询密码必填 + 随机 salt PBKDF2 + 移除邮箱查询：`orders.query_password_salt`） |
 
 ## 兼容性
 
@@ -58,5 +65,5 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 1. 备份生产 D1（`wrangler d1 export` 或 CF 面板快照）。
 2. 在测试 D1 上先演练迁移（见测试报告的迁移测试）。
 3. 部署前跑 `GET /api/admin/schema-check` 预检（只读），确认无差异。
-4. 部署新版 Worker，首次请求自动迁移；用 `GET /api/admin/migrate` 确认 `current_version = 8`。
+4. 部署新版 Worker，首次请求自动迁移；用 `GET /api/admin/migrate` 确认 `current_version = 15`。
 5. 回滚：重新部署旧版 Worker；新列/新表旧版代码不读取，不影响旧版运行。

@@ -1,4 +1,6 @@
-# PR #1 第三轮质量验收 — 复审与修复记录（+ 第四轮上线阻塞项整改）
+> ⚠️ 本文件为第三/四轮复审历史记录，部分结论已被 v15 取代，以最新文档为准。
+>
+> # PR #1 第三轮质量验收 — 复审与修复记录（+ 第四轮上线阻塞项整改）
 
 - PR：https://github.com/Newbee06/zhixuan-shop/pull/1
 - 分支：`feat/admin-overhaul-security` → `main`

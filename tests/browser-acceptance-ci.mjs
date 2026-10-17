@@ -150,6 +150,23 @@ await page.reload({ waitUntil: 'networkidle' });
 await page.waitForTimeout(800);
 check('after reload: storage still has no order/token',
   await page.evaluate(() => !sessionStorage.getItem('lastQueryToken') && !sessionStorage.getItem('lastOrder') && !localStorage.getItem('lastQueryToken') && !localStorage.getItem('lastOrder')));
+// P1-13：刷新后渲染“恢复支付信息”表单（订单号预填 + 独立验证码），恢复后重新显示收款地址与 /pay 验证码。
+check('after reload: recover payment form shown', (await page.content()).includes('恢复支付信息'));
+check('after reload: recover order no prefilled', await page.evaluate((no) => (document.getElementById('recoverOrderNo') || {}).value === no, orderNo));
+check('after reload: recover captcha image shown', await page.evaluate(() => !!document.getElementById('recoverCaptchaImg')));
+const recCap = await page.evaluate(() => {
+  const img = document.getElementById('recoverCaptchaImg');
+  const svg = img ? decodeURIComponent(img.src.split(',').slice(1).join(',')) : '';
+  const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+  return Array.from(doc.querySelectorAll('text')).map((t) => t.textContent).join('');
+});
+check('recover captcha parsed from image SVG', recCap.length === 4, recCap);
+await page.fill('#recoverCaptchaCode', recCap);
+await page.click('button:has-text("恢复支付信息")');
+await page.waitForTimeout(1500);
+const recoveredHtml = await page.content();
+check('recover flow: pay address restored', recoveredHtml.includes('收款地址') && recoveredHtml.includes('0x2222222222222222222222222222222222222222'));
+check('recover flow: /pay captcha input shown', await page.evaluate(() => !!document.getElementById('payCaptchaCode')));
 
 // ===== 4. 查单页：订单号 + 验证码 → 列表；密码取卡密（未付款提示）；错误密码提示；邮箱不能查；URL 无凭证 =====
 async function freshQueryCaptcha() {
@@ -174,14 +191,15 @@ await page.waitForTimeout(500);
 }
 const qres = await page.evaluate(() => (document.getElementById('qres') || {}).innerHTML || '');
 check('query via UI: order listed', qres.includes(orderNo));
-check('query via UI: password input shown', qres.includes('qpw-' + orderNo) || qres.includes('查询密码'));
+check('query via UI: pay address shown for pending_payment order', qres.includes('收款地址') && qres.includes('0x2222222222222222222222222222222222222222') && qres.includes('复制收款地址'));
+check('query via UI: password input shown (P3-39: exact qpw-<orderNo>)', qres.includes('qpw-' + orderNo));
 check('query: URL has no credential', !page.url().includes('password=') && !page.url().includes('token=') && !page.url().includes('browser-ci-pw123'));
 await page.fill('#qpw-' + orderNo, 'wrongpw123');
 await page.click('button:has-text("查看卡密")');
 await page.waitForTimeout(1000);
 const qsecWrong = await page.evaluate((no) => (document.getElementById('qsec-' + no) || {}).innerHTML || '', orderNo);
-check('secret wrong password: error shown',
-  qsecWrong.includes('查询密码错误') || qsecWrong.includes('错误'));
+check('secret wrong password: exact error shown (P3-38)',
+  qsecWrong.includes('查询密码错误'));
 await page.fill('#qpw-' + orderNo, queryPassword);
 await page.click('button:has-text("查看卡密")');
 await page.waitForTimeout(1000);
@@ -247,7 +265,7 @@ const adminSetup = await page.evaluate(async () => {
   const cap2 = await fetch('/api/captcha').then((r) => r.json());
   const doc = new DOMParser().parseFromString(cap2.svg, 'image/svg+xml');
   const code = Array.from(doc.querySelectorAll('text')).map((t) => t.textContent).join('');
-  const ord = await fetch('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: pid, quantity: 1, customer_fields: { contact_email: 'browser-ci-paid@test.example' }, contact: 'browser-ci-paid@test.example', pay_method: 'OKX', pay_chain: 'X Layer', captcha_id: cap2.captcha_id, captcha_code: code }) }).then((r) => r.json());
+  const ord = await fetch('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: pid, quantity: 1, customer_fields: { contact_email: 'browser-ci-paid@test.example' }, contact: 'browser-ci-paid@test.example', pay_method: 'OKX', pay_chain: 'X Layer', query_password: 'browser-ci-pw123', captcha_id: cap2.captcha_id, captcha_code: code }) }).then((r) => r.json());
   const ordRow = await fetch('/api/admin/orders?q=' + encodeURIComponent(ord.order.order_no)).then((r) => r.json());
   const oid = ordRow.orders[0].id;
   const conf = await fetch('/api/admin/orders/' + oid + '/confirm-payment', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Admin-API': '1' }, body: JSON.stringify({ reason: 'CI验收确认' }) }).then((r) => r.json());
@@ -305,6 +323,9 @@ await page.evaluate(() => {
   if (b) b.click();
 });
 await page.waitForTimeout(600);
+// P1-5：退款确认弹窗有“已在上游后台作废该上游订单”复选框，须勾选（无上游订单时按弹窗提示直接勾选）。
+check('refund modal: upstream-voided checkbox shown', (await page.content()).includes('已在上游后台作废该上游订单'));
+await page.evaluate(() => { const cb = document.getElementById('refundVoided'); if (cb) cb.checked = true; });
 await page.evaluate(() => {
   const inputs = Array.from(document.querySelectorAll('input'));
   const refInput = inputs.find((x) => (x.placeholder || '').includes('退款交易哈希') || (x.placeholder || '').includes('转账记录'));
@@ -327,7 +348,7 @@ const xssSetup = await page.evaluate(async () => {
   const cap3 = await fetch('/api/captcha').then((r) => r.json());
   const doc = new DOMParser().parseFromString(cap3.svg, 'image/svg+xml');
   const code = Array.from(doc.querySelectorAll('text')).map((t) => t.textContent).join('');
-  const ord = await fetch('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: pid, quantity: 1, customer_fields: { contact_email: 'browser-ci-xss@test.example' }, contact: 'browser-ci-xss@test.example', pay_method: 'OKX', pay_chain: 'X Layer', captcha_id: cap3.captcha_id, captcha_code: code }) }).then((r) => r.json());
+  const ord = await fetch('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: pid, quantity: 1, customer_fields: { contact_email: 'browser-ci-xss@test.example' }, contact: 'browser-ci-xss@test.example', pay_method: 'OKX', pay_chain: 'X Layer', query_password: 'browser-ci-pw123', captcha_id: cap3.captcha_id, captcha_code: code }) }).then((r) => r.json());
   const ordRow = await fetch('/api/admin/orders?q=' + encodeURIComponent(ord.order.order_no)).then((r) => r.json());
   const oid = ordRow.orders[0].id;
   await fetch('/api/admin/orders/' + oid + '/confirm-payment', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Admin-API': '1' }, body: JSON.stringify({ reason: 'CI验收XSS确认' }) }).then((r) => r.json());
@@ -403,10 +424,13 @@ const legacyCap = await page.evaluate(async () => {
 check('7th captcha parsed', legacyCap.code.length === 4, JSON.stringify(legacyCap));
 await page.fill('#contact', 'browser-ci-legacy@test.example');
 await page.fill('#captchaCode', legacyCap.code);
+// v15：查询密码必填（submitOrder 从 #query_password 读，后端拒空）；真实提交前填写。
+await page.fill('#query_password', 'browser-ci-pw123');
 await page.click('button:has-text("立即购买")');
 const legacyReq = await legacyOrderReqPromise;
 const legacyPayload = JSON.parse(legacyReq.postData() || '{}');
 check('7th payload: contact = unified email', legacyPayload.contact === 'browser-ci-legacy@test.example', JSON.stringify(legacyPayload).slice(0, 300));
+check('7th payload: query_password sent from #query_password', legacyPayload.query_password === 'browser-ci-pw123', JSON.stringify(legacyPayload).slice(0, 300));
 check('7th payload: customer_fields.contact_email = unified email',
   legacyPayload.customer_fields && legacyPayload.customer_fields.contact_email === 'browser-ci-legacy@test.example', JSON.stringify(legacyPayload.customer_fields));
 check('7th payload: customer_fields.delivery_email = unified email',

@@ -1,4 +1,6 @@
-# 智选商城 — 上线就绪报告（Release Readiness，第四轮）
+> ⚠️ §一–§八为第四轮历史快照，仅文末附录为最新状态。
+>
+> # 智选商城 — 上线就绪报告（Release Readiness，第四轮）
 
 > 分支：`feat/admin-overhaul-security`（未合并 `main`，未部署生产）
 > 基线：`c511f39b`（第三轮验收，CI 全绿）

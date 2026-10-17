@@ -28,7 +28,7 @@
 
 ## C. 部署
 
-- [ ] 部署命令：先 `rm -rf .wrangler`，再用 staging 部署脚本（见 RUNBOOK）。**绝不用生产部署脚本误部署 staging；绝不直接部署分支到生产。**
+- [ ] 生产部署须用户明确授权后另行执行，不在此列；staging 部署见 RUNBOOK。
 - [ ] 部署后验证：`/api/config` 200、首页 200、schema-check `up_to_date: true`、后台登录正常。
 - [ ] 回滚方案已确认：重新部署 main 分支旧版 Worker 即可（见 RUNBOOK）。
 
