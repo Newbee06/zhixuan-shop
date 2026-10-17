@@ -642,3 +642,11 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 - 说明：本地浏览器无法访问 127.0.0.1（浏览器工具拦回环地址，Cloudflare Tunnel 被网络拦），故验收在 staging 进行；staging 管理员密码由用户经安全入口提交，浏览器用保存的登录完成。
 - CI：push `38985323892` success、PR `38985330274` success。PR #1 仍 OPEN，未合并，未部署生产。
 - 决策矩阵更新：A staging 部署 PASS、B staging 验收 PASS、C PASS（CI 全绿）；D/E/F/G 仍 BLOCKED（未获生产部署批准、真实链上未验证）。
+
+### 第十轮补丁：暗版图标 + 容器底色（2026-10-17 11:13 CST）
+
+- 问题：用户截图反馈深色模式下图标仍是白方块。根因两层：① 7 个黑 Logo 白底图标（ChatGPT/Codex/Notion/CapCut/Cursor/ElevenLabs/iLovePDF）暗版未反色；5 个彩色 Logo 白底图标（Figma/Gemini/Gmail/edX/Outlook）暗版仍白底；② 卡片图片容器 `.pcard-img`（及 `.prod-img`、`.detail-img-photo`）硬编码白底，深色模式无覆盖，深色图标嵌在白方块里。
+- 修复：① 7 个单色图标暗版整体反色（白底黑 Logo → 黑底白 Logo）；5 个彩色图标暗版选择性变换（仅近白像素映射深色，彩色 Logo 不动）；② CSS 加深色覆盖 `.pcard-img/.prod-img/.detail-img-photo` 背景 `#1c1c1e`。
+- 关键坑：种子用 `INSERT OR IGNORE`，已有库的暗版不会被新种子覆盖；新增 v12 迁移（UPDATE 暗版 image_data），`APP_ICON_SEED` 提升为模块作用域供 v11/v12 共用。测试：app-icons 73/73（含 v12 刷新测试 + CSS 覆盖测试），回归全绿，d1-local 全绿。
+- Staging 验证：v12 部署后 `/api/app-icons` 暗版中央亮度 Codex 0.34 / ChatGPT 0.36 / Gmail 0.33 / Figma 0.32；浏览器深色模式实测 `.pcard-img` 计算背景 rgb(28,28,30)，图标黑底白结，无白方块残留。
+- PR #1 仍 OPEN，未合并，未部署生产。
