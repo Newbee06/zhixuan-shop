@@ -2923,7 +2923,7 @@ async function handleApi(req, env, url, ctx) {
   if (path === '/api/orders/query' && method === 'POST') {
     var qb = await parseJsonBody(req);
     var keywords = String(qb.keywords || '').trim();
-    if (!keywords) return err('请输入订单号再查询');
+    if (!keywords) return err('请输入订单号或邮箱再查询');
     if (keywords.length > 200) return err('查询关键词过长');
     // P3-5：限流预检查在验证码消费之前——限流命中时不消费验证码。
     var rateErrQ = await checkLookupRateLimit(env, req);
