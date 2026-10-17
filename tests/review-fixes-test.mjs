@@ -445,7 +445,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   r = await call('POST', '/api/orders/query', { keywords: o.order_no, captcha_id: cid, captcha_code: 'AB12' });
   check('P1-13: /query pending_payment includes pay_address', r.json && r.json.ok === true && Array.isArray(r.json.orders) && r.json.orders[0] && r.json.orders[0].pay_address === '0x9999999999999999999999999999999999999999', JSON.stringify(r.json));
   check('P1-13: frontend has recover payment form', frontendHtml.includes('恢复支付信息') && frontendHtml.includes('recoverOrderNo') && frontendHtml.includes('doRecoverPayment') && frontendHtml.includes('loadRecoverCaptcha'));
-  check('P1-13: frontend query list renders pay address', frontendHtml.includes('qpay-') && frontendHtml.includes('复制收款地址'));
+  check('P1-13: frontend query list renders pay address', frontendHtml.includes('payBlockHTML(o, o.order_no)') && frontendHtml.includes('复制地址'));
 }
 
 // ================= P2 =================
@@ -1232,6 +1232,16 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   const listed = r.json && r.json.orders && r.json.orders[0];
   check('reverify: /query returns actual_amount equal to create response', !!listed && Number(listed.actual_amount) === actualAmt, JSON.stringify(r.json));
   check('reverify: /query pending_payment carries pay_address', !!listed && typeof listed.pay_address === 'string' && listed.pay_address.length > 0, JSON.stringify(listed));
+  check('reverify: /query returns expires_at equal to create response', !!listed && listed.expires_at === created.expires_at, JSON.stringify(r.json));
+}
+// 付款界面优化（BEpusdt 式）：成功页 + 查询页共用 payBlockHTML；倒计时时分秒 + 过期态；QR 带 USDT 标（ecc=H）。
+{
+  check('payui: payBlockHTML shared by success + query pages', frontendHtml.includes('function payBlockHTML') && frontendHtml.includes("payBlockHTML(o, 'success')") && frontendHtml.includes('payBlockHTML(o, o.order_no)'));
+  check('payui: amount header + exact-pay pill', frontendHtml.includes('pay-amount-usdt') && frontendHtml.includes('请严格按照数额进行付款'));
+  check('payui: absolute expiry + merchant order + copy', frontendHtml.includes('fmtExpiryAbsolute') && frontendHtml.includes('到期时间') && frontendHtml.includes('商户订单'));
+  check('payui: QR with USDT mark + ecc=H', frontendHtml.includes('pay-qr-logo') && frontendHtml.includes('ecc=H'));
+  check('payui: address head/tail highlight', frontendHtml.includes('payAddrHighlighted') && frontendHtml.includes('pay-addr-hl'));
+  check('payui: countdown hours-aware + expired state', frontendHtml.includes("h + '时'") && frontendHtml.includes('已过期，请重新下单'));
 }
 // 前端：renderShop 每次进入重拉 /api/products（PRODUCTS 只在 load() 取一次，下单后 SPA 内导航回商城会显示过期库存计数）。
 {
