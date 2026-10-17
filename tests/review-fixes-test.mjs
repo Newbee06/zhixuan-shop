@@ -1325,6 +1325,10 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   check('home: section head below grid (above footer)', frontendHtml.includes('id="list" class="grid shop-grid"></div>\' + homeSectionHeadHTML()'));
   // 新增配色与线条图标同色（.ic 蓝 #5b7bff 同色系），不留 #7c3aed 系紫色。
   check('home: accent matches line-icon blue', frontendHtml.includes('.home-h1-accent{color:#5b7bff}') && frontendHtml.includes('.home-cta{border:0;background:#5b7bff') && !/#7c3aed|#a78bfa|#6d28d9|#5b21b6/.test(frontendHtml));
+  // 移动端适配（冻结规格 1A/2A/3C）：仅移动端 Hero 压缩（间距/高度/卡尺寸，不改 Hero 字号）+ 仅合集标题字号缩小（26→20，星标 30→22，390/360px 屏一行放下）；桌面端与 Hero 标题字号不动。
+  check('home: mobile hero compressed without font change', frontendHtml.includes('.home-hero{flex-direction:column;padding:16px 16px}.home-h1{font-size:36px}') && frontendHtml.includes('.home-visual{width:100%;max-width:340px;height:250px}') && frontendHtml.includes('.home-pcard{width:280px;height:180px;padding:16px}'));
+  check('home: mobile section title fits one line', frontendHtml.includes('.home-section-title{font-size:20px}') && frontendHtml.includes('.home-section-star{font-size:22px}'));
+  check('home: desktop hero/title fonts unchanged', frontendHtml.includes('.home-hero{display:flex;gap:24px;align-items:center;justify-content:space-between;background:var(--card2);border:1px solid var(--line);border-radius:28px;padding:36px 36px 28px') && frontendHtml.includes('.home-section-title{font-size:26px'));
   {
     const heroStart = frontendHtml.indexOf('function homeHeroHTML(');
     const headEnd = frontendHtml.indexOf('function filterStock(', heroStart);
