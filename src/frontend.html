@@ -745,7 +745,7 @@ async function adminTab(t){
   try {
     if (t === 'data') await renderAdminData();
     else if (t === 'orders') await renderAdminOrders(1);
-    else if (t === 'products') { window._prodView = 'all'; await renderAdminProducts(1); }
+    else if (t === 'products') { window._prodView = 'all'; window._prodFilter.source = ''; await renderAdminProducts(1); } // 全部视图：清掉子目录残留的来源筛选，否则会误以为只剩 6 件
     else if (t === 'products-upstream') { window._prodView = 'upstream'; await renderAdminProducts(1); }
     else if (t === 'products-self') { window._prodView = 'self'; await renderAdminProducts(1); }
     else if (t === 'cards') await renderAdminCards(1);
