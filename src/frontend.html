@@ -539,7 +539,7 @@ function renderShop(){
 }
 // 首页 Hero（参考 prodseller 版式，文案按截图、品牌换本站的）：左文案 + 右紫色倾斜卡 + 漂浮标签。
 function homeHeroHTML(){
-  return '<div class="home-hero"><div><div class="home-eyebrow"><b>✦</b> 您的数字化升级之旅由此开启</div><div class="home-h1">无限可能，<br><span class="home-h1-accent">更实惠的价格。</span></div><p class="home-sub">你下一个最爱的工具就在这里。探索适用于工作、创意以及其他各种用途的数字订阅服务。</p><button class="home-cta" onclick="document.getElementById(\x27shopBrowse\x27).scrollIntoView({behavior:\x27smooth\x27})">探索 <span>↗</span></button><div class="home-note">更多选择，尽在一处。</div></div><div class="home-visual"><span class="home-visual-ring" style="width:340px;height:340px;left:40px;top:-10px"></span><span class="home-visual-ring" style="width:260px;height:260px;left:80px;top:30px"></span><div class="home-chip home-chip-create">△ <span>创造</span></div><div class="home-chip home-chip-relax">▷ <span>放松</span></div><div class="home-pcard"><div class="home-pcard-top"><span class="home-pcard-logo">智选 ↗</span><span class="home-pcard-note">一切都数字化了。</span></div><div class="home-pcard-bottom"><div>略微升级，<br>潜力却更大。</div><span class="home-pcard-arrow">↗</span></div></div><div class="home-chip home-chip-discover">✳ <span>发现</span></div><div class="home-visual-cap">好工具，大可能。</div></div></div>';
+  return '<div class="home-hero"><div><div class="home-eyebrow"><b>✦</b> 您的数字化升级之旅由此开启</div><div class="home-h1">无限可能，<br><span class="home-h1-accent">更实惠的价格。</span></div><p class="home-sub">你下一个最爱的工具就在这里。探索适用于工作、创意以及其他各种用途的数字订阅服务。</p><button class="home-cta" onclick="document.getElementById(\x27shopBrowse\x27).scrollIntoView({behavior:\x27smooth\x27})">探索 <span>↗</span></button><div class="home-note">更多选择，尽在一处。</div></div><div class="home-visual"><span class="home-visual-ring" style="width:340px;height:340px;left:40px;top:-10px"></span><span class="home-visual-ring" style="width:260px;height:260px;left:80px;top:30px"></span><div class="home-chip home-chip-create">▲ <span>创造</span></div><div class="home-chip home-chip-relax">▶ <span>放松</span></div><div class="home-pcard"><div class="home-pcard-top"><span class="home-pcard-logo">智选 ↗</span><span class="home-pcard-note">一切都数字化了。</span></div><div class="home-pcard-bottom"><div>略微升级，<br>潜力却更大。</div><span class="home-pcard-arrow">↗</span></div></div><div class="home-chip home-chip-discover">✳ <span>发现</span></div><div class="home-visual-cap">好工具，大可能。</div></div></div>';
 }
 // 商品合集区标题（截图第二块；本站无收藏夹，右侧改为返回顶部）。
 function homeSectionHeadHTML(){
@@ -772,6 +772,8 @@ async function doRecoverPayment(){
 async function submitTxid(no){
   var txEl = el('txid') || el('qtxid-' + no) || el('qtxid');
   var tx = txEl ? txEl.value : '';
+  // TXID 可选：空着点提交不是长度错误——直接提示，不发请求（也不消耗一次性验证码）。
+  if (!tx.trim()){ toast('请先填写 TXID（不填可直接等待自动发货）', 'error'); return; }
   // P3-4：/pay 提交 TXID 带图形验证码，字段名与下单验证码一致（captcha_id / captcha_code）。
   // 验证码单次有效，/pay 用独立的新验证码，不复用查单验证码。
   var body = { txid: tx };

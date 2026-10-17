@@ -2331,6 +2331,8 @@ async function handleApi(req, env, url, ctx) {
   if (mPay && method === 'POST') {
     var b = await parseJsonBody(req);
     var txid = String(b.txid || '').trim();
+    // TXID 可选：空着提交不是长度错误——给明确提示（前端已拦截，此处为纵深防御）。
+    if (!txid) return err('请填写 TXID（不填可直接等待自动发货）');
     if (txid.length < 6 || txid.length > 200) return err('TXID / 订单 ID 长度无效（6-200字符）');
     if (!/^[A-Za-z0-9_\-]+$/.test(txid)) return err('仅支持字母数字 _ -');
     var no2 = decodeURIComponent(mPay[1]);
