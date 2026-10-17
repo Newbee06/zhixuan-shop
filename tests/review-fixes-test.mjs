@@ -1242,6 +1242,9 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   check('payui: QR with USDT mark + ecc=H', frontendHtml.includes('pay-qr-logo') && frontendHtml.includes('ecc=H'));
   check('payui: address head/tail highlight', frontendHtml.includes('payAddrHighlighted') && frontendHtml.includes('pay-addr-hl'));
   check('payui: countdown hours-aware + expired state', frontendHtml.includes("h + '时'") && frontendHtml.includes('已过期，请重新下单'));
+  // payTokenLabel 已含链名（'USDT0 · X Layer'），小字行不得再追加一次 pay_chain。
+  const payBlockSrc = frontendHtml.slice(frontendHtml.indexOf('function payBlockHTML'), frontendHtml.indexOf('function payBlockHTML') + 2500);
+  check('payui: amount sub-line has no duplicated chain', (payBlockSrc.match(/o\.pay_chain/g) || []).length === 2);
 }
 // 前端：renderShop 每次进入重拉 /api/products（PRODUCTS 只在 load() 取一次，下单后 SPA 内导航回商城会显示过期库存计数）。
 {

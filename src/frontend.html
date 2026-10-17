@@ -448,7 +448,7 @@ function payAddrHighlighted(addr){ if (!addr) return ''; var a = String(addr); i
 function payBlockHTML(o, uid){
   var actual = Number(o.actual_amount != null ? o.actual_amount : o.total_usdt) || 0;
   var addr = o.pay_address || o.wallet_address || '';
-  var h = '<div class="pay-amount"><div class="pay-amount-usdt">' + actual + ' USDT</div><div class="pay-amount-sub">' + fmtCNY(actual) + ' · ' + escH(o.pay_method || '') + ' · ' + escH(payTokenLabel(o.pay_chain || '')) + ' · ' + escH(o.pay_chain || '') + '</div></div>';
+  var h = '<div class="pay-amount"><div class="pay-amount-usdt">' + actual + ' USDT</div><div class="pay-amount-sub">' + fmtCNY(actual) + ' · ' + escH(o.pay_method || '') + ' · ' + escH(payTokenLabel(o.pay_chain || '')) + '</div></div>';
   h += '<div><span class="pay-exact">ⓘ 请严格按照数额进行付款</span></div>';
   if (o.expires_at) h += '<div class="pay-expiry">到期时间 <b>' + escH(fmtExpiryAbsolute(o.expires_at)) + '</b> · 剩余 <b id="countdown-' + escH(uid) + '">' + fmtCountdown(o.expires_at) + '</b></div>';
   h += '<div class="pay-order">商户订单 <b id="ordNo-' + escH(uid) + '">' + escH(o.order_no || '') + '</b><button class="btn small ghost" data-copy-target="ordNo-' + escH(uid) + '">复制</button></div>';
