@@ -482,6 +482,14 @@ var MIGRATIONS = [
       if (APP_ICON_SEED[s][1] !== 'dark') continue;
       await env.DB.prepare('UPDATE app_icons SET image_data = ? WHERE app_key = ? AND theme = ?').bind(APP_ICON_SEED[s][3], APP_ICON_SEED[s][0], 'dark').run();
     }
+  } },
+  { version: 14, name: '查单改 aisou.pro 方向：买家自设查询密码（只存哈希）+ 按单密码取卡密', up: async function (env) {
+    // query_password_hash：买家下单时自设的查询密码的 SHA-256 哈希（绝不存明文）。空 = 未设密码，查卡密无需密码。
+    // 旧订单兼容：query_password（旧明文密码）与 query_token_hash（旧系统凭证）保留，老路径继续可用。
+    await addColumnIfMissing(env, 'orders', "query_password_hash TEXT NOT NULL DEFAULT ''");
+    // secret_attempts：按单密码取卡密的尝试记录（order_no + ip + 时间），防针对单订单的密码爆破。
+    await createTableIfMissing(env, 'CREATE TABLE IF NOT EXISTS secret_attempts (order_no TEXT NOT NULL, ip TEXT NOT NULL, created_at TEXT NOT NULL)');
+    await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_secret_attempts_order ON secret_attempts(order_no, created_at)');
   } }
 ];
 // 执行待迁移：先建基表（空库首次迁移），再逐个版本 apply，成功才标记版本；任一失败抛错（带版本号与原因），不得伪装成功。
@@ -638,7 +646,7 @@ async function precheckSchema(env) {
   var expectedTables = {
     products: ['id', 'slug', 'title', 'category', 'price_usdt', 'source', 'prodseller_id', 'cost_price', 'sell_price', 'requires_email_activation', 'delivery_method', 'stock_type', 'description', 'notice', 'form_fields', 'image_emoji', 'image_data', 'app_icon_key', 'sort', 'is_active', 'in_stock', 'created_at'],
     cards: ['id', 'product_id', 'code', 'is_used', 'is_disabled', 'order_id', 'reserved_order_id', 'reserved_at', 'created_at'],
-    orders: ['id', 'order_no', 'query_password', 'query_token_hash', 'claim_token', 'claimed_at', 'exception_reason', 'refund_status', 'refund_ref', 'upstream_lock', 'upstream_lock_expires_at', 'product_id', 'product_snapshot', 'quantity', 'price_usdt', 'total_usdt', 'actual_amount', 'pay_address', 'expires_at', 'last_checked_at', 'tx_hash', 'customer_fields', 'contact', 'pay_method', 'pay_chain', 'wallet_address', 'txid', 'status', 'delivery_content', 'admin_note', 'data_expired', 'created_at', 'paid_at', 'fulfilled_at'],
+    orders: ['id', 'order_no', 'query_password', 'query_token_hash', 'query_password_hash', 'claim_token', 'claimed_at', 'exception_reason', 'refund_status', 'refund_ref', 'upstream_lock', 'upstream_lock_expires_at', 'product_id', 'product_snapshot', 'quantity', 'price_usdt', 'total_usdt', 'actual_amount', 'pay_address', 'expires_at', 'last_checked_at', 'tx_hash', 'customer_fields', 'contact', 'pay_method', 'pay_chain', 'wallet_address', 'txid', 'status', 'delivery_content', 'admin_note', 'data_expired', 'created_at', 'paid_at', 'fulfilled_at'],
     settings: ['key', 'value'],
     admin_meta: ['key', 'value'],
     upstream_orders: ['id', 'order_id', 'prodseller_order_id', 'status', 'amount', 'delivered_keys', 'created_at'],
@@ -654,7 +662,8 @@ async function precheckSchema(env) {
     payments: ['id', 'order_id', 'chain', 'asset', 'pay_address', 'tx_hash', 'event_key', 'amount', 'amount_unit', 'block_number', 'confirmations', 'first_seen_at', 'status', 'reconcile_status', 'reconcile_note', 'created_at', 'updated_at'],
     scan_cursors: ['chain', 'last_block', 'updated_at'],
     pay_rate: ['key', 'created_at'],
-    app_icons: ['app_key', 'theme', 'name', 'image_data']
+    app_icons: ['app_key', 'theme', 'name', 'image_data'],
+    secret_attempts: ['order_no', 'ip', 'created_at']
   };
   var expectedIndexes = [
     { name: 'idx_upstream_orders_order_unique', unique: 1 },
@@ -1596,6 +1605,9 @@ function sanitizeOrderForPublic(o, level) {
   var out = Object.assign({}, o);
   delete out.query_password;
   delete out.query_token_hash;
+  // 只暴露“是否设了查询密码”（与查询列表的 credential_type 同口径），不暴露哈希本身。
+  out.has_query_password = o.query_password_hash ? 1 : 0;
+  delete out.query_password_hash;
   delete out.claim_token;
   delete out.claimed_at;
   try { out.product_snapshot = JSON.parse(o.product_snapshot || '{}'); } catch (e) { out.product_snapshot = {}; }
@@ -1922,10 +1934,11 @@ async function handleApi(req, env, url, ctx) {
     wallet = String(wallet || '').trim();
     if (!/^0x[0-9a-fA-F]{40}$/.test(wallet)) return err('该支付方式暂未配置有效收款地址，请联系管理员配置后再下单');
     var orderNo = genOrderNo();
-    // 新订单不再生成可用的明文六位查询密码：query_password 写空值（字段保留兼容旧订单）。
-    // 查单凭证：高强度不可预测（128 位），只存 SHA-256 哈希，只在创建订单时返回一次；旧订单无此字段，走旧密码兼容路径。
-    var queryToken = randomHex(16);
-    var queryTokenHash = await sha256Hex(queryToken);
+    // 查询密码（aisou.pro 方向）：买家下单时自设，可选。只存 SHA-256 哈希，绝不存明文；空 = 未设密码，查卡密无需密码。
+    // 新订单不再生成系统查单凭证（query_token_hash 写空）；旧订单的系统凭证/旧密码走老路径兼容。
+    var queryPasswordRaw = String(body.query_password || '').trim();
+    if (queryPasswordRaw.length > 64) return err('查询密码过长（最多 64 字符）');
+    var queryPasswordHash = queryPasswordRaw ? await sha256Hex(queryPasswordRaw) : '';
     var effPrice = getEffectivePrice(prod);
     var total = Math.round(effPrice * qty * 100) / 100;
     var actualAmount = total;
@@ -1940,7 +1953,7 @@ async function handleApi(req, env, url, ctx) {
     var insertedOrderNo = null;
     for (var insAttempt = 0; insAttempt < 5; insAttempt++) {
       try {
-        await env.DB.prepare('INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(orderNo, '', queryTokenHash, productId, snapshot, qty, effPrice, total, actualAmount, wallet, expiresAt, JSON.stringify(cust), contact, body.pay_method, body.pay_chain, wallet, 'pending_payment', nowISO()).run();
+        await env.DB.prepare('INSERT INTO orders (order_no, query_password, query_token_hash, query_password_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(orderNo, '', '', queryPasswordHash, productId, snapshot, qty, effPrice, total, actualAmount, wallet, expiresAt, JSON.stringify(cust), contact, body.pay_method, body.pay_chain, wallet, 'pending_payment', nowISO()).run();
         insertedOrderNo = orderNo;
         break;
       } catch (e) {
@@ -1967,7 +1980,7 @@ async function handleApi(req, env, url, ctx) {
     }
     // 订单确认邮件（waitUntil，不阻塞下单响应）
     try { var createdOrder = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ?').bind(orderNo).first(); if (createdOrder) deliverWithCtx(ctx, sendOrderEmail(env, createdOrder, prod, 'confirm', '')); } catch (e) {}
-    return json({ ok: true, order: { order_no: orderNo, query_token: queryToken, total_usdt: total, actual_amount: actualAmount, pay_address: wallet, expires_at: expiresAt, wallet_address: wallet, pay_method: body.pay_method, pay_chain: body.pay_chain } });
+    return json({ ok: true, order: { order_no: orderNo, has_query_password: queryPasswordHash ? 1 : 0, total_usdt: total, actual_amount: actualAmount, pay_address: wallet, expires_at: expiresAt, wallet_address: wallet, pay_method: body.pay_method, pay_chain: body.pay_chain } });
   }
 
   // ---- 公开：查单 ----
@@ -2014,6 +2027,54 @@ async function handleApi(req, env, url, ctx) {
     // 旧订单（无凭证哈希）：用旧查询密码验证，但只返回概要，不返回交付内容与客户隐私（需交付内容请联系客服）。
     if (cred && cred === ordL.query_password && ordL.query_password) return json({ ok: true, order: sanitizeOrderForPublic(ordL, 'summary'), legacy: true });
     return err('查单凭证或旧查询密码错误，请联系客服获取交付内容', 401);
+  }
+  // POST 查单列表（aisou.pro 方向）：关键词 = 订单号 或 邮箱（contact），返回订单概要列表（最多 10 条）。
+  // 需图形验证码（防机器人枚举）+ 查单限流。列表不含交付内容；卡密需按单走 /secret 验证。
+  if (path === '/api/orders/query' && method === 'POST') {
+    var qb = await parseJsonBody(req);
+    var keywords = String(qb.keywords || '').trim();
+    if (!keywords) return err('请输入订单号或邮箱再查询');
+    if (keywords.length > 200) return err('查询关键词过长');
+    var capErrQ = await verifyCaptcha(env, qb.captcha_id, qb.captcha_code);
+    if (capErrQ) return err(capErrQ, 401);
+    var rateErrQ = await checkLookupRateLimit(env, req);
+    if (rateErrQ) return err(rateErrQ, 429);
+    var qRows = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ? OR contact = ? ORDER BY created_at DESC LIMIT 10').bind(keywords, keywords).all();
+    var qList = (qRows.results || []).map(function (o) {
+      var snap = {}; try { snap = JSON.parse(o.product_snapshot || '{}'); } catch (e) { snap = {}; }
+      // 凭证类型：password=新订单自设密码 / token=旧订单系统凭证 / legacy=旧订单旧密码 / none=未设密码
+      var credType = 'none';
+      if (o.query_password_hash) credType = 'password';
+      else if (o.query_token_hash) credType = 'token';
+      else if (o.query_password) credType = 'legacy';
+      return { order_no: o.order_no, status: o.status, product_title: snap.title || '', quantity: o.quantity, total_usdt: o.total_usdt, pay_method: o.pay_method, pay_chain: o.pay_chain, created_at: o.created_at, paid_at: o.paid_at, credential_type: credType, has_delivery: o.delivery_content ? 1 : 0 };
+    });
+    return json({ ok: true, orders: qList, total: qList.length });
+  }
+  // POST 按单取卡密（aisou.pro 方向）：已付款订单 + 密码校验通过 → 返回交付内容。
+  // 未设密码的订单（query_password_hash 为空）直接返回卡密；旧订单（系统凭证）不走此口，请用老 /lookup。
+  var mSecret = path.match(/^\/api\/orders\/([^\/]+)\/secret$/);
+  if (mSecret && method === 'POST') {
+    var sb = await parseJsonBody(req);
+    var noS = decodeURIComponent(mSecret[1]);
+    var ordS = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ?').bind(noS).first();
+    if (!ordS) return err('订单不存在', 404);
+    // 旧订单（系统凭证）：不走此口，避免两种凭证语义混淆
+    if (ordS.query_token_hash) return err('旧订单请使用订单号 + 查单凭证在原查询方式查询', 410);
+    if (ordS.status !== 'completed' && ordS.status !== 'paid' && !ordS.delivery_content) return err('订单尚未付款或暂无交付内容');
+    // 密码校验（有设密码时）：按单+IP 限流，防针对单订单爆破
+    if (ordS.query_password_hash) {
+      var pw = String(sb.password || '').trim();
+      if (!pw) return err('请输入查询密码', 401);
+      var ipS = (req.headers.get('cf-connecting-ip') || req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || 'unknown';
+      var winStartS = new Date(Date.now() - 10 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+      try { await env.DB.prepare('DELETE FROM secret_attempts WHERE created_at < ?').bind(winStartS).run(); } catch (e) {}
+      var attS = await env.DB.prepare('SELECT COUNT(*) as n FROM secret_attempts WHERE order_no = ?').bind(noS).first();
+      if (attS && Number(attS.n) >= 5) return err('该订单密码尝试次数过多，请 10 分钟后再试', 429);
+      try { await env.DB.prepare('INSERT INTO secret_attempts (order_no, ip, created_at) VALUES (?, ?, ?)').bind(noS, ipS, nowISO()).run(); } catch (e) {}
+      if ((await sha256Hex(pw)) !== ordS.query_password_hash) return err('查询密码错误', 401);
+    }
+    return json({ ok: true, order_no: ordS.order_no, delivery_content: ordS.delivery_content || '' });
   }
   var mPay = path.match(/^\/api\/orders\/([^\/]+)\/pay$/);
   if (mPay && method === 'POST') {
@@ -2327,6 +2388,19 @@ async function handleApi(req, env, url, ctx) {
     var auditOkR = await logAudit(env, rid, 'refund_confirm', 'refund_pending', 'cancelled', '管理员确认已在系统外完成退款，退款凭证：' + refundRef + (refundNote ? '，备注：' + refundNote : ''));
     if (!auditOkR) return err(auditFailMsg(rid, 'refund_confirm'), 500);
     return json({ ok: true, message: '已确认退款，订单已取消。' });
+  }
+
+  // 管理端：清除某订单的查询密码（买家忘密码时客服可用；清掉后该订单查卡密无需密码）。仅清新密码哈希，不动旧凭证。
+  var mClearQP = path.match(/^\/api\/admin\/orders\/(\d+)\/clear-query-password$/);
+  if (mClearQP && method === 'POST') {
+    // 管理路径已在入口处统一验登（isAdminPath && !admin → 401），此处不再重复校验。
+    var cqId = Number(mClearQP[1]);
+    var cqO = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(cqId).first();
+    if (!cqO) return err('订单不存在', 404);
+    if (!cqO.query_password_hash) return err('该订单未设置查询密码，无需清除');
+    await env.DB.prepare('UPDATE orders SET query_password_hash = ? WHERE id = ?').bind('', cqId).run();
+    await logAudit(env, cqId, 'clear_query_password', cqO.status, cqO.status, '管理员清除了该订单的查询密码');
+    return json({ ok: true, message: '查询密码已清除，该订单查卡密无需密码' });
   }
 
   // 商品 CRUD（管理员）— 服务端统一校验与规范化，不只依赖前端 onchange

@@ -12,6 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 const dir = path.dirname(fileURLToPath(import.meta.url)) + '/..';
 const db = new DatabaseSync(':memory:');
@@ -172,7 +173,7 @@ const darkSeed = db.prepare("SELECT image_data FROM app_icons WHERE app_key='cha
 db.prepare("UPDATE app_icons SET image_data='data:image/jpeg;base64,FAKE-OLD-DARK' WHERE app_key='chatgpt' AND theme='dark'").run();
 db.prepare("DELETE FROM schema_migrations WHERE version=12").run();
 r = await call('POST', '/api/admin/migrate', {}, cookie);
-check('v12 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 13, JSON.stringify(r.json));
+check('v12 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 14, JSON.stringify(r.json));
 const darkAfter = db.prepare("SELECT image_data FROM app_icons WHERE app_key='chatgpt' AND theme='dark'").get().image_data;
 check('v12 refreshed dark icon to seed value', darkAfter === darkSeed, 'after len=' + darkAfter.length);
 check('v12 does not touch light icon', db.prepare("SELECT image_data FROM app_icons WHERE app_key='chatgpt' AND theme='light'").get().image_data === icons.chatgpt.light);
@@ -181,9 +182,61 @@ const tgSeed = db.prepare("SELECT image_data FROM app_icons WHERE app_key='teleg
 db.prepare("UPDATE app_icons SET image_data='data:image/jpeg;base64,FAKE-OLD-TELEGRAM-WHITE' WHERE app_key='telegram' AND theme='dark'").run();
 db.prepare("DELETE FROM schema_migrations WHERE version=13").run();
 r = await call('POST', '/api/admin/migrate', {}, cookie);
-check('v13 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 13, JSON.stringify(r.json));
+check('v13 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 14, JSON.stringify(r.json));
 const tgAfter = db.prepare("SELECT image_data FROM app_icons WHERE app_key='telegram' AND theme='dark'").get().image_data;
 check('v13 refreshed telegram dark to seed value', tgAfter === tgSeed, 'after len=' + tgAfter.length);
+
+
+// 12. 查单改 aisou.pro 方向：自设查询密码（只存哈希）+ 邮箱/订单号查列表 + 按单密码取卡密
+function sha256hex(s){ return createHash('sha256').update(s).digest('hex'); }
+function seedCaptcha(id, code){ db.prepare('INSERT INTO captcha_codes (id, code_hash, expires_at, attempts) VALUES (?, ?, ?, 0)').run(id, sha256hex(code), '2099-01-01 00:00:00'); }
+r = await call('POST', '/api/admin/settings', { settings: { usdt_addresses: JSON.stringify({ 'OKX|X Layer': '0x' + '1'.repeat(40), 'Binance|BEP20': '0x' + '2'.repeat(40) }) } }, cookie);
+check('query-flow: set wallet addresses', r.json && r.json.ok);
+r = await call('POST', '/api/admin/products', { slug: 'qf-test', title: 'QF 测试商品', sell_price: 1, cost_price: 0, source: 'self', category: 'recharge', stock_type: 'manual', in_stock: 1, is_active: 1, description: '', notice: '' }, cookie);
+check('query-flow: create product', r.json && r.json.ok, JSON.stringify(r.json));
+const qfPidRow = db.prepare('SELECT id FROM products WHERE slug = ?').get('qf-test');
+const qfPid = qfPidRow ? qfPidRow.id : 0;
+seedCaptcha('qf-cap-1', 'TEST');
+r = await call('POST', '/api/orders', { product_id: qfPid, quantity: 1, customer_fields: {}, contact: 'buyer@example.com', pay_method: 'OKX', pay_chain: 'X Layer', captcha_id: 'qf-cap-1', captcha_code: 'TEST', query_password: 'mypw123' });
+check('query-flow: order with query_password returns no query_token', r.json && r.json.ok && !r.json.order.query_token && r.json.order.has_query_password === 1, JSON.stringify(r.json));
+const qfNo1 = r.json && r.json.order ? r.json.order.order_no : '';
+const qfRow1 = db.prepare('SELECT * FROM orders WHERE order_no = ?').get(qfNo1);
+check('query-flow: query_password stored as hash only (not plaintext)', qfRow1 && qfRow1.query_password_hash === sha256hex('mypw123') && !String(qfRow1.query_password_hash).includes('mypw123'));
+check('query-flow: new order has no system token', qfRow1 && !qfRow1.query_token_hash);
+seedCaptcha('qf-cap-2', 'TEST');
+r = await call('POST', '/api/orders', { product_id: qfPid, quantity: 1, customer_fields: {}, contact: 'nopw@example.com', pay_method: 'OKX', pay_chain: 'X Layer', captcha_id: 'qf-cap-2', captcha_code: 'TEST' });
+check('query-flow: order without query_password has_query_password=0', r.json && r.json.ok && r.json.order.has_query_password === 0, JSON.stringify(r.json));
+const qfNo2 = r.json && r.json.order ? r.json.order.order_no : '';
+db.prepare("UPDATE orders SET status='completed', paid_at='2026-10-17 12:00:00', fulfilled_at='2026-10-17 12:01:00', delivery_content='TEST-CARD-123' WHERE order_no = ?").run(qfNo1);
+db.prepare("UPDATE orders SET status='completed', paid_at='2026-10-17 12:00:00', fulfilled_at='2026-10-17 12:01:00', delivery_content='TEST-CARD-456' WHERE order_no = ?").run(qfNo2);
+r = await call('POST', '/api/orders/query', { keywords: 'buyer@example.com' });
+check('query-flow: query list without captcha rejected', r.status === 401, JSON.stringify(r.json));
+seedCaptcha('qf-cap-3', 'TEST');
+r = await call('POST', '/api/orders/query', { keywords: 'buyer@example.com', captcha_id: 'qf-cap-3', captcha_code: 'TEST' });
+check('query-flow: query by email lists order (no delivery in list)', r.json && r.json.ok && r.json.orders.length === 1 && r.json.orders[0].order_no === qfNo1 && r.json.orders[0].credential_type === 'password' && !('delivery_content' in r.json.orders[0]), JSON.stringify(r.json));
+seedCaptcha('qf-cap-4', 'TEST');
+r = await call('POST', '/api/orders/query', { keywords: qfNo1, captcha_id: 'qf-cap-4', captcha_code: 'TEST' });
+check('query-flow: query by order_no lists order', r.json && r.json.ok && r.json.orders.length === 1 && r.json.orders[0].order_no === qfNo1, JSON.stringify(r.json));
+seedCaptcha('qf-cap-5', 'TEST');
+r = await call('POST', '/api/orders/query', { keywords: 'nobody@example.com', captcha_id: 'qf-cap-5', captcha_code: 'TEST' });
+check('query-flow: query unknown returns empty list', r.json && r.json.ok && r.json.orders.length === 0, JSON.stringify(r.json));
+r = await call('POST', '/api/orders/' + qfNo1 + '/secret', { password: 'wrongpw' });
+check('query-flow: secret wrong password 401', r.status === 401, JSON.stringify(r.json));
+r = await call('POST', '/api/orders/' + qfNo1 + '/secret', { password: 'mypw123' });
+check('query-flow: secret correct password returns card', r.json && r.json.ok && r.json.delivery_content === 'TEST-CARD-123', JSON.stringify(r.json));
+r = await call('POST', '/api/orders/' + qfNo2 + '/secret', { password: '' });
+check('query-flow: secret no-password order returns card directly', r.json && r.json.ok && r.json.delivery_content === 'TEST-CARD-456', JSON.stringify(r.json));
+for (let i = 0; i < 3; i++) await call('POST', '/api/orders/' + qfNo1 + '/secret', { password: 'wrongpw' });
+r = await call('POST', '/api/orders/' + qfNo1 + '/secret', { password: 'wrongpw' });
+check('query-flow: secret rate limited after 5 attempts (429)', r.status === 429, JSON.stringify(r.json));
+const qfId1 = qfRow1 ? qfRow1.id : 0;
+r = await call('POST', '/api/admin/orders/' + qfId1 + '/clear-query-password', {}, cookie);
+check('query-flow: admin clear query password', r.json && r.json.ok, JSON.stringify(r.json));
+r = await call('POST', '/api/orders/' + qfNo1 + '/secret', { password: '' });
+check('query-flow: after clear, secret returns card without password', r.json && r.json.ok && r.json.delivery_content === 'TEST-CARD-123', JSON.stringify(r.json));
+check('query-flow: frontend checkout has query_password field', html.includes('id="query_password"') && html.includes('设置查询订单的密码'));
+check('query-flow: frontend query page is keyword+list flow', html.includes('id="qkeywords"') && html.includes('doQueryList()') && html.includes('doQuerySecret(') && html.includes('doQueryLegacy('));
+check('query-flow: frontend success page no longer shows system token', !html.includes('_lastQueryToken') && html.includes('请牢记您设置的查询密码'));
 
 console.log(`\nAPP-ICONS TEST DONE pass=${pass} fail=${fail}`);
 if (fail) process.exit(1);

@@ -155,11 +155,12 @@ check('prodseller out-of-stock blocked (gate open)', r.json && !r.json.ok && /�
 db.prepare("UPDATE settings SET value='0' WHERE key='prodseller_enabled'").run();
 
 // ===== 6. 库存预留：两单争 1 张卡，第二单被拒；取消第一单后释放，第二单可下 =====
-r = await orderCall({ product_id: pCard, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'c1@test.example', delivery_email: 'c1@test.example' } });
+r = await orderCall({ product_id: pCard, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'c1@test.example', delivery_email: 'c1@test.example' }, query_password: 'sec-pw-1' });
 check('first card order ok (reserves the only card)', r.json && r.json.ok === true, JSON.stringify(r.json));
 const ordA = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-check('first order has query_token', !!r.json.order.query_token);
-check('first order has query_token_hash stored (not plaintext)', !!ordA.query_token_hash && ordA.query_token_hash.length === 64);
+check('first order has_query_password=1, no system query_token', r.json.order.has_query_password === 1 && !r.json.order.query_token);
+check('first order has query_password_hash stored (sha256, not plaintext)', !!ordA.query_password_hash && ordA.query_password_hash.length === 64 && !ordA.query_password_hash.includes('sec-pw-1'));
+check('first order has no system token hash', !ordA.query_token_hash);
 r = await orderCall({ product_id: pCard, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'c2@test.example', delivery_email: 'c2@test.example' } });
 check('second card order blocked (no card left)', r.json && !r.json.ok && /库存不足/.test(r.json.error || ''), JSON.stringify(r.json));
 check('failed reservation leaves no orphan order', !q("SELECT id FROM orders WHERE contact='c2@test.example'"));
@@ -167,10 +168,10 @@ check('failed reservation leaves no orphan order', !q("SELECT id FROM orders WHE
 r = await call('POST', '/api/admin/orders/' + ordA.id + '/cancel', { reason: '测试释放' }, cookie);
 check('cancel first order ok', r.json && r.json.ok === true);
 check('reservation released after cancel', !q('SELECT id FROM cards WHERE reserved_order_id=?', ordA.id));
-r = await orderCall({ product_id: pCard, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'c2@test.example', delivery_email: 'c2@test.example' } });
+r = await orderCall({ product_id: pCard, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'c2@test.example', delivery_email: 'c2@test.example' }, query_password: 'sec-pw-2' });
 check('second order ok after release', r.json && r.json.ok === true, JSON.stringify(r.json));
 const ordB = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-const tokenB = r.json.order.query_token;
+const pwB = 'sec-pw-2';
 
 // ===== 7. 订单状态机 =====
 // 待付款不能直接发货
@@ -208,17 +209,19 @@ check('lookup without token -> 401', r.status === 401);
 // 错误凭证 -> 401
 r = await call('POST', '/api/orders/' + ordB.order_no + '/lookup', { credential: 'wrongtoken123' });
 check('lookup with wrong token -> 401', r.status === 401);
-// 正确凭证 -> 完整详情，含交付内容，不含凭证哈希/查询密码
-r = await call('POST', '/api/orders/' + ordB.order_no + '/lookup', { credential: tokenB });
-check('lookup with correct token -> full detail', r.json && r.json.ok === true && r.json.order.delivery_content === 'SEC-CARD-ONLY-1', JSON.stringify(r.json));
-check('lookup response has no query_token_hash', !JSON.stringify(r.json).includes('query_token_hash'));
-check('lookup response has no query_password', !JSON.stringify(r.json).includes('query_password'));
+// 正确查询密码 -> /secret 返回交付内容，不含任何凭证哈希/查询密码
+r = await call('POST', '/api/orders/' + ordB.order_no + '/secret', { password: pwB });
+check('secret with correct password -> card', r.json && r.json.ok === true && r.json.delivery_content === 'SEC-CARD-ONLY-1', JSON.stringify(r.json));
+check('secret response has no query_password_hash', !JSON.stringify(r.json).includes('query_password_hash'));
+check('secret response has no query_token_hash', !JSON.stringify(r.json).includes('query_token_hash'));
+check('secret response has no query_password', !JSON.stringify(r.json).includes('query_password'));
 // 旧查询密码不能用于新订单（用一个真实的非空六位密码验证，不用空值绕过）
 r = await call('POST', '/api/orders/' + ordB.order_no + '/lookup', { credential: '123456' });
 check('legacy password rejected for new order', r.status === 401);
 // 新订单不再保存可用的明文六位查询密码
 check('new order query_password is empty', ordB.query_password === '', JSON.stringify({ qp: ordB.query_password }));
-// 邮箱查单已关闭（第四轮 P0，E-02）：仅凭邮箱即可枚举购买历史属隐私泄露。统一入口为订单号 + 查单凭证。
+// 旧 GET 邮箱列表仍关闭（第四轮 P0，E-02）：仅凭邮箱即可枚举购买历史属隐私泄露。
+// 新流程：邮箱可用，但须走 POST /api/orders/query（带图形验证码），且卡密仍需按单密码。
 r = await call('GET', '/api/orders?contact=c2@test.example');
 check('email lookup closed -> 410', r.status === 410 && r.json && r.json.ok === false, JSON.stringify(r.json));
 // 旧订单兼容：直接插入一个无凭证哈希的旧订单，旧密码只返回概要（无交付内容）
@@ -308,7 +311,7 @@ check('exception_reason cleared after fulfill', q('SELECT exception_reason FROM 
 
 // ===== 8d. 迁移状态端点 =====
 r = await call('GET', '/api/admin/migrate', null, cookie);
-check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 13, JSON.stringify(r.json));
+check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 14, JSON.stringify(r.json));
 r = await call('POST', '/api/admin/migrate', {}, cookie);
 check('migrate POST idempotent', r.json && r.json.ok === true && r.json.applied.length === 0, JSON.stringify(r.json));
 
