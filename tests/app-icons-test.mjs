@@ -163,15 +163,23 @@ check('frontend theme toggle refreshes icons', html.includes('refreshAppIcons()'
 check('frontend productImgHtml prefers app icon', html.includes('function productImgHtml') && html.includes('p.app_icon_key'));
 check('dark mode: image containers not white (pcard-img/prod-img/detail-img-photo)', html.includes('html[data-theme="dark"] .pcard-img{background:#1c1c1e}') && html.includes('html[data-theme="dark"] .prod-img{background:#1c1c1e}') && html.includes('html[data-theme="dark"] .detail-img-photo{background:#1c1c1e}'));
 
-// 11. v12：已有库的暗版图标被 UPDATE 刷新（模拟 v11 旧暗版：伪造旧值 + 删 v12 标记后重跑迁移）
+// 11. v12/v13：已有库的暗版图标被 UPDATE 刷新（模拟 v11 旧暗版：伪造旧值 + 删迁移标记后重跑迁移）
 const darkSeed = db.prepare("SELECT image_data FROM app_icons WHERE app_key='chatgpt' AND theme='dark'").get().image_data;
 db.prepare("UPDATE app_icons SET image_data='data:image/jpeg;base64,FAKE-OLD-DARK' WHERE app_key='chatgpt' AND theme='dark'").run();
 db.prepare("DELETE FROM schema_migrations WHERE version=12").run();
 r = await call('POST', '/api/admin/migrate', {}, cookie);
-check('v12 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 12, JSON.stringify(r.json));
+check('v12 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 13, JSON.stringify(r.json));
 const darkAfter = db.prepare("SELECT image_data FROM app_icons WHERE app_key='chatgpt' AND theme='dark'").get().image_data;
 check('v12 refreshed dark icon to seed value', darkAfter === darkSeed, 'after len=' + darkAfter.length);
 check('v12 does not touch light icon', db.prepare("SELECT image_data FROM app_icons WHERE app_key='chatgpt' AND theme='light'").get().image_data === icons.chatgpt.light);
+// v13：Telegram 暗版伪造旧值（白底版）+ 删 v13 标记，重跑后应刷为泛洪填充版（与种子值一致，且不同于旧白底版）
+const tgSeed = db.prepare("SELECT image_data FROM app_icons WHERE app_key='telegram' AND theme='dark'").get().image_data;
+db.prepare("UPDATE app_icons SET image_data='data:image/jpeg;base64,FAKE-OLD-TELEGRAM-WHITE' WHERE app_key='telegram' AND theme='dark'").run();
+db.prepare("DELETE FROM schema_migrations WHERE version=13").run();
+r = await call('POST', '/api/admin/migrate', {}, cookie);
+check('v13 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 13, JSON.stringify(r.json));
+const tgAfter = db.prepare("SELECT image_data FROM app_icons WHERE app_key='telegram' AND theme='dark'").get().image_data;
+check('v13 refreshed telegram dark to seed value', tgAfter === tgSeed, 'after len=' + tgAfter.length);
 
 console.log(`\nAPP-ICONS TEST DONE pass=${pass} fail=${fail}`);
 if (fail) process.exit(1);

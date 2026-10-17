@@ -474,6 +474,14 @@ var MIGRATIONS = [
       if (APP_ICON_SEED[s][1] !== 'dark') continue;
       await env.DB.prepare('UPDATE app_icons SET image_data = ? WHERE app_key = ? AND theme = ?').bind(APP_ICON_SEED[s][3], APP_ICON_SEED[s][0], 'dark').run();
     }
+  } },
+  { version: 13, name: '第十轮补丁2：刷新 App 图标暗版（Telegram 泛洪填充去白底）', up: async function (env) {
+    // 种子暗版再次变更（Telegram）时，v12 已标记已应用不会重跑；v13 重新执行同一 UPDATE，把全部暗版刷为当前种子值。
+    // 以后每次种子暗版变更，都须追加新迁移版本重刷（已应用的迁移不重跑）。
+    for (var s = 0; s < APP_ICON_SEED.length; s++) {
+      if (APP_ICON_SEED[s][1] !== 'dark') continue;
+      await env.DB.prepare('UPDATE app_icons SET image_data = ? WHERE app_key = ? AND theme = ?').bind(APP_ICON_SEED[s][3], APP_ICON_SEED[s][0], 'dark').run();
+    }
   } }
 ];
 // 执行待迁移：先建基表（空库首次迁移），再逐个版本 apply，成功才标记版本；任一失败抛错（带版本号与原因），不得伪装成功。
