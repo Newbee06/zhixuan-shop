@@ -530,6 +530,22 @@ var MIGRATIONS = [
     await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)');
     await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at)');
     await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)');
+  } },
+  { version: 17, name: 'P1-1/P1-2：txid_claims 加 claim_token + source + order_lease_token（TXID 认领令牌化 + 人工/链上共享全局认领）', up: async function (env) {
+    // claim_token：每次新认领的密码学安全随机令牌（randomHex(32)），是认领行的唯一持有凭证。
+    //   回滚删除必须同时匹配 (tx_hash, order_id, claim_token) + 当前订单租约仍属本请求（EXISTS orders.claim_token=本请求租约），
+    //   租约被接管后旧请求的回滚条件不再满足，删不掉新请求在用的认领。claim_token 为空 = v17 前遗留认领行，
+    //   永远不被令牌回滚删除（宁可保留，不冒险释放他人依赖的认领）。
+    // source：认领来源，'chain_verified'（链上验证通过后认领）或 'manual_confirmed'（管理员系统外核对后人工确认认领）。
+    //   人工确认与链上确认共享同一 txid_claims 全局原子认领（tx_hash 主键），不再另建防重表、不再靠先 SELECT 后 INSERT。
+    //   manual_confirmed 仅表示人工确认，不构成链上证据，不伪造回执/区块高度/确认数；链上验证仍须验网络/合约/地址/金额/回执/确认数。
+    // order_lease_token：认领时持有者的订单租约令牌（orders.claim_token）。同订单租约接管时新持有者收养认领行
+    //   （UPDATE order_lease_token=新租约），旧持有者回滚因租约已变而失败。现有数据兼容：旧行三列均为默认值，
+    //   不清空/重建/丢失现有 txid_claims 记录；旧行 source 默认 'chain_verified'（v17 前只有链上路径写 txid_claims，
+    //   人工路径只写 payments manual_confirmed 行，见 claimTxid 的遗留 manual 行兼容检查）。
+    await addColumnIfMissing(env, 'txid_claims', "claim_token TEXT NOT NULL DEFAULT ''");
+    await addColumnIfMissing(env, 'txid_claims', "source TEXT NOT NULL DEFAULT 'chain_verified'");
+    await addColumnIfMissing(env, 'txid_claims', "order_lease_token TEXT NOT NULL DEFAULT ''");
   } }
 ];
 // 执行待迁移：先建基表（空库首次迁移），再逐个版本 apply，成功才标记版本；任一失败抛错（带版本号与原因），不得伪装成功。
@@ -734,7 +750,7 @@ async function precheckSchema(env) {
     order_rate: ['ip', 'created_at'],
     admin_audit: ['id', 'order_id', 'action', 'before_status', 'after_status', 'note', 'created_at'],
     login_attempts: ['ip', 'attempts', 'blocked_until', 'updated_at'],
-    txid_claims: ['tx_hash', 'order_id', 'claimed_at'],
+    txid_claims: ['tx_hash', 'order_id', 'claimed_at', 'claim_token', 'source', 'order_lease_token'],
     lookup_rate: ['ip', 'created_at'],
     schema_migrations: ['version', 'applied_at'],
     payments: ['id', 'order_id', 'chain', 'asset', 'pay_address', 'tx_hash', 'event_key', 'amount', 'amount_unit', 'block_number', 'confirmations', 'first_seen_at', 'status', 'reconcile_status', 'reconcile_note', 'created_at', 'updated_at'],
@@ -1501,50 +1517,91 @@ async function checkTxidPayment(env, fetchFn, order, txid) {
 // 订单仍为 pending_payment，但 claim_token + claimed_at 构成租约。只有认领成功的请求才能分配卡密 / 调上游。
 // 认领是单条条件 UPDATE（原子），并检查实际影响行数；认领失败立即返回，不产生任何副作用。
 // 处理者崩溃后，认领超过 CLAIM_LEASE_MINUTES 分钟可被其他请求接管（重新认领），接管时能识别上次已产生的副作用（上游单号 / 已标记卡密）并恢复，不重复采购、不重复发卡。
-async function claimTxid(env, txHash, orderId) {
-  // 同一笔链上已验证交易只能被一个订单认领（永久有效）。同一订单重试放行。
+// ---- 确定性测试钩子（仅测试用）：生产 env 无 __testHooks 时为 no-op。钩子用于在认领关键点制造确定性交错
+// （Barrier / Deferred），不依赖调度/时间窗口。钩子抛错被吞掉，绝不影响业务路径。
+async function testHook(env, name, arg) {
+  try {
+    var h = env && env.__testHooks;
+    if (h && typeof h[name] === 'function') await h[name](arg);
+  } catch (e) {}
+}
+// 条件释放订单租约：仅当租约仍属本请求时清空 claim_token/claimed_at。clearPaidAt=true 时同时清 paid_at
+// （用于 TXID 认领失败：本次未建立任何付款事实，订单应恢复为可取消/可重试的未付款态；认领成功后的账本失败
+// 则保留 paid_at，因为 TXID 已为本订单占用，订单不得被当作未付款取消）。
+async function releaseOrderLease(env, orderId, leaseToken, clearPaidAt) {
+  if (!leaseToken) return;
+  try {
+    var sql = clearPaidAt
+      ? 'UPDATE orders SET claim_token = ' + "''" + ', claimed_at = NULL, paid_at = NULL WHERE id = ? AND claim_token = ?'
+      : 'UPDATE orders SET claim_token = ' + "''" + ', claimed_at = NULL WHERE id = ? AND claim_token = ?';
+    await env.DB.prepare(sql).bind(orderId, leaseToken).run();
+  } catch (e) {}
+}
+async function claimTxid(env, txHash, orderId, opts) {
+  // 同一笔交易只能被一个订单认领（永久有效，tx_hash 主键原子保证）。同一订单重试/接管收养旧认领。
   // 严格先到先得：已有其他订单认领时永远拒绝，不允许“接管/抢占”。
   // 原因：链上核验与管理员确认都可能看到同一笔交易；允许接管会让两个并发已验证请求互相覆盖，
   // 无法严格保证同一 TXID 只属于一个订单。归属争议必须由管理员在 D1 中核查 txid_claims 后手动处理，不得由接口自动改写。
-  // P1-1：返回 created 区分“本次新建”与“已属本订单”。
-  //   created=true 时调用方才持有该认领行，失败回滚时才可删除；
-  //   created=false（已属本订单的旧认领）时回滚绝不删除，避免删掉本订单早先的认领。
-  //   认领行持有人校验：回滚用 releaseTxidClaim 按 (tx_hash, order_id, claimed_at) 删除，
-  //   仅删除本次新建且未被替换的行。
-  //   注：txid_claims 尚无 claim_token 列（加列需新迁移 v16，由文档/迁移阶段统一处理，
-  //   本次不自行加迁移）；此处以 created + claimed_at 持有戳实现等价的持有人校验。
-  if (!txHash) return { ok: true, created: false, claimedAt: null };
-  var existing = await env.DB.prepare('SELECT order_id, claimed_at FROM txid_claims WHERE tx_hash = ?').bind(txHash).first();
+  // P1-1/P1-2（v17）：每次新认领生成密码学安全随机 claim_token（randomHex(32)），持久化到 txid_claims.claim_token；
+  // 人工确认与链上确认共享同一 txid_claims 全局原子认领，source 区分 'chain_verified' / 'manual_confirmed'，
+  // 不再另建防重表、不再靠先 SELECT 后 INSERT；胜负由 tx_hash 主键唯一约束决定。
+  // 收养：同订单已有认领时不新建，只把 order_lease_token 更新为本请求租约（接管者收养），不覆盖 source
+  // （人工/链上来源以首次认领为准，不伪造）；回滚见 releaseTxidClaim（令牌 + 当前租约双重条件）。
+  opts = opts || {};
+  var source = opts.source === 'manual_confirmed' ? 'manual_confirmed' : 'chain_verified';
+  var leaseToken = opts.leaseToken || '';
+  if (!txHash) return { ok: true, created: false, claimToken: null, claimedAt: null, source: null };
+  await testHook(env, 'beforeTxidClaim', { txHash: txHash, orderId: orderId, source: source });
+  var existing = await env.DB.prepare('SELECT order_id, claimed_at, claim_token, source, order_lease_token FROM txid_claims WHERE tx_hash = ?').bind(txHash).first().catch(function () { return null; });
   if (existing) {
-    if (Number(existing.order_id) === Number(orderId)) return { ok: true, created: false, claimedAt: existing.claimed_at || null };
-    return { ok: false, reason: '该交易哈希已用于其他订单（请勿重复提交；归属争议请在 D1 中核查 txid_claims 后手动处理）' };
+    if (Number(existing.order_id) !== Number(orderId)) return { ok: false, reason: '该交易哈希已用于其他订单（请勿重复提交；归属争议请在 D1 中核查 txid_claims 后手动处理）' };
+    if (leaseToken) { try { await env.DB.prepare('UPDATE txid_claims SET order_lease_token = ? WHERE tx_hash = ? AND order_id = ?').bind(leaseToken, txHash, orderId).run(); } catch (e) {} }
+    return { ok: true, created: false, claimToken: existing.claim_token || null, claimedAt: existing.claimed_at || null, source: existing.source || 'chain_verified' };
   }
-  // 人工确认通道绝不写 txid_claims，但其消耗的 TXID 同样不可被他单复用：
-  // 若该 TXID 已被他单人工确认（payments 中 manual_confirmed 行），链上认领同样拒绝。
+  // 遗留兼容：v17 前人工确认只写 payments manual_confirmed 行、不写 txid_claims。无认领行时若遗留人工行归属他单，拒绝；
+  // 归属本单时继续新建认领行（把遗留消耗收敛到全局认领表），之后以认领表为准。
   var manualRow = await env.DB.prepare("SELECT order_id FROM payments WHERE tx_hash = ? AND status = 'manual_confirmed' LIMIT 1").bind(txHash).first().catch(function () { return null; });
   if (manualRow && Number(manualRow.order_id) !== Number(orderId)) {
     return { ok: false, reason: '该交易哈希已用于其他订单（请勿重复提交；归属争议请在 D1 中核查 txid_claims 后手动处理）' };
   }
+  // 确定性并发点：两个并发请求都已通过上面的 SELECT（无认领行），在此 Barrier 处汇合后再同时 INSERT，
+  // 胜负由 tx_hash 主键原子约束决定，不依赖先 SELECT 后 INSERT。测试用 env.__testHooks.beforeTxidInsert 控制。
+  await testHook(env, 'beforeTxidInsert', { txHash: txHash, orderId: orderId, source: source });
   var claimedAt = nowISO();
-  var ins = await env.DB.prepare('INSERT INTO txid_claims (tx_hash, order_id, claimed_at) VALUES (?, ?, ?)').bind(txHash, orderId, claimedAt).run().catch(function () { return null; });
-  if (ins && ins.meta && ins.meta.changes === 1) return { ok: true, created: true, claimedAt: claimedAt };
-  // 并发下 INSERT 冲突（主键已存在）：重新读，确认归属
-  var again = await env.DB.prepare('SELECT order_id, claimed_at FROM txid_claims WHERE tx_hash = ?').bind(txHash).first();
-  if (again && Number(again.order_id) === Number(orderId)) return { ok: true, created: false, claimedAt: again.claimed_at || null };
+  var myToken = randomHex(32);
+  var ins = null;
+  try {
+    ins = await env.DB.prepare('INSERT INTO txid_claims (tx_hash, order_id, claimed_at, claim_token, source, order_lease_token) VALUES (?, ?, ?, ?, ?, ?)').bind(txHash, orderId, claimedAt, myToken, source, leaseToken || '').run();
+  } catch (e) {
+    // 列缺失的极端旧库（迁移未跑完）回退 3 列插入，令牌为空则该行永不被令牌回滚删除（宁可保留）。
+    if (/no such column/i.test(String((e && e.message) || e))) {
+      try { ins = await env.DB.prepare('INSERT INTO txid_claims (tx_hash, order_id, claimed_at) VALUES (?, ?, ?)').bind(txHash, orderId, claimedAt).run(); myToken = ''; } catch (e2) { ins = null; }
+    } else { ins = null; }
+  }
+  if (ins && ins.meta && ins.meta.changes === 1) return { ok: true, created: true, claimToken: myToken || null, claimedAt: claimedAt, source: source };
+  // 并发下 INSERT 冲突（主键已存在）：重新读，确认归属（同订单收养，他单拒绝）
+  var again = await env.DB.prepare('SELECT order_id, claimed_at, claim_token, source FROM txid_claims WHERE tx_hash = ?').bind(txHash).first().catch(function () { return null; });
+  if (again && Number(again.order_id) === Number(orderId)) {
+    if (leaseToken) { try { await env.DB.prepare('UPDATE txid_claims SET order_lease_token = ? WHERE tx_hash = ? AND order_id = ?').bind(leaseToken, txHash, orderId).run(); } catch (e) {} }
+    return { ok: true, created: false, claimToken: again.claim_token || null, claimedAt: again.claimed_at || null, source: again.source || 'chain_verified' };
+  }
   // P3-30：重读为空 = 非冲突型 DB 错误（INSERT 失败且无占用行），不得谎称“已用于其他订单”。
-  if (!again) return { ok: false, reason: '认领失败，请重试' };
+  if (!again) return { ok: false, reason: '认领失败，请重试', transient: true };
   return { ok: false, reason: '该交易哈希已用于其他订单（请勿重复提交；归属争议请在 D1 中核查 txid_claims 后手动处理）' };
 }
-// P1-1：仅释放本次新建的认领。created=false（旧认领）时直接跳过，绝不删除。
-async function releaseTxidClaim(env, txHash, orderId, created, claimedAt) {
-  if (!created) return { ok: true, skipped: true };
+// P1-1：严格限制回滚。单条条件删除同时匹配 (tx_hash, order_id, 本次认领令牌) + 当前订单租约仍属本请求
+// （EXISTS orders.claim_token = 本请求租约）。租约被接管后 EXISTS 失败，旧请求删不掉新请求在用的认领。
+// claimToken 为空（遗留行 / 未新建）时直接跳过，绝不先查后无条件删。无法证明安全时宁可保留认领（同订单可安全重试），不冒险释放。
+async function releaseTxidClaim(env, txHash, orderId, claimToken, leaseToken) {
+  if (!claimToken) return { ok: true, skipped: true };
   try {
-    var del = await env.DB.prepare('DELETE FROM txid_claims WHERE tx_hash = ? AND order_id = ? AND claimed_at = ?').bind(txHash, orderId, claimedAt || '').run();
+    var del = await env.DB.prepare('DELETE FROM txid_claims WHERE tx_hash = ? AND order_id = ? AND claim_token = ? AND EXISTS (SELECT 1 FROM orders WHERE id = ? AND claim_token = ?)').bind(txHash, orderId, claimToken, orderId, leaseToken || '').run();
     return { ok: true, deleted: (del && del.meta) ? Number(del.meta.changes || 0) : 0 };
   } catch (e) { return { ok: false, reason: '认领回滚失败' }; }
 }
-// P1-2：TXID 是否已被他单消耗（txid_claims 认领，或他单人工确认的 manual_confirmed 账本行）。
-// 人工确认通道绝不写 txid_claims，但仍需防同一 TXID 被他单复用，故两处都要查。
+// P1-2：TXID 是否已被他单消耗（txid_claims 认领，或 v17 前遗留的人工 manual_confirmed 账本行）。
+// 仅作 /pay 前置快筛（409 前置提示、省验证码），不是权威判定：权威判定是 claimTxid 的原子 INSERT + 主键约束。
+// 新消耗一律以 txid_claims 为准（人工与链上共享同一全局认领表）。
 async function txHashConsumedByOther(env, txHash, orderId) {
   if (!txHash) return null;
   var c = await env.DB.prepare('SELECT order_id FROM txid_claims WHERE tx_hash = ?').bind(txHash).first().catch(function () { return null; });
@@ -1556,7 +1613,9 @@ async function txHashConsumedByOther(env, txHash, orderId) {
 async function claimOrderForPayment(env, orderId, txHash) {
   // 原子认领：status=pending_payment 且（未认领 或 认领已超租约）。成功时同时写入 paid_at（付款事实）与 tx_hash。
   // txHash 为空时不覆盖已有 tx_hash（保留 /pay 提交的 TXID）。
-  // 接管时若用新 TXID 覆盖旧 tx_hash，释放旧 TXID 的认领（仅当旧认领属于本订单），避免旧认领成孤儿（旧 TXID 的真实付款无法被正确订单认领）。
+  // 接管时若用新 TXID 覆盖旧 tx_hash，释放旧 TXID 的认领：仅当旧认领属于本订单且本请求持有当前订单租约
+  // （EXISTS orders.claim_token=本请求新租约）时才删。陈旧请求持旧租约无法通过 EXISTS 条件，删不掉新请求在用的认领；
+  // 接管请求持新租约，可释放本订单被新 TXID 取代的旧认领（不留孤儿）。
   var oldTx = null;
   if (txHash) {
     var oldRow = await env.DB.prepare('SELECT tx_hash FROM orders WHERE id = ?').bind(orderId).first();
@@ -1572,7 +1631,7 @@ async function claimOrderForPayment(env, orderId, txHash) {
   var upd = await stmt.bind.apply(stmt, binds).run();
   if (!upd.meta || upd.meta.changes !== 1) return { ok: false, reason: '订单已被其他请求认领或处理', claimToken: null };
   if (oldTx && oldTx !== txHash) {
-    try { await env.DB.prepare('DELETE FROM txid_claims WHERE tx_hash = ? AND order_id = ?').bind(oldTx, orderId).run(); } catch (e) {}
+    try { await env.DB.prepare('DELETE FROM txid_claims WHERE tx_hash = ? AND order_id = ? AND EXISTS (SELECT 1 FROM orders WHERE id = ? AND claim_token = ?)').bind(oldTx, orderId, orderId, token).run(); } catch (e) {}
   }
   return { ok: true, claimToken: token };
 }
@@ -1686,13 +1745,13 @@ async function releaseResidualMarkedCards(env, orderId, delivery) {
 }
 async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
   // 统一发货入口：轮询 / 手动 TXID / 管理员确认收款三条路径复用，禁止三份重复发货逻辑。
-  // 并发安全：TXID 原子认领 → 订单原子认领（成功才继续）→ 副作用（上游/卡密）→ 条件完成。认领失败立即返回，绝不产生副作用。
+  // 并发安全：订单原子认领（租约-first，成功才继续）→ TXID 原子认领（租约绑定）→ 副作用（上游/卡密）→ 条件完成。认领失败立即返回，绝不产生副作用。
   opts = opts || {};
   var txVerified = !!opts.txVerified; // 链上已验证的交易哈希（轮询 / TXID 核验）才做 TXID 认领；币安站内转账订单 ID 不是链上哈希，不认领。
   var manualConfirm = !!opts.manualConfirm; // P1-2：独立人工确认通道（管理员已在系统外核对到账）。
   // 人工通道规则：必须带人工原因 + 额外确认标志（调用方传入 manualReason + manualConfirmedFlag），
   // 订单标记为人工确认态（审计 action=manual_confirm_payment + admin_note【人工确认收款】前缀 + payments manual_confirmed 行），
-  // 绝不写 txid_claims，绝不伪装成正常链上已付。
+  // 写 txid_claims 全局认领（source=manual_confirmed，与链上共享同一全局原子认领），绝不伪装成正常链上已付。
   var manualReason = String(opts.manualReason || '').trim();
   if (manualConfirm && (!manualReason || !opts.manualConfirmedFlag)) return { ok: false, reason: '人工确认需提供原因与确认标志' };
   var fresh = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(order.id).first();
@@ -1702,40 +1761,58 @@ async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
   if (fresh.status !== 'pending_payment') return { ok: false, reason: '当前状态不可发货' };
   var o = fresh;
   var prod = await env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(o.product_id).first();
-  // 1. TXID 认领。
-  // 链上通道：仅当 txVerified=true（已通过链上核验：网络+白名单合约+收款地址+精确金额+回执+确认数）
-  // 才认领；格式像 64 位哈希本身不是证据，未核验的 TXID 绝不认领、绝不发货。
-  // 人工通道：绝不写 txid_claims；但需先查该 TXID 是否已被他单消耗（txid_claims 或他单人工确认），
-  // 已被他单消耗时拒绝，防同一 TXID 重复发货。
-  // 严格先到先得：已有其他订单认领时拒绝，不接管（见 claimTxid）。
-  // P1-1：失败回滚只删本次新建的认领（created=true），已属本订单的旧认领绝不删除，不留孤儿认领。
-  var isChainHash = !!txHash && /^(0x)?[0-9a-fA-F]{64}$/.test(String(txHash)) && o.pay_method !== 'BinanceUID';
-  var txClaimedHere = false;
-  var txClaimedAt = null;
-  if (isChainHash && manualConfirm) {
-    var consumed = await txHashConsumedByOther(env, txHash, o.id);
-    if (consumed) return { ok: false, reason: consumed };
-  } else if (isChainHash) {
-    if (!txVerified) return { ok: false, reason: '该交易未经链上核验，拒绝发货（请走链上核验或人工确认通道）' };
-    var tc = await claimTxid(env, txHash, o.id);
-    if (!tc.ok) return { ok: false, reason: tc.reason };
-    txClaimedHere = !!tc.created;
-    txClaimedAt = tc.claimedAt || null;
-  }
-  // 2. 订单原子认领（检查实际影响行数）
+  // 1. 订单原子认领（先租约，后 TXID 认领；租约-first）。
+  // 旧顺序（先 TXID 认领、后订单认领）的竞态：A 插认领得 created=true；B 看到同订单已有认领得 created=false；
+  // B 获订单租约开始履约；A 订单认领失败触发回滚，删掉 B 依赖的认领；第三订单可重认领。
+  // 新顺序消除该交错：未获订单租约的请求根本不触碰 TXID 认领；获租约后才认领 TXID；认领失败时释放本请求租约
+  // （清 paid_at，本次未建立付款事实），不触碰认领行（本次未新建；已属本订单的旧认领由收养逻辑绑定新租约）。
   var claim = await claimOrderForPayment(env, o.id, txHash);
-  if (!claim.ok) {
-    if (txClaimedHere) { await releaseTxidClaim(env, txHash, o.id, true, txClaimedAt); }
-    return { ok: false, reason: claim.reason };
-  }
+  if (!claim.ok) return { ok: false, reason: claim.reason };
   var claimToken = claim.claimToken;
-  // 人工通道：订单认领成功后记一笔 manual_confirmed 账本行（event_key 用 manual:<订单ID> 命名空间，
-  // 与链上日志索引不冲突），作为“该 TXID 已被人工确认消耗”的防复用证据；绝不写 txid_claims。
+  // 2. TXID 认领（仅链上哈希）。
+  // 链上通道：仅当 txVerified=true（已通过完整链上核验：网络+白名单合约+收款地址+精确金额+回执+确认数）
+  // 才认领；格式像 64 位哈希本身不是证据，未核验的 TXID 绝不认领、绝不发货。
+  // 人工通道：与链上共享同一 txid_claims 全局原子认领，source='manual_confirmed'；TXID 已归属他单时拒绝，
+  // 链上验证成功也不能绕过（claimTxid 对他单认领一律拒绝）。同订单已有认领时收养（不重复建行、不覆盖 source）。
+  var isChainHash = !!txHash && /^(0x)?[0-9a-fA-F]{64}$/.test(String(txHash)) && o.pay_method !== 'BinanceUID';
+  var txClaim = null;
+  if (isChainHash && !manualConfirm && !txVerified) {
+    await releaseOrderLease(env, o.id, claimToken, true);
+    return { ok: false, reason: '该交易未经链上核验，拒绝发货（请走链上核验或人工确认通道）' };
+  }
+  if (isChainHash) {
+    var tc = await claimTxid(env, txHash, o.id, { source: manualConfirm ? 'manual_confirmed' : 'chain_verified', leaseToken: claimToken });
+    if (!tc.ok) {
+      await releaseOrderLease(env, o.id, claimToken, true);
+      return { ok: false, reason: tc.reason };
+    }
+    txClaim = tc;
+    // 注意：本函数失败路径不再删除认领行（保留可恢复，同订单重试收养；见上文第 3 节）。
+    // releaseTxidClaim 保留为带令牌 + 当前租约双重条件的受控回滚原语，仅在调用方能证明仍持有当前租约时使用。
+    // 确定性测试点：租约 + TXID 认领均已持有、副作用尚未开始。测试可在此暂停本请求、让接管请求完成，
+    // 再恢复本请求，验证本请求不再破坏接管者的认领/租约（见 tests/txid-race-deterministic-test.mjs）。
+    await testHook(env, 'afterTxidClaimAndLease', { orderId: o.id, claimToken: claimToken, txClaimToken: tc.claimToken || null, source: tc.source || null, manualConfirm: manualConfirm });
+  }
+  // 3. 人工账本（仅人工通道 + 链上哈希）：认领成功后记 manual_confirmed 账本行（event_key=manual:<订单ID>）。
+  // 失败关闭：账本写入失败时绝不静默把订单推为已付款/已交付；只有查询确认已有账本行（同订单、同 TXID、
+  // status=manual_confirmed）时才按幂等重试继续，否则释放租约（保留 TXID 认领，同订单可安全重试，不向他单开放 TXID）
+  // 并返回失败。认领行保留是恢复语义：重试收养同一认领，不重复建行。不能仅因 INSERT 报错就假定幂等冲突。
+  // 审计写入失败语义继续遵循 P1-7（ok:true + audit_failed:true，不得重复业务副作用）；不要宣称多条 D1 写形成数据库事务。
   if (manualConfirm && isChainHash) {
+    var ledgerOk = false;
     try {
-      await env.DB.prepare('INSERT INTO payments (order_id, chain, asset, pay_address, tx_hash, event_key, amount, amount_unit, block_number, confirmations, first_seen_at, status, reconcile_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(
+      var li = await env.DB.prepare('INSERT INTO payments (order_id, chain, asset, pay_address, tx_hash, event_key, amount, amount_unit, block_number, confirmations, first_seen_at, status, reconcile_note, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(
         o.id, o.pay_chain || '', 'USDT', o.pay_address || o.wallet_address || '', txHash, 'manual:' + o.id, Number(o.actual_amount || o.total_usdt) || 0, 'USDT', null, 0, nowISO(), 'manual_confirmed', ('人工确认收款，原因：' + manualReason).slice(0, 500), nowISO(), nowISO()).run();
-    } catch (e) { /* 唯一冲突 = 已有人工确认行，忽略 */ }
+      if (li && li.meta && li.meta.changes === 1) ledgerOk = true;
+    } catch (e) { ledgerOk = false; }
+    if (!ledgerOk) {
+      var exLedger = await env.DB.prepare('SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(o.pay_chain || '', txHash, 'manual:' + o.id).first().catch(function () { return null; });
+      if (exLedger && Number(exLedger.order_id) === Number(o.id) && String(exLedger.status) === 'manual_confirmed') ledgerOk = true;
+    }
+    if (!ledgerOk) {
+      await releaseOrderLease(env, o.id, claimToken, false);
+      return { ok: false, reason: '人工确认账本写入失败，请重试（TXID 认领已保留，同订单可安全重试）' };
+    }
   }
   var claimWhere = "status='pending_payment' AND claim_token=?";
   var claimBinds = [claimToken];
@@ -2756,7 +2833,7 @@ async function handleApi(req, env, url, ctx) {
     // P1-2：独立人工确认通道（与链上自动认领明确区分）。
     // 要求：人工原因（必填）+ 额外确认标志（manual_confirm=true，由前端确认弹窗发送；
     // 若客户端显式传 manual_confirm=false 则拒绝）。fulfillAfterPayment 走 manualConfirm 分支：
-    // 绝不写 txid_claims，订单标记为人工确认态（审计 action=manual_confirm_payment +
+    // 写 txid_claims 全局认领（source=manual_confirmed，与链上共享同一全局原子认领），订单标记为人工确认态（审计 action=manual_confirm_payment +
     // admin_note【人工确认收款】前缀 + payments manual_confirmed 行），绝不伪装成正常链上已付。
     // 无链上证据时保留待核查态：人工确认仅表示管理员已在系统外核对到账，不代表链上核验通过。
     var cbConfirm = await parseJsonBody(req);

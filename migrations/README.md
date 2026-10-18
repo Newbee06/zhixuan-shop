@@ -53,6 +53,7 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 | v14 | 查单改 aisou.pro 方向（`orders.query_password_hash` + `secret_attempts` 按单取卡密尝试记录） |
 | v15 | P0（查询密码必填 + 随机 salt PBKDF2 + 移除邮箱查询：`orders.query_password_salt`） |
 | v16 | P2-4（补 6 个查询索引：`idx_cards_product`、`idx_cards_used`、`idx_orders_no`、`idx_orders_status`、`idx_orders_created`、`idx_sessions_expires`；仅补 MIGRATIONS v1–v15 真缺失的，schema.sql 新库已含，`IF NOT EXISTS` 幂等；不删历史数据，不加 claim_token 列） |
+| v17 | P1-1/P1-2（`txid_claims` 加 `claim_token`（每次新认领的密码学安全随机令牌，回滚须同时匹配令牌 + 当前订单租约）+ `source`（`chain_verified` / `manual_confirmed`，人工与链上共享同一全局原子认领）+ `order_lease_token`（认领时持有者的订单租约，接管时收养更新）；`ADD COLUMN` 幂等，旧库真正加列、新库 schema.sql 已含为 no-op；现有认领记录保留，旧行三列为默认值） |
 
 ## 兼容性
 
@@ -66,5 +67,5 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 1. 备份生产 D1（`wrangler d1 export` 或 CF 面板快照）。
 2. 在测试 D1 上先演练迁移（见测试报告的迁移测试）。
 3. 部署前跑 `GET /api/admin/schema-check` 预检（只读），确认无差异。
-4. 部署新版 Worker，首次请求自动迁移；用 `GET /api/admin/migrate` 确认 `current_version = 16`。
+4. 部署新版 Worker，首次请求自动迁移；用 `GET /api/admin/migrate` 确认 `current_version = 17`。
 5. 回滚：重新部署旧版 Worker；新列/新表旧版代码不读取，不影响旧版运行。

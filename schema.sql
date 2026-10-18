@@ -213,11 +213,17 @@ CREATE TABLE IF NOT EXISTS login_attempts (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- TXID 原子认领：tx_hash 主键，同一笔链上已验证交易只能被一个订单认领（永久有效，防跨订单重复使用）
+-- TXID 原子认领：tx_hash 主键，同一笔交易只能被一个订单认领（永久有效，防跨订单重复使用）。
+-- v17：claim_token（每次新认领的密码学安全随机令牌，回滚删除须同时匹配令牌 + 当前订单租约）、
+-- source（认领来源：chain_verified 链上验证 / manual_confirmed 人工确认；人工与链上共享同一全局认领表）、
+-- order_lease_token（认领时持有者的订单租约令牌，同订单接管时收养更新）。旧行三列均为默认值，现有记录保留。
 CREATE TABLE IF NOT EXISTS txid_claims (
   tx_hash TEXT PRIMARY KEY,
   order_id INTEGER NOT NULL,
-  claimed_at TEXT NOT NULL DEFAULT (datetime('now'))
+  claimed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  claim_token TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'chain_verified',
+  order_lease_token TEXT NOT NULL DEFAULT ''
 );
 
 -- 公开查单限流：按 IP 记查单次数
@@ -227,10 +233,10 @@ CREATE TABLE IF NOT EXISTS lookup_rate (
 );
 CREATE INDEX IF NOT EXISTS idx_lookup_rate_ip ON lookup_rate(ip, created_at);
 
--- 数据库迁移版本：schema.sql 只建结构（已含 v11–v16 的表/列/索引），版本预置到 v10；
--- v11–v16 迁移在 Worker 首次请求时幂等运行（v11 种子 58 张图标、v12/v13 暗版刷新、v14/v15 列/表、v16 补 6 索引）。
--- 不要把预置版本改到 16：否则 v11 迁移被跳过，新库 app_icons 为空表，图标选择器无数据。
--- 新库用本文件建库后 6 个 v16 索引已存在，v16 执行为 no-op；旧库升级时 v16 真正建索引。
+-- 数据库迁移版本：schema.sql 只建结构（已含 v11–v17 的表/列/索引），版本预置到 v10；
+-- v11–v17 迁移在 Worker 首次请求时幂等运行（v11 种子 58 张图标、v12/v13 暗版刷新、v14/v15 列/表、v16 补 6 索引、v17 txid_claims 加 3 列）。
+-- 不要把预置版本改到 17：否则 v11 迁移被跳过，新库 app_icons 为空表，图标选择器无数据。
+-- 新库用本文件建库后 6 个 v16 索引已存在，v16 执行为 no-op；旧库升级时 v16 真正建索引。v17 在新库为 no-op（列已存在），旧库真正加列。
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
