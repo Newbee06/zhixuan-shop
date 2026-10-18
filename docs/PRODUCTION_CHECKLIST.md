@@ -38,3 +38,14 @@
 - [ ] 观察待付款订单：超时自动取消是否正常；无卡密预留泄漏。
 - [ ] 观察后台告警：上游 402/409/429、异常订单。
 - [ ] 首笔真实订单全流程人工跟进（下单 → 到账 → 发货 → 买家取卡密）。
+
+## E. 域名上线（zhixuanpro.com，仅清单；本轮只更新清单，不注册/改 DNS/绑生产域名）
+
+- [ ] 所有权与 DNS 托管已确认：域名注册人/所有权归属、DNS 托管方（注册商 / Cloudflare）、注册商与 DNS 管理权限持有人已确认；任何过户/转入/改 NS 须独立审批。
+- [ ] Cloudflare Zone：域名已加入正确的生产 Cloudflare 账号 Zone（非 staging 账号），Zone 状态 Active，NS 与注册商侧一致。
+- [ ] Route / Custom Domain：生产域名（`zhixuanpro.com`，含 www 与否按 canonical 决策）只指向生产 Worker `aisou-lite`；绝不指向 staging Worker `zhixuan-shop-staging`。
+- [ ] TLS / 重定向 / canonical：SSL 模式 Full (Strict)，HTTP→HTTPS 重定向，www 与 apex 的 canonical 唯一且一致，无混合内容。
+- [ ] DNS 与路由冲突：无重复/冲突的 A/CNAME/Route 记录；旧测试记录已清理；TTL 已按切换窗口设置。
+- [ ] Staging 不被生产域名替换：staging 仍可通过 `https://zhixuan-shop-staging.f-00a.workers.dev` 访问；生产域名上线后复核 staging 未被替换/别名。
+- [ ] 独立审批与回滚：域名切换须用户单独明确审批（与代码部署审批分开）；回滚 = 恢复切换前 DNS/Route 并验证，切换前已记录旧值快照。
+- [ ] 未验证项：真实链上付款仍 NOT VERIFIED（见 B）；域名切换本身未经真实演练前为未验证；本清单的勾选须以真实验证输出为准，不得仅凭“已配置”勾选。

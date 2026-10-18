@@ -14,7 +14,7 @@ AI 会员 / 代充 / 成品号 / 卡密商城，单 Worker + 单 D1，Cloudflare
 
 ## 功能
 
-- 前台：商品列表（分类：代充 / 成品号 / 卡密 + 搜索）、商品详情、下单表单（自定义字段 + 数量 + OKX|X Layer / Binance|BEP20 + **必填查询密码 6-64 位**）、下单成功页（订单号 + **牢记查询密码提示** + **精确应付金额 actual_amount + 收款地址 + 20 分钟倒计时** + 复制 + QR + 支付教程链接，文案“付完不用做任何事，等 1-3 分钟自动发货”）、订单查询页（**仅订单号** + 图形验证码 → 订单列表（不含交付内容）；卡密按单走查询密码取；邮箱不是查询凭证；旧订单走管理员流程）。
+- 前台：商品列表（分类：代充 / 成品号 / 卡密 + 搜索）、商品详情、下单表单（自定义字段 + 数量 + OKX|X Layer / Binance|BEP20 + **必填查询密码 6-64 位**）、下单成功页（订单号 + **牢记查询密码提示** + **精确应付金额 actual_amount + 收款地址 + 20 分钟倒计时** + 复制 + QR + 支付教程链接，文案“付完不用做任何事，等 1-3 分钟自动发货”）、订单查询页（**订单号或下单邮箱** + 图形验证码 → 订单列表（不含交付内容）；卡密按单走查询密码取；**邮箱 + 图形验证码 ≠ 所有权证明**，邮件 OTP 未实现；旧订单走管理员流程）。
 - 订单状态：`pending_payment / pending_fulfill / pending_activation / pending_upstream / completed / cancelled`。状态机由服务端统一校验：待付款订单不能直接发货；已完成/已取消为终态，不可发货/取消/重复确认；人工发货仅从待发货/激活待处理/上游异常进入（显式兜底）。
   - `pending_activation`：上游已付款（paid），等待轮询到 delivered 才发货，deliveredKey 出现前不发。
   - `pending_upstream`：上游暂不可发货（402 余额不足 / 409 缺货 / 429 限速 / 500），后台置顶告警，不发货。
@@ -191,7 +191,7 @@ npx wrangler deploy
 | GET | /api/products | 商品列表（含 `source / sell_price / requires_email_activation / delivery_method / in_stock`，库存按真实口径推导） |
 | GET | /api/products/:id | 商品详情（同上） |
 | POST | /api/orders | 下单（`customer_fields` 含 `contact_email / delivery_email / activation_email` 按需；需图形验证码） |
-| POST | /api/orders/query | 按订单号查单（需图形验证码），**只返回概要**（订单号/商品/金额/状态，不含交付内容）；邮箱不是查询凭证 |
+| POST | /api/orders/query | 按订单号或下单邮箱查单（邮箱精确匹配、大小写不敏感；`activation_email` 不是查询键；需图形验证码），**只返回概要**（订单号/商品/金额/状态，不含交付内容；待付款订单附带商家公开收款地址 `pay_address`，见 docs/PAYMENT_FLOW.md）。邮箱 + 图形验证码 ≠ 所有权证明；邮件 OTP 未实现 |
 | POST | /api/orders/:no/secret | 按单取卡密（需查询密码 + 限流） |
 | POST | /api/orders/:no/pay | 提交 TXID（可选兜底；仅 OKX|X Layer / Binance|BEP20） |
 | POST | /api/admin/login | 后台登录 |
@@ -226,7 +226,7 @@ npx wrangler deploy
 - `node --check src/worker.js` 通过；前端 `<script>` 提取后 `node --check` 通过；`schema.sql` 用 Python `sqlite3 executescript` 通过。
 - Mock 全链路（`tests/mock-test.mjs`，`node tests/mock-test.mjs`）：用 mock fetch 模拟 ProdSeller（delivered / paid / 402 / 409）、EVM RPC、Resend，**未调任何真实接口**。覆盖：自营卡密 → 轮询确认 → 自动发货；上游普通 → 调 ProdSeller → 发货；上游激活 → paid → 轮询到 delivered → 发货；402 → 不发货 + 告警；409 → pending_upstream；重复轮询不重复发货；超时取消；管理员确认收款走 ProdSeller；`Idempotency-Key = order_no`。
 - 库存专项（`tests/stock-test.mjs`，`node tests/stock-test.mjs`）：覆盖真实库存口径（上游同步值 / 真实卡密数 / 人工库存）、卡密不足下单拦截、发卡条件更新与回滚。
-- 安全专项（`tests/security-test.mjs`，`node tests/security-test.mjs`）：覆盖未授权/伪造/过期 Session、初始改密拦截、退出失效、登录失败限流、人工/上游缺货拦截、卡密预留争抢与取消释放、待付款不可发货、已完成/已取消不可重复处理、查询密码正确/错误/缺失、邮箱不作为查询凭证、旧订单兼容路径、审计不含敏感数据。
+- 安全专项（`tests/security-test.mjs`，`node tests/security-test.mjs`）：覆盖未授权/伪造/过期 Session、初始改密拦截、退出失效、登录失败限流、人工/上游缺货拦截、卡密预留争抢与取消释放、待付款不可发货、已完成/已取消不可重复处理、查询密码正确/错误/缺失、订单号/邮箱双查、旧订单兼容路径、审计不含敏感数据。
 
 ## 已知限制（`feat/admin-overhaul-security` 分支已修复以下 5 项，上线前请先合并部署）
 
