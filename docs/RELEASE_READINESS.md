@@ -747,15 +747,15 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 ### PR 状态
 
 - **PR #1：已合并**（本地 `git log` 可见合并提交 `7a71ca4` “Merge pull request #1”）。
-- **PR #2：TODO（协调人填）**：分支 `fix/mobile-hero-collection-title` 存在，PR 是否仍开放须协调人在 GitHub 核实后填写。
-- **本次新 PR：TODO（协调人填）**：分支 `fix/review-findings-2026-10-18` 的新 PR 链接、状态由协调人填写。
+- **PR #2：仍 OPEN 未合并**（2026-10-18 核实：`gh pr view 2` 状态 OPEN，head `b90f692`，https://github.com/Newbee06/zhixuan-shop/pull/2 ，主题“移动端适配：Hero 压缩 + 合集标题一行”；严禁动 PR #2）。
+- **本次新 PR：PR #3 OPEN 未合并**（https://github.com/Newbee06/zhixuan-shop/pull/3 ，分支 `fix/review-findings-2026-10-18`，HEAD `08db7a8`，主题“2026-10-18 全面审查整改（P1×7 + P2×16 + P3×23，46 项）”；不许自动合并）。
 
 ### 核验口径（代码验证 vs 本地 Mock vs 真实 Staging，三者不得混同）
 
 | 层级 | 含义 | 本次状态 |
 |---|---|---|
 | 代码验证 | 实际阅读 `src/worker.js` / `src/frontend.html` 核对行为与文案 | ✅ 本次已做（文档结论的唯一依据） |
-| 本地 Mock | 本地测试用 mock fetch 模拟 ProdSeller / EVM RPC，未调任何真实接口 | TODO（协调人填：测试数量、命令与退出码；不得编造数字） |
-| 真实 Staging | 已部署的 Staging Worker + 独立 Staging D1 + 真实浏览器/API 验收，仍不发起真实链上转账 | TODO（协调人填：CI 结果、Staging 部署与验收证据、最新 SHA、PR 链接） |
+| 本地 Mock | 本地测试用 mock fetch 模拟 ProdSeller / EVM RPC，未调任何真实接口 | ✅ 全部通过（exit 0）：mock ALL DONE；stock 17/17；security 104/104；concurrency 116/116；release-readiness 91/91；payment-whitelist ALL PASS；app-icons 112/112；review-fixes 272/272；review-p1-backend 139/139；review-config 53/53；d1-local D1 LOCAL TEST ALL OK（旧库→v16/新库/重复/失败恢复/v16 索引 6/6）；浏览器 CI 102/102；旧浏览器脚本 52/52；review-frontend 64/64。命令：`node tests/<name>.mjs` / `bash tests/d1-local-test.sh`。 |
+| 真实 Staging | 已部署的 Staging Worker + 独立 Staging D1 + 真实浏览器/API 验收，仍不发起真实链上转账 | ✅ CI run [39101195597](https://github.com/Newbee06/zhixuan-shop/actions/runs/39101195597) 五 Job 全绿（回归/浏览器/浏览器 review/D1 迁移/静态）。Staging 已部署：Worker `zhixuan-shop-staging`（https://zhixuan-shop-staging.f-00a.workers.dev），Version ID `96c09853-7705-4bae-8a81-ea4f66196dcd`，D1 `zhixuan-shop-staging-db`（`4fb3878b-02bf-4cac-b833-716c050242e6`），迁移 v16，6 个 v16 索引齐全，`GET /api/orders` 410 新文案已验证，首页 200，`/api/config` 正确（站名智选、dummy 收款地址）。⚠️ **Staging 浏览器验收待完成**（由父级用 live browser + 已保存管理员会话做，本 PR 不含该结果，不得声称已通过）。最新 SHA `08db7a8`，PR #3 见上。 |
 
-CI 结果、Staging 部署与验收证据、最新 SHA、PR 链接一律留 TODO 给协调人填，本文档不预填任何数字或链接。
+**P1-11 真实上游沙箱仍 BLOCKED；双链真实收款 NOT VERIFIED（未真实转账）。**
