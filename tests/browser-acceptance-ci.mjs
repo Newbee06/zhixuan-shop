@@ -208,7 +208,7 @@ await page.waitForTimeout(1000);
 const qsecOk = await page.evaluate((no) => (document.getElementById('qsec-' + no) || {}).innerHTML || '', orderNo);
 check('secret correct password on unpaid order: not-paid hint, no card leak',
   (qsecOk.includes('尚未付款') || qsecOk.includes('暂无交付内容')) && !qsecOk.includes('BROWSER-'));
-// 邮箱不能作为查询凭证
+// P1-6（2026-10-18 整改）：邮箱双查是现有产品功能——邮箱 + 图形验证码可查订单概要（≠ 邮箱所有权证明）；概要不得泄露卡密等秘密。
 await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
 await page.waitForTimeout(500);
 {
@@ -220,8 +220,8 @@ await page.waitForTimeout(500);
   await page.waitForTimeout(1200);
 }
 const qresEmail = await page.evaluate(() => (document.getElementById('qres') || {}).innerHTML || '');
-check('query by email: generic empty (email is not a credential)',
-  qresEmail.includes('未找到相关订单') && !qresEmail.includes(orderNo));
+check('query by email: order listed (dual query), no secret leak',
+  qresEmail.includes(orderNo) && !qresEmail.includes('BROWSER-'));
 // 空数据：查不存在的订单
 await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
 await page.waitForTimeout(500);
@@ -257,6 +257,8 @@ for (const [tab, label] of [['data', '数据总览'], ['orders', '订单管理']
     body.slice(0, 200).replace(/\s+/g, ' '));
   check(`admin tab ${tab}: no horizontal overflow`,
     (await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)) <= 1);
+  check(`admin tab ${tab}: tables have thead/tbody + td data-label (P2-6)`,
+    await page.evaluate(() => Array.from(document.querySelectorAll('.adm-table')).every((tb) => tb.querySelector('thead') && tb.querySelector('tbody') && tb.querySelectorAll('thead th').length > 0 && Array.from(tb.querySelectorAll('tbody td')).every((td) => td.hasAttribute('data-label')))));
 }
 
 // ===== 6. 已付款订单：后台详情无普通取消按钮，有异常处理；异常/退款流程 =====
@@ -479,6 +481,190 @@ for (const [w, h, label] of [[390, 844, '390'], [360, 740, '360']]) {
   await page.waitForTimeout(800);
   check(`mobile ${label} home: no horizontal overflow`,
     (await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)) <= 1);
+}
+
+// ===== 8b. P2-12：浏览器计算样式真实断言（深色售罄/Hero/合集标题/倒计时/App 图标/付款块/对齐/TXID+Turnstile/必填无请求）=====
+await page.setViewportSize({ width: 1440, height: 900 });
+await page.goto(BASE + '/', { waitUntil: 'networkidle' });
+await page.waitForTimeout(800);
+// 深色售罄按钮（计算样式）+ Hero 布局与标题字号（1440）
+{
+  const s = await page.evaluate(() => {
+    document.documentElement.dataset.theme = 'dark';
+    const sold = document.createElement('button'); sold.className = 'pcard-btn pcard-btn-soldout'; document.body.appendChild(sold);
+    const h1 = document.querySelector('.home-h1');
+    const hero = document.querySelector('.home-hero');
+    const out = {
+      soldBg: getComputedStyle(sold).getPropertyValue('background-color'),
+      soldColor: getComputedStyle(sold).getPropertyValue('color'),
+      h1: h1 ? getComputedStyle(h1).getPropertyValue('font-size') : 'none',
+      heroDisplay: hero ? getComputedStyle(hero).getPropertyValue('display') : 'none',
+    };
+    sold.remove();
+    delete document.documentElement.dataset.theme;
+    return out;
+  });
+  check('P2-12: 深色售罄按钮背景与文字', s.soldBg === 'rgba(255, 69, 58, 0.2)' && s.soldColor === 'rgb(255, 157, 153)', JSON.stringify(s));
+  check('P2-12: Hero 布局与标题字号（1440）', s.h1 === '52px' && s.heroDisplay === 'flex', JSON.stringify(s));
+}
+// 390/360：Hero 标题、合集标题一行、浮动卡片
+for (const w of [390, 360]) {
+  await page.setViewportSize({ width: w, height: 844 });
+  await page.goto(BASE + '/', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(700);
+  const h = await page.evaluate(() => {
+    const h1 = document.querySelector('.home-h1');
+    const title = document.querySelector('.home-section-title');
+    const chip = document.querySelector('.home-chip');
+    return {
+      h1: h1 ? getComputedStyle(h1).getPropertyValue('font-size') : 'none',
+      titleOneLine: title ? title.scrollWidth <= title.clientWidth + 2 : false,
+      chip: chip ? getComputedStyle(chip).getPropertyValue('font-size') : 'none',
+    };
+  });
+  check(`P2-12: Hero 标题字号 ${w}`, h.h1 === '36px', JSON.stringify(h));
+  check(`P2-12: 合集标题 ${w} 一行`, h.titleOneLine === true, JSON.stringify(h));
+  check(`P2-12: 浮动卡片字号 ${w}`, h.chip === '12px', JSON.stringify(h));
+}
+// 付款块倒计时每秒更新与到期变红
+{
+  const c = await page.evaluate(async () => {
+    const mk = (uid, ms) => payBlockHTML({ actual_amount: 10, total_usdt: 10, order_no: uid, pay_method: 'OKX', pay_chain: 'X Layer', pay_address: '0x1111111111111111111111111111111111111111', expires_at: new Date(Date.now() + ms).toISOString() }, uid);
+    const wrap = document.createElement('div'); wrap.innerHTML = mk('ci-cd', 90000); document.body.appendChild(wrap);
+    const t0 = document.getElementById('countdown-ci-cd').textContent;
+    startCountdown();
+    await new Promise((r) => setTimeout(r, 1300));
+    const t1 = document.getElementById('countdown-ci-cd').textContent;
+    const past = document.createElement('div');
+    past.innerHTML = payBlockHTML({ actual_amount: 1, total_usdt: 1, order_no: 'ci-past', pay_method: 'OKX', pay_chain: 'X Layer', pay_address: '0x1111111111111111111111111111111111111111', expires_at: '2000-01-01T00:00:00Z' }, 'ci-past');
+    document.body.appendChild(past);
+    startCountdown();
+    await new Promise((r) => setTimeout(r, 150));
+    const pastText = document.getElementById('countdown-ci-past').textContent;
+    const pastBox = document.getElementById('deadline-ci-past');
+    wrap.remove(); past.remove(); stopCountdown();
+    return { t0, t1, pastText, pastExpired: !!(pastBox && pastBox.classList.contains('pay-deadline-expired')) };
+  });
+  check('P2-12: 付款块倒计时每秒更新', c.t0 !== c.t1, JSON.stringify(c));
+  check('P2-12: 付款块到期变红', c.pastText === '已过期，请重新下单' && c.pastExpired, JSON.stringify(c));
+}
+// App 图标真实 src/尺寸/容器背景/主题切换
+{
+  const a = await page.evaluate(() => {
+    APP_ICONS = { 'ci-icon': { light: 'https://example.com/light.png', dark: 'https://example.com/dark.png' } };
+    document.documentElement.dataset.theme = 'light';
+    const holder = document.createElement('div');
+    holder.innerHTML = productImgHtml({ app_icon_key: 'ci-icon' }, 'prod-img', 'prod-img prod-emoji');
+    document.body.appendChild(holder);
+    const img = holder.querySelector('img[data-app-icon]');
+    const lightSrc = img ? img.getAttribute('src') : '';
+    const w = img ? Math.round(img.getBoundingClientRect().width) : 0;
+    const containerBg = img ? getComputedStyle(img).getPropertyValue('background-color') : 'none';
+    document.documentElement.dataset.theme = 'dark';
+    refreshAppIcons();
+    const darkSrc = img ? img.getAttribute('src') : '';
+    holder.remove();
+    delete document.documentElement.dataset.theme;
+    return { lightSrc, darkSrc, w, containerBg };
+  });
+  check('P2-12: App 图标真实 src 随主题切换', a.lightSrc === 'https://example.com/light.png' && a.darkSrc === 'https://example.com/dark.png', JSON.stringify(a));
+  check('P2-12: App 图标容器背景', a.containerBg === 'rgb(255, 255, 255)', JSON.stringify(a));
+}
+// 付款块地址盒/复制/空地址隐藏
+{
+  const pb = await page.evaluate(() => {
+    const base = { total_usdt: 5, actual_amount: 5, order_no: 'CI-PAY', pay_method: 'OKX', pay_chain: 'X Layer', expires_at: new Date(Date.now() + 600000).toISOString() };
+    const empty = document.createElement('div'); empty.innerHTML = payBlockHTML(Object.assign({}, base, { pay_address: '' }), 'ci-empty');
+    const good = document.createElement('div'); good.innerHTML = payBlockHTML(Object.assign({}, base, { pay_address: '0x1111111111111111111111111111111111111111' }), 'ci-good');
+    return {
+      emptyHidden: !empty.querySelector('#addrBox-ci-empty') && !empty.querySelector('.pay-qr img') && empty.innerHTML.includes('付款已暂停'),
+      goodShown: !!good.querySelector('#addrBox-ci-good') && !!good.querySelector('.pay-qr img') && !!good.querySelector('[data-copy-target="addrBox-ci-good"]'),
+    };
+  });
+  check('P2-12: 空地址隐藏地址盒/二维码并显暂停', pb.emptyHidden === true, JSON.stringify(pb));
+  check('P2-12: 正常地址显地址盒/二维码/复制', pb.goodShown === true, JSON.stringify(pb));
+}
+// 手机端输入框与弹窗对齐（390）
+{
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(BASE + '/#/product/1', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(900);
+  const al = await page.evaluate(() => {
+    const input = document.getElementById('contact');
+    const r = input ? input.getBoundingClientRect() : null;
+    showModal({ title: '对齐检查', bodyHTML: '<p>x</p>', confirmText: 'OK' });
+    const m = document.querySelector('.modal');
+    const mr = m ? m.getBoundingClientRect() : null;
+    closeModal();
+    return { inputIn: !!r && r.left >= 0 && r.right <= 390, modalIn: !!mr && mr.left >= 4 && mr.right <= 386 };
+  });
+  check('P2-12: 手机端输入框与弹窗对齐', al.inputIn === true && al.modalIn === true, JSON.stringify(al));
+  await page.setViewportSize({ width: 1440, height: 900 });
+}
+// 管理端表格结构（登录态仍在：复用第 5 节会话）
+{
+  await page.goto(BASE + '/#/admin', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(700);
+  const tbl = await page.evaluate(async () => {
+    const out = [];
+    for (const tab of ['data', 'orders', 'products', 'cards', 'audit']) {
+      await adminTab(tab);
+      await new Promise((r) => setTimeout(r, 600));
+      out.push(Array.from(document.querySelectorAll('.adm-table')).every((tb) => tb.querySelector('thead') && tb.querySelector('tbody') && Array.from(tb.querySelectorAll('tbody td')).every((td) => td.hasAttribute('data-label'))));
+    }
+    return out;
+  });
+  check('P2-12: 管理端表格结构（thead/tbody/data-label）', tbl.every(Boolean), JSON.stringify(tbl));
+}
+// TXID 与 Turnstile 交互：stub 独立 Token + trim 载荷
+{
+  await page.goto(BASE + '/', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(500);
+  const ts = await page.evaluate(() => {
+    window.turnstile = { render: (el, opts) => { window._tsOpts = window._tsOpts || {}; window._tsOpts[el.getAttribute('data-ts-scope')] = opts; return 'widget-' + el.getAttribute('data-ts-scope'); }, reset: () => {} };
+    CFG = Object.assign({}, CFG, { turnstile_enabled: true, turnstile_site_key: 'test-site-key' });
+    const holder = document.createElement('div');
+    holder.innerHTML = turnstileBoxHTML('pay-AIS-A') + turnstileBoxHTML('pay-AIS-B');
+    document.body.appendChild(holder);
+    renderTurnstileWidgets();
+    window._tsOpts['pay-AIS-A'].callback('tok-A');
+    window._tsOpts['pay-AIS-B'].callback('tok-B');
+    const ok = tsToken('pay-AIS-A') === 'tok-A' && tsToken('pay-AIS-B') === 'tok-B';
+    holder.remove();
+    return { ok };
+  });
+  check('P2-12: TXID 多订单 Turnstile Token 独立', ts.ok === true, JSON.stringify(ts));
+  let captured = null;
+  await page.route('**/api/orders/*/pay', async (route) => {
+    try { captured = JSON.parse(route.request().postData() || '{}'); } catch (_) { captured = null; }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, message: 'TXID 已提交' }) });
+  });
+  await page.evaluate(async () => {
+    CFG = Object.assign({}, CFG, { turnstile_enabled: false, turnstile_site_key: '' });
+    document.body.insertAdjacentHTML('beforeend', '<input id="txid" value="  CIHASH123  "><input id="payCaptchaCode" value="ABCD"><img id="payCaptchaImg">');
+    window._payCaptchaId = 'cap-ci';
+    await submitTxid('AIS-CI-1');
+  });
+  await page.waitForTimeout(300);
+  check('P2-12: TXID 提交用 trim 后串', captured && captured.txid === 'CIHASH123', JSON.stringify(captured));
+  await page.unrouteAll({ behavior: 'wait' });
+}
+// 必填未填时网络层无下单请求
+{
+  await page.goto(BASE + '/#/product/1', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(900);
+  let orderCalls = 0;
+  await page.route('**/api/orders', async (route) => { if (route.request().method() === 'POST') orderCalls++; await route.abort(); });
+  await page.evaluate(() => {
+    let req = document.querySelector('[data-required]');
+    if (!req) { const first = document.querySelector('[data-k]'); if (first) { first.setAttribute('data-required', '1'); req = first; } }
+    if (req) req.value = '   ';
+    const btn = document.querySelector('[data-pid]');
+    if (btn) btn.click();
+  });
+  await page.waitForTimeout(800);
+  check('P2-12: 必填未填时网络层无下单请求', orderCalls === 0, 'orderCalls=' + orderCalls);
+  await page.unrouteAll({ behavior: 'wait' });
 }
 
 // ===== 9. 控制台与接口失败 =====

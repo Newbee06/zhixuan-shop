@@ -12,6 +12,11 @@ html[data-theme="dark"] .pcard-btn{background:rgba(109,92,255,.28);color:#b7adff
 html[data-theme="dark"] .pcard-img{background:#1c1c1e}
 html[data-theme="dark"] .prod-img{background:#1c1c1e}
 html[data-theme="dark"] .detail-img-photo{background:#1c1c1e}
+@media (prefers-color-scheme:dark){html:not([data-theme]) .pcard-img,html:not([data-theme]) .prod-img,html:not([data-theme]) .detail-img-photo{background:#1c1c1e}html:not([data-theme]) .home-h1-accent,html:not([data-theme]) .home-section-star,html:not([data-theme]) .home-eyebrow b{color:#8ea6ff}html:not([data-theme]) .pcard-btn:disabled{background:rgba(127,127,127,.25);color:#a1a1aa}html:not([data-theme]) .pcard-btn-soldout{background:rgba(255,69,58,.20)!important;color:#ff9d99!important}html:not([data-theme]) .captcha-img{background:#2c2c2e!important}}
+html[data-theme="dark"] .pcard-btn:disabled{background:rgba(127,127,127,.25);color:#a1a1aa}
+html[data-theme="dark"] .pcard-btn-soldout{background:rgba(255,69,58,.20)!important;color:#ff9d99!important}
+html[data-theme="dark"] .captcha-img{background:#2c2c2e!important}
+.captcha-img{background:#f2f2f7}
 *{box-sizing:border-box}
 body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
 a{color:var(--accent);text-decoration:none}
@@ -82,7 +87,7 @@ a{color:var(--accent);text-decoration:none}
 .home-back-top{border:0;background:transparent;color:var(--sub);font-size:14px;cursor:pointer;white-space:nowrap;padding:6px 0}
 .home-back-top:hover{color:var(--text)}
 html[data-theme="dark"] .home-h1-accent,html[data-theme="dark"] .home-section-star,html[data-theme="dark"] .home-eyebrow b{color:#8ea6ff}
-@media(max-width:640px){.home-hero{flex-direction:column;padding:24px 20px}.home-h1{font-size:36px}.home-visual{width:100%;max-width:340px;height:280px}.home-pcard{width:300px}}
+@media(max-width:640px){.home-hero{flex-direction:column;padding:24px 20px}.home-h1{font-size:36px}.home-visual{width:100%;max-width:340px;height:280px}.home-pcard{width:300px}.home-chip{font-size:12px;padding:10px 12px;max-width:46%}}
 .h1{font-size:26px;font-weight:800;margin:6px 0 4px}
 .h2{font-size:18px;font-weight:700;margin:0 0 10px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -109,8 +114,8 @@ html[data-theme="dark"] .home-h1-accent,html[data-theme="dark"] .home-section-st
 .pcard-price{font-size:24px;font-weight:800;line-height:1.2}
 .pcard-btn{border:0;border-radius:12px;padding:12px 14px;font-size:14px;font-weight:700;cursor:pointer;background:#e8e4ff;color:#6d5cff;white-space:nowrap;text-align:center}
 .pcard-btn:disabled{background:rgba(127,127,127,.15);color:var(--sub);cursor:not-allowed}
+.pcard-btn-soldout{background:#ffe0e1!important;color:#d92b2b!important}
 .emoji{font-size:34px}
-.price{font-size:22px;font-weight:800;margin:8px 0 2px}
 .badge{display:inline-block;font-size:12px;padding:4px 9px;border-radius:999px;background:rgba(10,132,255,.14);color:var(--accent)}
 .badge.green{background:rgba(52,199,89,.16);color:var(--green)}
 .badge-share{cursor:pointer;border:0;font-family:inherit}
@@ -123,8 +128,6 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
 .btn.small{padding:8px 13px;font-size:13px}
 .btn.block{width:100%;text-align:center}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-.table{width:100%;border-collapse:collapse;font-size:13px}
-.table th,.table td{padding:9px 8px;border-bottom:1px solid rgba(127,127,127,.18);text-align:left;vertical-align:top;word-break:break-all}
 .codebox{background:rgba(127,127,127,.1);border-radius:14px;padding:12px;white-space:pre-wrap;word-break:break-all;font-family:ui-monospace,monospace;font-size:13px}
 .tabs{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
 .tabs button{border:0;padding:9px 14px;border-radius:999px;background:rgba(127,127,127,.14);cursor:pointer;color:var(--text)}
@@ -136,25 +139,14 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
 .sort-sel{width:auto;min-width:215px;flex:0 0 auto;cursor:pointer}
 .filter-row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 12px}
 @media(max-width:640px){.search-row{flex-direction:column}.sort-sel{width:100%;min-width:0}}
-.notice{white-space:pre-wrap}
 .footer{margin-top:28px;text-align:center}
 .breadcrumb{font-size:13px;color:var(--sub);margin:4px 0 12px}
 .breadcrumb a{color:var(--sub)}
-.detail-hero{display:flex;gap:16px;align-items:flex-start}
-.detail-icon{width:84px;height:84px;flex:0 0 84px;border-radius:22px;display:flex;align-items:center;justify-content:center;font-size:44px;background:linear-gradient(135deg,rgba(10,132,255,.18),rgba(88,86,214,.18));border:1px solid var(--line)}
-.detail-price{font-size:30px;font-weight:800;margin:10px 0 2px}
 .detail-meta{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
-.detail-section{margin-top:16px}
-.detail-section h3{font-size:15px;margin:0 0 8px}
-.steps{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
-@media(max-width:640px){.steps{grid-template-columns:1fr}}
-.step{background:rgba(127,127,127,.08);border-radius:16px;padding:12px}
-.step b{display:block;margin-bottom:4px}
 .qty-row{display:inline-flex;align-items:stretch;border:1.5px solid var(--line);border-radius:12px;overflow:hidden;background:var(--card2)}
 .qty-btn{width:44px;border:0;background:var(--accent);color:#fff;font-size:20px;font-weight:700;cursor:pointer}
 .qty-input{width:64px;text-align:center;border:0;background:transparent;font-size:16px;font-weight:700;color:var(--text);padding:10px 0}
 .total-box{display:flex;justify-content:space-between;align-items:center;background:rgba(10,132,255,.08);border:1px solid rgba(10,132,255,.2);border-radius:16px;padding:12px 14px;margin-top:14px}
-.sticky-buy{position:sticky;bottom:12px;margin-top:16px;background:var(--card2);backdrop-filter:blur(20px) saturate(180%);border:1px solid var(--line);border-radius:20px;padding:12px;display:flex;align-items:center;justify-content:space-between;gap:12px;box-shadow:0 8px 30px rgba(0,0,0,.12)}
 .related{margin-top:18px}
 .detail-top{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:stretch}
 @media(max-width:720px){.detail-top{grid-template-columns:1fr}}
@@ -183,32 +175,7 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
 .detail-block h3{margin:0 0 8px;font-size:15px}
 .detail-block p{margin:0;font-size:14px;line-height:1.7;color:var(--text);white-space:pre-wrap}
 .warn-box{background:rgba(255,159,10,.12);border:1px solid rgba(255,159,10,.3);border-radius:16px;padding:12px}
-.admin-head{display:flex;justify-content:space-between;align-items:center;gap:10px}
-.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:16px 0}
-@media(max-width:720px){.stat-grid{grid-template-columns:repeat(2,1fr)}}
-.stat-card{background:var(--card2);border:1px solid var(--line);border-radius:18px;padding:14px 16px}
-.stat-card .num{font-size:26px;font-weight:800;margin-top:4px}
-.stat-card .lbl{font-size:13px;color:var(--sub)}
-.stat-card.warn .num{color:var(--orange)}
-.stat-card.bad .num{color:var(--red)}
-.stat-card.good .num{color:var(--green)}
-.seg{display:flex;gap:6px;flex-wrap:wrap;background:rgba(127,127,127,.12);border-radius:999px;padding:5px;width:fit-content;max-width:100%;margin:4px 0}
-@media(max-width:640px){.seg{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}.seg::-webkit-scrollbar{display:none}.seg button{flex:0 0 auto}}
 @media(max-width:640px){.btn.small{padding:10px 16px;font-size:14px}}
-.order-grid{display:grid;grid-template-columns:1fr;gap:14px}
-@media(min-width:900px){.order-grid{grid-template-columns:1fr 1fr}}
-.order-grid .admin-card{margin:0}
-@media(max-width:640px){
-  .table.resp tr:first-child{display:none}
-  .table.resp, .table.resp tbody, .table.resp tr, .table.resp td{display:block;width:100%}
-  .table.resp tr{border:1px solid var(--line);border-radius:16px;padding:12px;margin:0 0 10px;background:var(--card)}
-  .table.resp td{border:0;padding:5px 0;display:flex;justify-content:space-between;gap:12px;text-align:right;overflow-wrap:anywhere}
-  .table.resp td::before{content:attr(data-label);color:var(--sub);text-align:left;flex:0 0 auto}
-}
-.table-card{padding:0;overflow:hidden}
-@media(max-width:640px){.table-card{padding:12px;overflow:visible}}
-.seg button{border:0;padding:9px 16px;border-radius:999px;background:transparent;cursor:pointer;color:var(--text);font-size:14px;font-weight:600}
-.seg button.on{background:var(--text);color:var(--bg)}
 .admin-layout{display:flex;gap:16px;align-items:flex-start}
 .admin-side{position:sticky;top:16px;width:220px;flex:0 0 220px;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:14px}
 .admin-side-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
@@ -231,12 +198,6 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
   .admin-burger{display:block}
   .admin-side-close{display:block}
 }
-.admin-group-head{display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:8px 4px;user-select:none}
-.admin-group-chev{transition:transform .2s;display:inline-block;color:var(--sub)}
-.admin-group.collapsed .admin-group-body{display:none}
-.admin-group.collapsed .admin-group-chev{transform:rotate(-90deg)}
-.admin-card{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:16px;margin:14px 0}
-.order-card{padding:16px}
 .spill{display:inline-block;font-size:12px;padding:4px 10px;border-radius:999px;font-weight:600}
 .spill.orange{background:rgba(255,159,10,.16);color:var(--orange)}
 .spill.blue{background:rgba(10,132,255,.16);color:var(--accent)}
@@ -244,12 +205,6 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
 .spill.red{background:rgba(255,69,58,.14);color:var(--red)}
 .spill.green{background:rgba(52,199,89,.16);color:var(--green)}
 .spill.gray{background:rgba(127,127,127,.18);color:var(--sub)}
-.prod-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
-@media(max-width:640px){.prod-grid{grid-template-columns:1fr 1fr}}
-.admin-card.prod-card{margin:0;padding:12px;box-shadow:none}
-.prod-card b{font-size:16px;font-weight:700}
-.prod-card .muted{font-size:12px}
-.prod-card .price{font-size:24px}
 .prod-emoji{font-size:56px}
 .prod-img{width:100%;aspect-ratio:4/3;object-fit:contain;background:#fff;border-radius:16px;display:block}
 .prod-img.prod-emoji{display:flex;align-items:center;justify-content:center;font-size:56px}
@@ -348,7 +303,9 @@ var curQ = '';
 // App 图标库：{ key: { name, light, dark } }，由 /api/app-icons 加载；商品 app_icon_key 引用其 key。
 var APP_ICONS = {};
 async function loadAppIcons(){ try { var r = await api('/api/app-icons'); if (r && r.ok && r.icons) APP_ICONS = r.icons; } catch (e) { APP_ICONS = {}; } }
-function appIconSrc(key){ var e = APP_ICONS[String(key || '')]; if (!e) return ''; return currentTheme() === 'dark' ? (e.dark || e.light || '') : (e.light || e.dark || ''); }
+function appIconSrc(key){ if (!isValidAppIconKey(key)) return ''; var e = APP_ICONS[String(key || '')]; if (!e) return ''; var s = currentTheme() === 'dark' ? (e.dark || e.light || '') : (e.light || e.dark || ''); s = String(s || ''); if (!s || /[\s"'<>]/.test(s) || /^javascript:/i.test(s)) return ''; return s; }
+function maskCardCode(code){ var s = String(code == null ? '' : code); if (!s) return '****'; if (s.length <= 4) return '****'; return s.slice(0, 4) + '****'; }
+function isValidPayAddress(a){ var s = String(a == null ? '' : a).trim(); return s.length >= 26 && s.length <= 128 && !/\s/.test(s); }
 // 商品图片渲染：优先 App 图标（随主题切换），其次上传图，最后默认 📦 线条图标。
 // App 图标 img 带 data-app-icon，主题切换时 refreshAppIcons() 更新 src。
 function productImgHtml(p, cls, wrapCls){
@@ -383,7 +340,8 @@ function renderThemeBtn(){ var b = el('themeBtn'); if (b) b.innerHTML = ic(curre
 function toggleTheme(){ var next = currentTheme() === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = next; try { localStorage.setItem('theme', next); } catch (e) {} renderThemeBtn(); refreshAppIcons(); }
 renderThemeBtn();
 function el(id){ return document.getElementById(id); }
-function escH(s){ var t = String(s == null ? '' : s); return t.split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;').split('"').join('&quot;'); }
+function escH(s){ var t = String(s == null ? '' : s); return t.split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;').split('"').join('&quot;').split("'").join('&#39;'); }
+function isValidAppIconKey(k){ return /^[A-Za-z0-9_-]{1,64}$/.test(String(k || '')); }
 // 第七轮：旧默认联系方式字段已废弃（与后端 isLegacyContactField 同一判定：key + label 精确匹配）。
 // 前台不再渲染该字段；邮箱格式校验与后端 validEmail 同一规则。
 function isLegacyContactField(f){ return !!f && f.key === 'contact' && f.label === '联系方式（邮箱/TG）'; }
@@ -399,7 +357,15 @@ async function api(p, m, b){
     try { text = await res.text(); } catch (e) { return { ok: false, error: '网络异常，请检查网络后重试', _http: res.status }; }
     var j = null;
     try { j = JSON.parse(text); } catch (e) { return { ok: false, error: '服务器返回异常（非 JSON），状态 ' + res.status, _http: res.status }; }
-    if (res.status === 401) return { ok: false, error: (j && j.error) || '未登录或凭证已过期', _http: 401, _unauth: true };
+    if (res.status === 401) {
+      // P3-22：管理端会话过期/撤销时及时显登录界面（不含登录/自检接口自身，避免递归）。
+      // 403 不走此分支：权限不足/需改密由调用方按文案提示，不当作未登录。
+      if (p.indexOf('/api/admin/') === 0 && p.indexOf('/api/admin/login') !== 0 && p.indexOf('/api/admin/me') !== 0 && typeof location !== 'undefined' && location.hash === '#/admin' && !window._adminUnauthRedirecting) {
+        window._adminUnauthRedirecting = true;
+        setTimeout(function(){ window._adminUnauthRedirecting = false; try { renderAdmin(); } catch (e) {} }, 0);
+      }
+      return { ok: false, error: (j && j.error) || '未登录或凭证已过期', _http: 401, _unauth: true };
+    }
     if (!res.ok && j && j.ok === undefined) return { ok: false, error: j.error || ('请求失败，状态 ' + res.status), _http: res.status };
     return j;
   } catch (e) {
@@ -485,11 +451,19 @@ function paginationHTML(p, totalPages, fnName){
 function fmtTime(s){ return s ? String(s).replace('T', ' ') : ''; }
 function catLabel(c){ if (c === 'recharge') return '代充'; if (c === 'account') return '成品号'; if (c === 'card') return '卡密'; return c; }
 function statusLabel(s){ if (s === 'pending_payment') return '待付款'; if (s === 'pending_fulfill') return '待发货'; if (s === 'pending_activation') return '激活待处理'; if (s === 'pending_upstream') return '待处理'; if (s === 'refund_pending') return '退款待处理'; if (s === 'completed') return '已完成'; if (s === 'cancelled') return '已取消'; return escH(s); }
-function fmtCountdown(exp){ if (!exp) return ''; var diff = new Date(String(exp).replace(' ', 'T') + 'Z').getTime() - Date.now(); if (!(diff > 0)) return '已过期，请重新下单'; var h = Math.floor(diff / 3600000); var m = Math.floor((diff % 3600000) / 60000); var s = Math.floor((diff % 60000) / 1000); var mm = (m < 10 ? '0' : '') + m; var ss = (s < 10 ? '0' : '') + s; return h > 0 ? h + ':' + mm + ':' + ss : mm + ':' + ss; }
+// P3-19：解析服务端时间。已带时区（Z / +08:00 / -07:00）按原时区解析，绝不重复追加 Z；
+// 无时区的 'YYYY-MM-DD HH:mm:ss' 按 UTC 解析（与服务端 nowISO 口径一致）；非法返回 NaN。
+function parseExpiry(exp){ if (!exp) return NaN; var s = String(exp).trim(); if (!s) return NaN; if (/[Zz]$/.test(s) || /[+-]\d{2}:?\d{2}$/.test(s)) return new Date(s).getTime(); if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?(\.\d+)?$/.test(s)) return new Date(s.replace(' ', 'T') + 'Z').getTime(); return new Date(s).getTime(); }
+function fmtCountdown(exp){ if (!exp) return ''; var d = parseExpiry(exp); if (isNaN(d)) return '时间格式错误'; var diff = d - Date.now(); if (!(diff > 0)) return '已过期，请重新下单'; var h = Math.floor(diff / 3600000); var m = Math.floor((diff % 3600000) / 60000); var s = Math.floor((diff % 60000) / 1000); var mm = (m < 10 ? '0' : '') + m; var ss = (s < 10 ? '0' : '') + s; return h > 0 ? h + ':' + mm + ':' + ss : mm + ':' + ss; }
+// P1-4：全页统一倒计时更新器。扫描 [id^="countdown-"]，各按自身 data-expires 更新；
+// 到期切 .pay-deadline-expired；无倒计时节点时停表；DOM 重新渲染后调用 startCountdown() 重建。
+var _cdTimer = null;
+function stopCountdown(){ if (_cdTimer) { clearInterval(_cdTimer); _cdTimer = null; } }
+function startCountdown(){ stopCountdown(); function tick(){ var nodes = document.querySelectorAll('[id^="countdown-"]'); var any = false; for (var i = 0; i < nodes.length; i++){ var n = nodes[i]; var exp = n.getAttribute('data-expires'); if (!exp) continue; any = true; n.textContent = fmtCountdownLine(exp); var box = n.closest ? n.closest('.pay-deadline') : null; if (box) box.classList.toggle('pay-deadline-expired', fmtCountdown(exp) === '已过期，请重新下单'); } if (!any) stopCountdown(); } tick(); _cdTimer = setInterval(tick, 1000); }
 // 到期盒第二行整行文案：正常“剩余 MM:SS”，过期只显示过期态（不带“剩余”前缀，避免“剩余已过期”自相矛盾）。
 function fmtCountdownLine(exp){ var t = fmtCountdown(exp); return t === '已过期，请重新下单' ? t : '剩余 ' + t; }
 // 付款到期绝对时间（本地时区，如 19:41），与倒计时并排显示，买家不用心算。
-function fmtExpiryAbsolute(exp){ if (!exp) return ''; var d = new Date(String(exp).replace(' ', 'T') + 'Z'); if (isNaN(d.getTime())) return ''; return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }); }
+function fmtExpiryAbsolute(exp){ if (!exp) return ''; var ms = parseExpiry(exp); if (isNaN(ms)) return ''; return new Date(ms).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }); }
 // 收款地址首尾高亮（前 4 + 后 6 位绿色）；复制走 textContent，不受 span 影响。
 function payAddrHighlighted(addr){ if (!addr) return ''; var a = String(addr); if (a.length <= 12) return escH(a); return '<span class="pay-addr-hl">' + escH(a.slice(0, 4)) + '</span>' + escH(a.slice(4, -6)) + '<span class="pay-addr-hl">' + escH(a.slice(-6)) + '</span>'; }
 // 二维码中间标志：按链换品牌标（X Layer → OKX 方块标，BEP20 → 币安金色菱形标），其余回落 USDT 文字标。简化图形，24px 下可辨认。
@@ -504,11 +478,13 @@ function payBlockHTML(o, uid){
   var addr = o.pay_address || o.wallet_address || '';
   var h = '<div class="pay-amount"><div class="pay-amount-usdt"><span id="payAmt-' + escH(uid) + '">' + actual + '</span> USDT <button class="pay-copy" data-copy-target="payAmt-' + escH(uid) + '" title="复制金额">⧉</button></div><div class="pay-amount-sub">' + fmtCNY(actual) + ' · ' + escH(o.pay_method || '') + ' · ' + escH(payTokenLabel(o.pay_chain || '')) + '</div></div>';
   h += '<div class="pay-toprow"><span class="pay-exact">ⓘ 请严格按照数额进行付款</span>';
-  if (o.expires_at) { var expiredNow = fmtCountdown(o.expires_at) === '已过期，请重新下单'; h += '<span class="pay-deadline' + (expiredNow ? ' pay-deadline-expired' : '') + '" id="deadline-' + escH(uid) + '"><span class="pay-deadline-abs">到期时间 ' + escH(fmtExpiryAbsolute(o.expires_at)) + '</span><span class="pay-deadline-left"><b id="countdown-' + escH(uid) + '">' + fmtCountdownLine(o.expires_at) + '</b></span></span>'; }
+  if (o.expires_at) { var expiredNow = fmtCountdown(o.expires_at) === '已过期，请重新下单'; h += '<span class="pay-deadline' + (expiredNow ? ' pay-deadline-expired' : '') + '" id="deadline-' + escH(uid) + '"><span class="pay-deadline-abs">到期时间 ' + escH(fmtExpiryAbsolute(o.expires_at)) + '</span><span class="pay-deadline-left"><b id="countdown-' + escH(uid) + '" data-expires="' + escH(o.expires_at) + '">' + fmtCountdownLine(o.expires_at) + '</b></span></span>'; }
   h += '</div><div class="pay-div"></div>';
   h += '<div class="pay-row"><span class="pay-row-label">商户订单</span><span class="pay-row-value"><b id="ordNo-' + escH(uid) + '">' + escH(o.order_no || '') + '</b><button class="pay-copy" data-copy-target="ordNo-' + escH(uid) + '" title="复制订单号">⧉</button></span></div><div class="pay-div"></div>';
-  if (addr) { var qr = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&ecc=H&data=' + encodeURIComponent(addr); h += '<div class="pay-qr-box"><div class="pay-qr"><img src="' + qr + '" width="180" height="180" alt="收款二维码">' + payQrLogoHTML(o.pay_chain || '') + '</div></div>'; }
-  h += '<div class="pay-addrbox"><div class="pay-addr-head"><span>收款地址</span><button class="pay-copy" data-copy-target="addrBox-' + escH(uid) + '" title="复制地址">⧉</button></div><div class="pay-addr" id="addrBox-' + escH(uid) + '">' + payAddrHighlighted(addr) + '</div></div>';
+  // P3-23：无有效收款地址时不渲染地址框/二维码/复制按钮，显明确暂停付款提示；不因此允许伪造地址下单。
+  if (!isValidPayAddress(addr)) { h += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 付款已暂停：收款地址暂不可用</b><p class="muted" style="margin:6px 0 0">该订单的收款地址缺失或无效，请联系客服提供收款地址，切勿向其他地址付款。</p></div>'; return h; }
+  var qr = 'https://api.qrserver.com/v1/create-qr-code/?size=180x180&ecc=H&data=' + encodeURIComponent(String(addr).trim()); h += '<div class="pay-qr-box"><div class="pay-qr"><img src="' + qr + '" width="180" height="180" alt="收款二维码">' + payQrLogoHTML(o.pay_chain || '') + '</div></div>';
+  h += '<div class="pay-addrbox"><div class="pay-addr-head"><span>收款地址</span><button class="pay-copy" data-copy-target="addrBox-' + escH(uid) + '" title="复制地址">⧉</button></div><div class="pay-addr" id="addrBox-' + escH(uid) + '">' + payAddrHighlighted(String(addr).trim()) + '</div></div>';
   if (o.pay_chain === 'X Layer') h += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' X Layer 收款为 USDT0</b><p class="muted" style="margin:6px 0 0">请从欧易提币时选择 USDT0（X Layer 网络）转入上方地址。旧版 X Layer USDT 与 USDT0 是不同资产，转入旧版代币不会到账、无法自动发货。</p></div>';
   return h;
 }
@@ -519,12 +495,30 @@ function productThumb(p){
   return productImgHtml(p, 'prod-img', 'prod-img prod-emoji');
 }
 async function load(){ var r = await api('/api/config'); if (r.ok) CFG = r.config; var pr = await api('/api/products'); if (pr.ok) PRODUCTS = pr.products; await loadAppIcons(); if (CFG) { el('siteName').textContent = CFG.site_name; el('announce').textContent = CFG.announcement || ''; }
-  // Turnstile 开启时动态加载官方 widget 脚本（仅在开启时加载，未开启不加载第三方脚本）。
-  if (CFG && CFG.turnstile_enabled && CFG.turnstile_site_key && !window._turnstileLoaded) { window._turnstileLoaded = true; var s = document.createElement('script'); s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js'; s.async = true; s.defer = true; document.head.appendChild(s); }
+  // Turnstile 开启且配置有效时预加载官方脚本；未开启不加载第三方脚本。
+  if (tsConfigured()) ensureTurnstileScript();
   route(); }
-// Turnstile 回调：widget 验证通过后，token 写入隐藏字段（提交时随订单一起发给服务端校验）。
-function onTurnstileDone(token){ window._turnstileToken = token || ''; }
-function route(){ var h = location.hash || '#/'; if (h.indexOf('#/product/') === 0) { renderProduct(h.split('/')[2]); } else if (h.indexOf('#/success/') === 0) { renderSuccess(h.split('/')[2]); } else if (h === '#/query') { renderQuery(); } else if (h === '#/admin') { renderAdmin(); } else { renderShop(); } }
+// ---- Turnstile（P1-3）：订单级 Token 隔离，绝不全局共享一个 token 变量 ----
+// scope：'order'（下单）| 'pay-<订单号>'（TXID）。每个 scope 独立 widget + token。
+// fail-closed：turnstile_enabled=1 但 Site Key 缺失 → 显明确提示并拦截提交，绝不伪装 SVG 已满足。
+// Secret 绝不进前端：前端只用公开 Site Key，校验由后端用环境变量密钥完成。
+var TS = { tokens: {}, widgets: {}, loading: false, loaded: false, failed: false, poll: 0 };
+function tsEnabled(){ return !!(CFG && CFG.turnstile_enabled); }
+function tsConfigured(){ return tsEnabled() && !!CFG.turnstile_site_key; }
+function tsFailClosed(){ return tsEnabled() && !CFG.turnstile_site_key; }
+function tsToken(scope){ return TS.tokens[scope] || ''; }
+function ensureTurnstileScript(){ if (TS.loaded || TS.loading) return; TS.loading = true; var s = document.createElement('script'); s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js'; s.async = true; s.defer = true; s.onload = function(){ TS.loaded = true; TS.loading = false; TS.poll = 0; renderTurnstileWidgets(); }; s.onerror = function(){ TS.loading = false; TS.failed = true; }; document.head.appendChild(s); }
+// 渲染占位槽：fail-closed 显警告；未开启返回 ''（调用方用 SVG）；开启且配置有效返回 slot，renderTurnstileWidgets() 显式 render。
+function turnstileBoxHTML(scope){ if (tsFailClosed()) return '<div class="warn-box" data-ts-failclosed="' + escH(scope) + '"><b>' + ic('warn') + ' 反机器人验证未配置（Site Key 缺失），提交已暂停</b><p class="muted" style="margin:6px 0 0">请联系管理员配置 Turnstile 后再试。</p></div>'; if (!tsEnabled()) return ''; return '<div class="turnstile-slot" data-ts-scope="' + escH(scope) + '" data-ts-sitekey="' + escH(CFG.turnstile_site_key) + '"></div><div class="muted" style="margin-top:4px">请完成验证后继续</div>'; }
+// 显式 turnstile.render()；脚本未加载/加载中时轮询等待（最多约 10 秒）或动态加载脚本后 render。
+function renderTurnstileWidgets(){ var slots = document.querySelectorAll('.turnstile-slot[data-ts-scope]'); var pending = false; for (var i = 0; i < slots.length; i++){ var slot = slots[i]; var scope = slot.getAttribute('data-ts-scope'); if (TS.widgets[scope]) continue; if (window.turnstile && typeof window.turnstile.render === 'function') { try { (function(sc, el){ TS.widgets[sc] = window.turnstile.render(el, { sitekey: el.getAttribute('data-ts-sitekey'), callback: function(tok){ TS.tokens[sc] = tok || ''; }, 'expired-callback': function(){ TS.tokens[sc] = ''; }, 'error-callback': function(){ TS.tokens[sc] = ''; } }); })(scope, slot); } catch (e) {} } else pending = true; } if (pending) { ensureTurnstileScript(); if (TS.poll < 20) { TS.poll++; setTimeout(function(){ if (document.querySelector('.turnstile-slot')) renderTurnstileWidgets(); }, 500); } } }
+// P2-9：清旧 Token 并让 Widget 回到可重验证态；不无条件新建多个 Widget（复用已有 widgetId）。
+function resetTurnstile(scope){ TS.tokens[scope] = ''; if (window.turnstile && typeof window.turnstile.reset === 'function' && TS.widgets[scope] != null) { try { window.turnstile.reset(TS.widgets[scope]); } catch (e) {} } }
+// 路由切换时丢弃旧 DOM 的 widget 引用（旧 widget 已随 DOM 移除），下次渲染重建。
+function clearTurnstileWidgets(){ TS.widgets = {}; TS.tokens = {}; TS.poll = 0; }
+// 兼容旧全局回调（历史 .cf-turnstile 声明式用法已移除，保留空壳防旧内联回调报错）。
+function onTurnstileDone(token){ TS.tokens['order'] = token || ''; }
+function route(){ stopCountdown(); clearTurnstileWidgets(); var h = location.hash || '#/'; if (h.indexOf('#/product/') === 0) { renderProduct(h.split('/')[2]); } else if (h.indexOf('#/success/') === 0) { renderSuccess(h.split('/')[2]); } else if (h === '#/query') { renderQuery(); } else if (h === '#/admin') { renderAdmin(); } else { renderShop(); } }
 window.addEventListener('hashchange', route);
 function renderShop(){
   curQ = '';
@@ -552,7 +546,7 @@ function productCard(p){
   var inSt = Number(p.in_stock == null ? 1 : p.in_stock);
   var img = productImgHtml(p, '', 'emoji');
   var stock = inSt ? '<span class="stock-dot">有存货</span>' : '<span class="stock-dot out">缺货</span>';
-  var btn = inSt ? '<button class="pcard-btn" onclick="event.stopPropagation();location.hash=\x27#/product/' + p.id + '\x27">立即购买 +</button>' : '<button class="pcard-btn" disabled>售罄</button>';
+  var btn = inSt ? '<button class="pcard-btn" onclick="event.stopPropagation();location.hash=\x27#/product/' + p.id + '\x27">立即购买 +</button>' : '<button class="pcard-btn pcard-btn-soldout" disabled>售罄</button>';
   return '<div class="glass card pcard" data-pid="' + p.id + '" onclick="location.hash=\x27#/product/' + p.id + '\x27"><div class="pcard-img">' + img + '<span class="pcard-arrow">↗</span></div><div class="pcard-meta">' + stock + '<span class="muted pcard-cat">数字产品</span></div><div class="pcard-title">' + escH(p.title) + '</div><div class="pcard-desc">' + escH(p.description || '') + '</div><div class="pcard-foot"><div><div class="pcard-price-label">您的价格</div><div class="pcard-price">' + fmtCNY(p.price_usdt) + '</div></div>' + btn + '</div></div>';
 }
 function renderList(){
@@ -567,7 +561,7 @@ function renderList(){
   var h = '';
   if (!list.length) h = '<div class="muted">暂无商品</div>';
   for (var i = 0; i < list.length; i++){ h += productCard(list[i]); }
-  el('list').innerHTML = h;
+  var listEl = el('list'); if (!listEl) return; listEl.innerHTML = h;
   var allBtn = el('pill-all'), stBtn = el('pill-instock');
   if (allBtn) allBtn.className = curStock === 'all' ? 'on' : '';
   if (stBtn) stBtn.className = curStock === 'instock' ? 'on' : '';
@@ -586,7 +580,7 @@ async function renderProduct(id){
   window._payChain = 'X Layer';
   var payOpts = '<button type="button" class="pill pay-opt on" data-pm="OKX" data-pc="X Layer" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="2.5" y="13" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="13" width="8.5" height="8.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>USDT0 · X Layer</button><button type="button" class="pill pay-opt" data-pm="Binance" data-pc="BEP20" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.6 22.4 12 12 22.4 1.6 12Z" fill="#F0B90B"/><path d="M12 7.2 16.8 12 12 16.8 7.2 12Z" fill="#fff"/></svg>USDT · BEP20</button>';
   var fh = '';
-  for (var i = 0; i < p.form_fields.length; i++){ var f = p.form_fields[i]; if (isLegacyContactField(f)) continue; fh += '<label>' + escH(f.label) + (f.required ? ' *' : '') + '</label><input data-k="' + escH(f.key) + '" placeholder="' + escH(f.placeholder || '') + '">'; }
+  for (var i = 0; i < p.form_fields.length; i++){ var f = p.form_fields[i]; if (isLegacyContactField(f)) continue; fh += '<label>' + escH(f.label) + (f.required ? ' *' : '') + '</label><input data-k="' + escH(f.key) + '" data-label="' + escH(f.label) + '"' + (f.required ? ' data-required="1"' : '') + ' placeholder="' + escH(f.placeholder || '') + '">'; }
   var inSt = Number(p.in_stock == null ? 1 : p.in_stock);
   var badgeMain = inSt === 0 ? '<span class="badge" style="background:rgba(255,69,58,.14);color:var(--red)">缺货 · 补货中</span>' : '<span class="badge green">自动发货</span>';
   var actHint = p.requires_email_activation ? '<div class="warn-box" style="margin-top:12px">' + ic('warn') + ' 激活类商品：激活邮箱是要开通会员的邮箱，必须填对，填错无法开通。</div>' : '';
@@ -601,7 +595,7 @@ async function renderProduct(id){
   html += '<div class="breadcrumb"><a href="#/">商城</a> / ' + escH(catLabel(p.category)) + ' / ' + escH(p.title) + '</div>';
   // Top: left image, right buy box (aisou.pro style)
   html += '<div class="detail-top">';
-  if (p.app_icon_key && APP_ICONS[p.app_icon_key] && appIconSrc(p.app_icon_key)) html += '<div class="glass detail-img" style="padding:0;overflow:hidden"><img data-app-icon="' + escH(p.app_icon_key) + '" src="' + escH(appIconSrc(p.app_icon_key)) + '" class="detail-img-photo" alt=""></div>';
+  if (isValidAppIconKey(p.app_icon_key) && APP_ICONS[p.app_icon_key] && appIconSrc(p.app_icon_key)) html += '<div class="glass detail-img" style="padding:0;overflow:hidden"><img data-app-icon="' + escH(p.app_icon_key) + '" src="' + escH(appIconSrc(p.app_icon_key)) + '" class="detail-img-photo" alt=""></div>';
   else if (p.image_data && String(p.image_data).indexOf('data:image/') === 0) html += '<div class="glass detail-img" style="padding:0;overflow:hidden"><img src="' + escH(p.image_data) + '" class="detail-img-photo" alt=""></div>';
   else html += '<div class="glass detail-img">' + ic(p.image_emoji || 'box') + '<div class="detail-img-cap">' + escH(p.title) + '</div></div>';
   html += '<div class="glass buy-box"><div class="h1" style="margin-top:0;font-size:22px">' + escH(p.title) + '</div><div class="detail-meta badge-row">' + badgeMain + '<span class="badge" style="background:rgba(88,86,214,.14);color:#7d7aff">已售 ' + Number(p.sold_count || 0) + '</span><button type="button" class="badge badge-share" onclick="copyText(location.href)" title="复制商品链接">↗</button></div>';
@@ -612,13 +606,11 @@ async function renderProduct(id){
   }
   html += '<label>邮箱地址 *</label><input id="contact" type="email" placeholder="如 your@email.com"><div class="muted" style="margin-top:4px">用于订单联系；需要邮件交付的商品，也会使用该邮箱接收卡密或账号。</div>';
   html += '<label>查询密码 *</label><input id="query_password" type="password" placeholder="设置查询订单的密码（至少 6 位）" autocomplete="new-password" minlength="6" maxlength="64" required><div class="muted" style="margin-top:4px">查询卡密时需要输入该密码，请牢记。未设置查询密码的订单只能联系客服处理。</div>';
-  html += '<label>购买数量</label><div class="qty-row"><button class="qty-btn" onclick="changeQty(-1)">−</button><input id="qty" class="qty-input" type="number" value="1" min="1" max="99" oninput="updateTotal()"><button class="qty-btn" onclick="changeQty(1)">+</button></div>';
-  // 人机验证：Turnstile 开启时渲染 Cloudflare Turnstile widget（服务端校验 token，fail-closed）；未开启时用 SVG 验证码。
-  if (CFG && CFG.turnstile_enabled && CFG.turnstile_site_key) {
-    html += '<label>人机验证</label><div id="turnstileBox"><div class="cf-turnstile" data-sitekey="' + escH(CFG.turnstile_site_key) + '" data-callback="onTurnstileDone"></div></div><div class="muted" style="margin-top:4px">请完成验证后下单</div>';
-  } else {
-    html += '<label>人机验证</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="captchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="captchaImg" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" onclick="loadCaptcha()"></div><div class="muted" style="margin-top:4px">看不清？点击图片刷新</div>';
-  }
+  html += '<label>购买数量</label><div class="qty-row"><button class="qty-btn" onclick="changeQty(-1)">−</button><input id="qty" class="qty-input" type="number" value="1" min="1" max="99" oninput="clampQty();updateTotal()" onchange="clampQty();updateTotal()"><button class="qty-btn" onclick="changeQty(1)">+</button></div>';
+  // 人机验证：Turnstile 按 turnstile_enabled 分支（开启且配置有效显式 render；开启但 Site Key 缺失 fail-closed 提示；关闭用 SVG）。
+  if (tsFailClosed()) { html += '<label>人机验证</label>' + turnstileBoxHTML('order'); }
+  else if (tsEnabled()) { html += '<label>人机验证</label><div id="turnstileBox">' + turnstileBoxHTML('order') + '</div>'; }
+  else { html += '<label>人机验证</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="captchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="captchaImg" class="captcha-img" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px" onclick="loadCaptcha()"></div><div class="muted" style="margin-top:4px">看不清？点击图片刷新</div>'; }
   html += '<div class="pay-card"><div class="pay-card-title">' + ic('cart') + ' 付款</div><div class="pills pay-options" id="payOptions">' + payOpts + '</div></div>';
   html += actHint;
   html += '<div class="total-box"><span>合计 <span id="stickyQty">1</span> 件</span><span><b id="totalPrice" style="font-size:20px">' + fmtCNY(p.price_usdt) + '</b> <span class="muted" id="totalUsdt">约 ' + Number(p.price_usdt||0).toFixed(2) + ' USDT</span></span></div>';
@@ -636,14 +628,16 @@ async function renderProduct(id){
   html += relHtml;
   html += '<div style="margin-top:14px"><a class="btn ghost small" href="#/">← 返回商城</a> <a class="btn ghost small" href="#/query">查询订单</a></div>';
   el('app').innerHTML = html;
-  loadCaptcha();
+  if (!tsEnabled()) loadCaptcha(); else renderTurnstileWidgets();
   window.scrollTo(0,0);
 }
 function selectPayOption(btn){ var all = document.querySelectorAll('#payOptions .pay-opt'); for (var i=0;i<all.length;i++) all[i].classList.remove('on'); btn.classList.add('on'); window._payMethod = btn.getAttribute('data-pm'); window._payChain = btn.getAttribute('data-pc'); }
 // 用户可见的代币名称必须与实际到账合约一致：X Layer 收 USDT0（非旧版 X Layer USDT），BEP20 收 USDT。
 function payTokenLabel(chain){ if (chain === 'X Layer') return 'USDT0 · X Layer'; if (chain === 'BEP20') return 'USDT · BEP20'; return chain || ''; }
 function changeQty(d){ var q = el('qty'); if (!q) return; var v = parseInt(q.value||'1',10) + d; if (v < 1) v = 1; if (v > 99) v = 99; q.value = v; updateTotal(); }
-function updateTotal(){ var p = window._curProduct; if (!p) return; var qty = parseInt(el('qty').value||'1',10); if (!qty || qty < 1) qty = 1; if (qty > 99) qty = 99; var totalUsdt = Number(p.price_usdt||0) * qty; var t1 = el('totalPrice'); if (t1) t1.textContent = fmtCNY(totalUsdt); var t2 = el('totalUsdt'); if (t2) t2.textContent = '约 ' + totalUsdt.toFixed(2) + ' USDT'; var st = el('stickyTotal'); if (st) st.innerHTML = fmtCNY(totalUsdt); var sq = el('stickyQty'); if (sq) sq.textContent = qty; }
+// P2-10：数量钳 1–99（初始化/变化/提交前三处都钳，不只更新总价）。
+function clampQty(){ var q = el('qty'); if (!q) return 1; var v = parseInt(q.value || '', 10); if (isNaN(v)) return 1; if (v < 1) v = 1; if (v > 99) v = 99; q.value = v; return v; }
+function updateTotal(){ var p = window._curProduct; if (!p) return; var qtyEl = el('qty'); var qty = qtyEl && qtyEl.value !== '' ? clampQty() : 1; var totalUsdt = Number(p.price_usdt||0) * qty; var t1 = el('totalPrice'); if (t1) t1.textContent = fmtCNY(totalUsdt); var t2 = el('totalUsdt'); if (t2) t2.textContent = '约 ' + totalUsdt.toFixed(2) + ' USDT'; var sq = el('stickyQty'); if (sq) sq.textContent = qty; }
 async function loadCaptcha(){
   var img = el('captchaImg'); if (!img) return;
   try {
@@ -651,19 +645,15 @@ async function loadCaptcha(){
     if (r.ok){ window._captchaId = r.captcha_id; img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(r.svg); var cc = el('captchaCode'); if (cc) cc.value = ''; }
   } catch (e) {}
 }
+// P1-5：动态必填校验——提交前、发请求前完成（在消费一次性验证码与占用限流额度之前）。
+// 失败定位字段并提示（focus 到该字段）；废弃联系字段沿用迁移兼容规则（渲染时已跳过，不重引重复邮箱框）。
+function validateDynamicFields(){ var ins = document.querySelectorAll('[data-k]'); for (var i = 0; i < ins.length; i++){ if (ins[i].getAttribute('data-required') !== '1') continue; if (!String(ins[i].value || '').trim()){ try { ins[i].focus(); } catch (e) {} return '请填写' + (ins[i].getAttribute('data-label') || '必填字段'); } } return null; }
 async function submitOrder(pid){
-  var qty = parseInt(el('qty').value || '1', 10);
-  // 人机验证：Turnstile 开启时取 widget token（服务端校验）；未开启时取 SVG 验证码。
-  var useTurnstile = !!(CFG && CFG.turnstile_enabled && CFG.turnstile_site_key);
-  var capCode = '';
-  var tsToken = '';
-  if (useTurnstile) {
-    tsToken = window._turnstileToken || '';
-    if (!tsToken){ toast('请完成反机器人验证', 'error'); return; }
-  } else {
-    capCode = el('captchaCode') ? el('captchaCode').value.trim() : '';
-    if (!capCode){ toast('请填写图形验证码', 'error'); loadCaptcha(); return; }
-  }
+  // 数量提交前钳 1–99（P2-10）。
+  var qty = clampQty();
+  // ---- 1) 全部字段校验在发请求之前完成 ----
+  var fieldErr = validateDynamicFields();
+  if (fieldErr){ toast(fieldErr, 'error'); return; }
   var qpVal = el('query_password') ? el('query_password').value.trim() : '';
   if (!qpVal){ toast('请设置查询密码（查询卡密时需要输入，请牢记）', 'error'); return; }
   if (qpVal.length < 6){ toast('查询密码至少 6 位', 'error'); return; }
@@ -683,6 +673,7 @@ async function submitOrder(pid){
   var activationConfirm = el('activation_email_confirm') ? el('activation_email_confirm').value.trim() : '';
   if (p.requires_email_activation){
     if (!activationEmail){ toast('请填写激活邮箱', 'error'); return; }
+    if (!validEmail(activationEmail)){ toast('激活邮箱格式不正确，请检查邮箱地址', 'error'); return; }
     if (activationEmail !== activationConfirm){ toast('两次激活邮箱不一致', 'error'); return; }
     if (!el('activation_confirm').checked){ toast('请勾选确认激活邮箱无误', 'error'); return; }
     var confirmed = await new Promise(function(resolve){
@@ -691,11 +682,24 @@ async function submitOrder(pid){
     if (!confirmed) return;
   }
   cust.activation_email = activationEmail; cust.activation_email_confirm = activationConfirm;
+  // ---- 2) 人机验证（P1-3）：fail-closed / 本次 Widget Token / 未开启走 SVG ----
+  if (tsFailClosed()){ toast('反机器人验证未配置（Site Key 缺失），请联系管理员', 'error'); return; }
+  var useTurnstile = tsEnabled();
+  var capCode = '';
+  var orderTsToken = '';
+  if (useTurnstile) {
+    orderTsToken = tsToken('order');
+    if (!orderTsToken){ toast('请完成反机器人验证', 'error'); return; }
+  } else {
+    capCode = el('captchaCode') ? el('captchaCode').value.trim() : '';
+    if (!capCode){ toast('请填写图形验证码', 'error'); loadCaptcha(); return; }
+  }
+  // ---- 3) 提交（P3-16：支付方式只用当前状态模型 window._payMethod/_payChain，不读已不存在的 payMethod/payChain 元素） ----
   var btn = document.querySelector('[data-pid="' + pid + '"]');
   setBtnLoading(btn, true);
-  var r = await api('/api/orders', 'POST', { product_id: Number(pid), quantity: qty, customer_fields: cust, contact: emailValue, pay_method: window._payMethod || (el('payMethod') ? el('payMethod').value : 'Binance'), pay_chain: window._payChain || (el('payChain') ? el('payChain').value : 'X Layer'), captcha_id: window._captchaId || '', captcha_code: capCode, turnstile_token: tsToken, query_password: qpVal });
+  var r = await api('/api/orders', 'POST', { product_id: Number(pid), quantity: qty, customer_fields: cust, contact: emailValue, pay_method: window._payMethod || 'OKX', pay_chain: window._payChain || 'X Layer', captcha_id: window._captchaId || '', captcha_code: capCode, turnstile_token: orderTsToken, query_password: qpVal });
   setBtnLoading(btn, false);
-  if (!r.ok){ toast(r.error || '下单失败', 'error'); if ((r.error || '').indexOf('验证码') !== -1) loadCaptcha(); return; }
+  if (!r.ok){ toast(r.error || '下单失败', 'error'); if ((r.error || '').indexOf('验证码') !== -1) loadCaptcha(); if (!/网络异常|请求超时/.test(r.error || '')) resetTurnstile('order'); return; }
   // 查询密码由买家自设（服务端只存哈希），下单成功页不再展示系统凭证；仅把有无密码记入内存用于提示。
   window._lastOrder = { order_no: r.order.order_no, total_usdt: r.order.total_usdt, actual_amount: r.order.actual_amount, pay_address: r.order.pay_address, wallet_address: r.order.wallet_address, expires_at: r.order.expires_at, pay_method: r.order.pay_method, pay_chain: r.order.pay_chain, has_query_password: r.order.has_query_password ? 1 : 0 };
   location.hash = '#/success/' + r.order.order_no;
@@ -709,7 +713,7 @@ async function renderSuccess(no){
     recHtml += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 请牢记您设置的查询密码</b><p class="muted" style="margin:6px 0 0">查询卡密时需要输入该密码。忘记密码请联系客服重置。</p></div>';
     recHtml += '<p class="muted">页面已刷新，收款地址已随内存清空。请填写图形验证码恢复该订单的收款地址与精确应付金额。</p>';
     recHtml += '<label>订单号</label><input id="recoverOrderNo" value="' + escH(no) + '" autocomplete="off">';
-    recHtml += '<label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="recoverCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="recoverCaptchaImg" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" onclick="loadRecoverCaptcha()"></div><div class="muted" style="margin-top:4px">看不清？点击图片刷新</div>';
+    recHtml += '<label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="recoverCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="recoverCaptchaImg" class="captcha-img" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px" onclick="loadRecoverCaptcha()"></div><div class="muted" style="margin-top:4px">看不清？点击图片刷新</div>';
     recHtml += '<div style="margin-top:12px"><button class="btn" onclick="doRecoverPayment()">恢复支付信息</button> <a class="btn ghost" href="#/query">去查询订单</a></div><div id="recoverRes" style="margin-top:10px"></div></div>';
     el('app').innerHTML = recHtml;
     loadRecoverCaptcha();
@@ -722,11 +726,13 @@ async function renderSuccess(no){
   html += '<p class="muted">付完不用做任何事，等 1-3 分钟自动发货。系统按精确金额自动匹配到账，金额差 1 分钱都匹配不上。</p>';
   if (tut) html += '<p class="muted">教程：<a href="' + escH(tut) + '" target="_blank" rel="noopener noreferrer">支付教程</a></p>';
   html += '<label>TXID（可选兜底：自动发货未到账时再提交）</label><input id="txid" placeholder="粘贴交易哈希（可选）">';
-  html += '<label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="payCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="payCaptchaImg" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" onclick="loadPayCaptcha()"></div>';
+  if (tsFailClosed()) { html += '<label>人机验证</label>' + turnstileBoxHTML('pay-' + no); }
+  else if (tsEnabled()) { html += '<label>人机验证</label>' + turnstileBoxHTML('pay-' + no); }
+  else { html += '<label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="payCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="payCaptchaImg" class="captcha-img" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px" onclick="loadPayCaptcha()"></div>'; }
   html += '<div style="margin-top:10px"><button class="btn" data-no="' + escH(no) + '" onclick="submitTxid(this.dataset.no)">提交 TXID（可选）</button> <a class="btn ghost" href="#/query">去查询订单</a></div></div>';
   el('app').innerHTML = html;
-  loadPayCaptcha();
-  if (o && o.expires_at) { clearInterval(window._cdTimer); window._cdTimer = setInterval(function(){ var c = el('countdown-success'); if (!c){ clearInterval(window._cdTimer); return; } c.textContent = fmtCountdownLine(o.expires_at); var box = el('deadline-success'); if (box) { if (fmtCountdown(o.expires_at) === '已过期，请重新下单') box.classList.add('pay-deadline-expired'); else box.classList.remove('pay-deadline-expired'); } }, 1000); }
+  if (!tsEnabled()) loadPayCaptcha(); else renderTurnstileWidgets();
+  startCountdown();
 }
 async function loadPayCaptcha(){
   var img = el('payCaptchaImg'); if (!img) return;
@@ -770,24 +776,48 @@ async function doRecoverPayment(){
   renderSuccess(found.order_no);
 }
 async function submitTxid(no){
+  var scope = 'pay-' + no;
   var txEl = el('txid') || el('qtxid-' + no) || el('qtxid');
-  var tx = txEl ? txEl.value : '';
-  // P3-4：/pay 提交 TXID 带图形验证码，字段名与下单验证码一致（captcha_id / captcha_code）。
-  // 验证码单次有效，/pay 用独立的新验证码，不复用查单验证码。
+  // P3-18：提交最前面规范化——去首尾空白后再长度与格式校验，载荷用规范化串。
+  var tx = txEl ? txEl.value.trim() : '';
+  if (!tx){ toast('请填写 TXID', 'error'); return; }
+  if (tx.length < 6 || tx.length > 200){ toast('TXID 长度无效（6-200字符）', 'error'); return; }
+  if (!/^[A-Za-z0-9_-]+$/.test(tx)){ toast('TXID 仅支持字母数字 _ -', 'error'); return; }
   var body = { txid: tx };
-  var capInput = el('payCaptchaCode-' + no) || el('payCaptchaCode');
-  if (capInput) {
-    var capCode = capInput.value.trim();
-    if (!capCode){ toast('请填写图形验证码', 'error'); return; }
-    body.captcha_id = (window._payCaptchaIds && window._payCaptchaIds[no]) || window._payCaptchaId || '';
-    body.captcha_code = capCode;
+  // P1-3：TXID 区同样按 turnstile_enabled 分支——本次订单 Widget 的 Token，绝不把 A 的 Token 用在 B。
+  if (tsFailClosed()){ toast('反机器人验证未配置（Site Key 缺失），请联系管理员', 'error'); return; }
+  if (tsEnabled()) {
+    var tok = tsToken(scope);
+    if (!tok){ toast('请完成反机器人验证', 'error'); return; }
+    body.turnstile_token = tok;
+  } else {
+    // P3-4：/pay 提交 TXID 带图形验证码，字段名与下单验证码一致（captcha_id / captcha_code）。
+    // 验证码单次有效，/pay 用独立的新验证码，不复用查单验证码。
+    var capInput = el('payCaptchaCode-' + no) || el('payCaptchaCode');
+    if (capInput) {
+      var capCode = capInput.value.trim();
+      if (!capCode){ toast('请填写图形验证码', 'error'); return; }
+      body.captcha_id = (window._payCaptchaIds && window._payCaptchaIds[no]) || window._payCaptchaId || '';
+      body.captcha_code = capCode;
+    }
   }
   var r = await api('/api/orders/' + encodeURIComponent(no) + '/pay', 'POST', body);
-  if (!r.ok){ toast(r.error, 'error'); if ((r.error || '').indexOf('验证码') !== -1) { if (el('payCaptchaCode-' + no)) loadPayCaptchaFor(no); else loadPayCaptcha(); } return; }
+  if (!r.ok){
+    toast(r.error, 'error');
+    if ((r.error || '').indexOf('验证码') !== -1) { if (el('payCaptchaCode-' + no)) loadPayCaptchaFor(no); else loadPayCaptcha(); }
+    // P2-9：失败清 Token（网络异常/超时除外：请求未到服务端，Token 未被消费，可保留重用）。
+    if (!/网络异常|请求超时/.test(r.error || '')) resetTurnstile(scope);
+    return;
+  }
+  // P2-8：成功后清空 TXID 输入 + 清已消费验证码并加载新验证码（各订单刷新自己的）；Turnstile 走 Token 重置。
+  if (txEl) txEl.value = '';
+  var capAfter = el('payCaptchaCode-' + no) || el('payCaptchaCode');
+  if (capAfter) { capAfter.value = ''; if (el('payCaptchaCode-' + no)) loadPayCaptchaFor(no); else loadPayCaptcha(); }
+  resetTurnstile(scope);
   toast(r.message || 'TXID 已提交', 'success');
 }
 function renderQuery(){
-  var html = '<div class="glass"><div class="h2">查询订单</div><p class="muted">输入订单号查询订单；卡密需输入下单时设置的查询密码查看。邮箱不能作为查询凭证。</p><label>订单号</label><input id="qkeywords" placeholder="订单号（AIS…）" autocomplete="off"><label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="qCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="qCaptchaImg" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" onclick="loadQueryCaptcha()"></div><div style="margin-top:12px"><button class="btn" onclick="doQueryList()">查询</button></div><div id="qres" style="margin-top:14px"></div></div>';
+  var html = '<div class="glass"><div class="h2">查询订单</div><p class="muted">输入订单号或下单邮箱查询订单；卡密需输入下单时设置的查询密码查看。邮箱 + 图形验证码仅可查订单概要，不代表邮箱所有权证明。</p><label>订单号或邮箱</label><input id="qkeywords" placeholder="订单号或下单邮箱" autocomplete="off"><label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="qCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="qCaptchaImg" class="captcha-img" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px" onclick="loadQueryCaptcha()"></div><div style="margin-top:12px"><button class="btn" onclick="doQueryList()">查询</button></div><div id="qres" style="margin-top:14px"></div></div>';
   el('app').innerHTML = html;
   loadQueryCaptcha();
 }
@@ -808,14 +838,18 @@ function renderQueryOrderDetail(o, legacy){
   if (o.status === 'pending_activation'){ h += '<p class=\'muted\'>已付款，正在等待激活返回交付内容，请不要重复下单。</p>'; }
   if (o.status === 'pending_upstream'){ h += '<p class=\'muted\'>暂不可发货，已转人工处理，请联系客服。</p>'; }
   if (o.status === 'refund_pending'){ h += '<p class=\'muted\'>该订单已标记退款待处理，正在处理退款，请联系客服确认退款进度。</p>'; }
-  if (o.status === 'pending_payment'){ h += payBlockHTML(o, o.order_no + '-detail') + '<p class="muted">付完不用做任何事，等 1-3 分钟自动发货</p><label>提交 TXID（可选兜底）</label><input id="qtxid-' + escH(o.order_no) + '" placeholder="粘贴交易哈希"><label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="payCaptchaCode-' + escH(o.order_no) + '" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="payCaptchaImg-' + escH(o.order_no) + '" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px;background:#f2f2f7" data-captcha-for="' + escH(o.order_no) + '"></div><div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" onclick="submitTxid(this.dataset.no)">提交 TXID</button></div>'; }
+  if (o.status === 'pending_payment'){ h += payBlockHTML(o, o.order_no + '-detail') + '<p class="muted">付完不用做任何事，等 1-3 分钟自动发货</p><label>提交 TXID（可选兜底）</label><input id="qtxid-' + escH(o.order_no) + '" placeholder="粘贴交易哈希">';
+    if (tsFailClosed()) { h += '<label>人机验证</label>' + turnstileBoxHTML('pay-' + o.order_no); }
+    else if (tsEnabled()) { h += '<label>人机验证</label>' + turnstileBoxHTML('pay-' + o.order_no); }
+    else { h += '<label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="payCaptchaCode-' + escH(o.order_no) + '" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="payCaptchaImg-' + escH(o.order_no) + '" class="captcha-img" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px" data-captcha-for="' + escH(o.order_no) + '"></div>'; }
+    h += '<div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" onclick="submitTxid(this.dataset.no)">提交 TXID</button></div>'; }
   return h;
 }
 // 查询列表：关键词（订单号/邮箱）+ 验证码 → 订单概要列表；卡密按单走 /secret 或老 /lookup。
 async function doQueryList(){
   var kw = el('qkeywords') ? el('qkeywords').value.trim() : '';
   var capCode = el('qCaptchaCode') ? el('qCaptchaCode').value.trim() : '';
-  if (!kw) { toast('请输入订单号', 'error'); return; }
+  if (!kw) { toast('请输入订单号或邮箱', 'error'); return; }
   if (!capCode) { toast('请填写图形验证码', 'error'); loadQueryCaptcha(); return; }
   var r = await api('/api/orders/query', 'POST', { keywords: kw, captcha_id: window._qCaptchaId || '', captcha_code: capCode });
   if (!r.ok){ el('qres').innerHTML = '<div class="muted">' + escH(r.error) + '</div>'; loadQueryCaptcha(); return; }
@@ -844,6 +878,8 @@ async function doQueryList(){
     h += '</div>';
   }
   el('qres').innerHTML = h;
+  startCountdown();
+  if (tsEnabled()) renderTurnstileWidgets();
   loadQueryCaptcha();
 }
 // 按单取卡密（新订单）：空密码由后端 401 拒绝。
@@ -863,7 +899,7 @@ async function doQueryLegacy(no, tkInputId){
   var box = el('qsec-' + no);
   if (!r.ok){ if (box) box.innerHTML = '<div class="muted">' + escH(r.error) + '</div>'; else toast(r.error, 'error'); return; }
   if (box) box.innerHTML = renderQueryOrderDetail(r.order, !!r.legacy);
-  if (r.order && r.order.status === 'pending_payment') loadPayCaptchaFor(no);
+  if (r.order && r.order.status === 'pending_payment') { startCountdown(); if (tsEnabled()) renderTurnstileWidgets(); else loadPayCaptchaFor(no); }
 }
 // ===== 管理后台（SaaS 风格：信息密度优先，统一 Toast/Modal/Drawer） =====
 async function renderAdmin(){
@@ -982,22 +1018,22 @@ async function renderAdminData(){
   h += '<div class="adm-card"><h3>待处理订单（待发货）</h3>';
   var pl = (pending && pending.orders) || [];
   if (!pl.length) h += '<div class="muted">暂无待发货订单</div>';
-  else { h += '<table class="adm-table"><tr><th>订单号</th><th>商品</th><th>金额</th><th>操作</th></tr>'; for (var j = 0; j < pl.length; j++){ var o = pl[j]; var snap = o.product_snapshot || {}; h += '<tr><td data-label="订单号"><span class="adm-mono">' + escH(o.order_no) + '</span></td><td data-label="商品">' + escH(snap.title || '') + ' × ' + o.quantity + '</td><td data-label="金额">' + o.total_usdt + ' USDT</td><td data-label="操作"><button class="btn small" data-id="' + o.id + '" onclick="adminOrderDetail(this.dataset.id)">详情</button></td></tr>'; } h += '</table>'; }
+  else { h += '<table class="adm-table"><thead><tr><th>订单号</th><th>商品</th><th>金额</th><th>操作</th></tr></thead><tbody>'; for (var j = 0; j < pl.length; j++){ var o = pl[j]; var snap = o.product_snapshot || {}; h += '<tr><td data-label="订单号"><span class="adm-mono">' + escH(o.order_no) + '</span></td><td data-label="商品">' + escH(snap.title || '') + ' × ' + o.quantity + '</td><td data-label="金额">' + o.total_usdt + ' USDT</td><td data-label="操作"><button class="btn small" data-id="' + o.id + '" onclick="adminOrderDetail(this.dataset.id)">详情</button></td></tr>'; } h += '</tbody></table>'; }
   h += '<div style="margin-top:10px"><button class="btn small ghost" onclick="adminGotoOrders(\'pending_fulfill\')">查看全部待发货 →</button></div></div>';
   h += '<div class="adm-card"><h3>最近订单</h3>';
   var rl = (recent && recent.orders) || [];
   if (!rl.length) h += '<div class="muted">暂无订单</div>';
-  else { h += '<table class="adm-table"><tr><th>订单号</th><th>商品</th><th>状态</th><th>创建时间</th></tr>'; for (var k = 0; k < rl.length; k++){ var ro = rl[k]; var rsnap = ro.product_snapshot || {}; h += '<tr><td data-label="订单号"><span class="adm-mono">' + escH(ro.order_no) + '</span></td><td data-label="商品">' + escH(rsnap.title || '') + '</td><td data-label="状态">' + statusPill(ro.status) + '</td><td data-label="创建时间">' + escH(fmtTime(ro.created_at)) + '</td></tr>'; } h += '</table>'; }
+  else { h += '<table class="adm-table"><thead><tr><th>订单号</th><th>商品</th><th>状态</th><th>创建时间</th></tr></thead><tbody>'; for (var k = 0; k < rl.length; k++){ var ro = rl[k]; var rsnap = ro.product_snapshot || {}; h += '<tr><td data-label="订单号"><span class="adm-mono">' + escH(ro.order_no) + '</span></td><td data-label="商品">' + escH(rsnap.title || '') + '</td><td data-label="状态">' + statusPill(ro.status) + '</td><td data-label="创建时间">' + escH(fmtTime(ro.created_at)) + '</td></tr>'; } h += '</tbody></table>'; }
   h += '</div>';
   var al = (alerts && alerts.alerts) || [];
   h += '<div class="adm-card"><h3>上游异常提醒</h3>';
   if (!al.length) h += '<div class="muted">暂无上游异常</div>';
-  else { h += '<table class="adm-table"><tr><th>订单号</th><th>原因</th><th>操作</th></tr>'; for (var a = 0; a < al.length; a++){ var ao = al[a]; h += '<tr><td data-label="订单号"><span class="adm-mono">' + escH(ao.order_no) + '</span></td><td data-label="原因">' + escH(ao.admin_note || '') + '</td><td data-label="操作"><button class="btn small" data-id="' + ao.id + '" onclick="adminOrderDetail(this.dataset.id)">详情</button></td></tr>'; } h += '</table>'; }
+  else { h += '<table class="adm-table"><thead><tr><th>订单号</th><th>原因</th><th>操作</th></tr></thead><tbody>'; for (var a = 0; a < al.length; a++){ var ao = al[a]; h += '<tr><td data-label="订单号"><span class="adm-mono">' + escH(ao.order_no) + '</span></td><td data-label="原因">' + escH(ao.admin_note || '') + '</td><td data-label="操作"><button class="btn small" data-id="' + ao.id + '" onclick="adminOrderDetail(this.dataset.id)">详情</button></td></tr>'; } h += '</tbody></table>'; }
   h += '</div>';
   var ls = (lowStock && lowStock.products) || [];
   h += '<div class="adm-card"><h3>库存不足提醒</h3>';
   if (!ls.length) h += '<div class="muted">暂无缺货商品</div>';
-  else { h += '<table class="adm-table"><tr><th>商品</th><th>来源</th><th>库存</th></tr>'; for (var l = 0; l < ls.length; l++){ var lp = ls[l]; h += '<tr><td data-label="商品">' + escH(lp.title) + '</td><td data-label="来源">' + escH(lp.source || 'self') + '</td><td data-label="库存"><span class="spill red">缺货</span></td></tr>'; } h += '</table>'; }
+  else { h += '<table class="adm-table"><thead><tr><th>商品</th><th>来源</th><th>库存</th></tr></thead><tbody>'; for (var l = 0; l < ls.length; l++){ var lp = ls[l]; h += '<tr><td data-label="商品">' + escH(lp.title) + '</td><td data-label="来源">' + escH(lp.source || 'self') + '</td><td data-label="库存"><span class="spill red">缺货</span></td></tr>'; } h += '</tbody></table>'; }
   h += '</div></div>';
   el('adminBody').innerHTML = h;
 }
@@ -1083,7 +1119,7 @@ async function adminOrderDetail(id){
   var auditHtml = '';
   var alist = (au && au.audit) || [];
   if (!alist.length) auditHtml = '<p class="muted">暂无操作记录</p>';
-  else { auditHtml = '<table class="adm-table"><tr><th>时间</th><th>操作</th><th>状态变化</th><th>说明</th></tr>'; for (var ai = 0; ai < alist.length; ai++){ var a = alist[ai]; auditHtml += '<tr><td data-label="时间">' + escH(fmtTime(a.created_at)) + '</td><td data-label="操作">' + escH(a.action) + '</td><td data-label="状态变化">' + escH(a.before_status || '-') + ' → ' + escH(a.after_status || '-') + '</td><td data-label="说明">' + escH(a.note || '') + '</td></tr>'; } auditHtml += '</table>'; }
+  else { auditHtml = '<table class="adm-table"><thead><tr><th>时间</th><th>操作</th><th>状态变化</th><th>说明</th></tr></thead><tbody>'; for (var ai = 0; ai < alist.length; ai++){ var a = alist[ai]; auditHtml += '<tr><td data-label="时间">' + escH(fmtTime(a.created_at)) + '</td><td data-label="操作">' + escH(a.action) + '</td><td data-label="状态变化">' + escH(a.before_status || '-') + ' → ' + escH(a.after_status || '-') + '</td><td data-label="说明">' + escH(a.note || '') + '</td></tr>'; } auditHtml += '</tbody></table>'; }
   var h = '<div class="drawer-section"><h4>基本信息</h4><div class="drawer-kv"><span class="k">订单号</span><span class="v adm-mono">' + escH(o.order_no) + '</span><span class="k">状态</span><span class="v">' + statusPill(o.status) + '</span><span class="k">商品</span><span class="v">' + escH(snap.title || '') + ' × ' + o.quantity + '</span><span class="k">金额</span><span class="v">' + o.total_usdt + ' USDT（精确应付 ' + (o.actual_amount || o.total_usdt) + ' USDT）</span><span class="k">支付</span><span class="v">' + escH(o.pay_method || '') + ' · ' + escH(o.pay_chain || '') + '</span><span class="k">创建时间</span><span class="v">' + escH(fmtTime(o.created_at)) + '</span><span class="k">付款时间</span><span class="v">' + escH(fmtTime(o.paid_at)) + '</span><span class="k">完成时间</span><span class="v">' + escH(fmtTime(o.fulfilled_at)) + '</span></div></div>';
   h += '<div class="drawer-section"><h4>客户信息</h4><div class="drawer-kv"><span class="k">联系方式</span><span class="v">' + escH(o.contact || '') + '</span><span class="k">客户字段</span><span class="v">' + escH(JSON.stringify(cf)) + '</span></div></div>';
   h += '<div class="drawer-section"><h4>付款信息</h4><div class="drawer-kv"><span class="k">收款地址</span><span class="v adm-mono">' + escH(o.pay_address || o.wallet_address || '') + '</span><span class="k">TXID</span><span class="v adm-mono">' + escH(o.txid || o.tx_hash || '未提交') + '</span><span class="k">备注</span><span class="v">' + escH(o.admin_note || '') + '</span></div></div>';
@@ -1098,7 +1134,7 @@ async function adminOrderDetail(id){
   showDrawer('订单详情', h);
 }
 async function adminConfirm(id){
-  showModal({ title: '确认收款（人工操作）', bodyHTML: '<p>你正在手动确认该订单已收款。确认后系统将按正常流程发货（自营卡密自动发 / 上游走 ProdSeller）。<b>请确保已在收款地址核对到账</b>，误确认无法自动撤销。</p>', confirmText: '确认已收款', showInput: true, inputLabel: '操作原因（必填，记入审计）', inputPlaceholder: '如：已在收款地址核对到账，TXID xxx', onConfirm: async function(reason){
+  showModal({ title: '确认收款（人工操作）', bodyHTML: '<p>你正在手动确认该订单已收款。确认后系统将按人工确认通道发货（自营卡密自动发 / 上游走 ProdSeller），记为人工确认态（非链上自动核验）。<b>请确保已在收款地址核对到账</b>，误确认无法自动撤销。</p>', confirmText: '确认已收款', showInput: true, inputLabel: '操作原因（必填，记入审计）', inputPlaceholder: '如：已在收款地址核对到账，TXID xxx', onConfirm: async function(reason){
     if (!reason || !reason.trim()){ toast('请填写操作原因', 'error'); return false; }
     var r = await api('/api/admin/orders/' + id + '/confirm-payment', 'POST', { reason: reason.trim() });
     if (!r.ok){ toast(r.error, 'error'); return false; }
@@ -1414,6 +1450,7 @@ function clearProductImage(pfx){
 // ---- 卡密库存 ----
 window._cardFilter = { product_id: '', status: '', q: '', page: 1 };
 async function renderAdminCards(page){
+  window._revealedCardId = null;
   var f = window._cardFilter;
   f.page = page || 1;
   var qs = '/api/admin/cards?page=' + f.page + '&page_size=20';
@@ -1443,7 +1480,10 @@ async function renderAdminCards(page){
       else statusHtml = '<span class="spill green">未用</span>';
       var canDisable = !c.is_used && !c.reserved_order_id;
       var canDel = !c.is_used && !c.reserved_order_id;
-      h += '<tr><td data-label="ID">' + c.id + '</td><td data-label="商品ID">' + c.product_id + '</td><td data-label="卡密"><span class="adm-mono">' + escH(c.code) + '</span></td><td data-label="状态">' + statusHtml + '</td><td data-label="预留订单">' + (c.reserved_order_id ? '#' + c.reserved_order_id : '—') + '</td><td data-label="操作"><div class="row">' + (canDisable ? '<button class="btn small ghost" data-id="' + c.id + '" data-dis="' + (c.is_disabled ? 0 : 1) + '" onclick="adminToggleCard(this.dataset.id, this.dataset.dis)">' + (c.is_disabled ? '启用' : '禁用') + '</button>' : '') + (canDel ? ' <button class="btn small danger" data-id="' + c.id + '" onclick="adminDelCard(this.dataset.id)">删除</button>' : '<span class="muted">受保护</span>') + '</div></td></tr>';
+      // P2-7：列表只显示掩码（code_masked：前 4 + ****），绝不渲染完整 code；完整 code 只经单条 reveal 取回。
+      var masked = c.code_masked ? String(c.code_masked) : maskCardCode(c.code);
+      window._cardMasked = window._cardMasked || {}; window._cardMasked[c.id] = masked;
+      h += '<tr><td data-label="ID">' + c.id + '</td><td data-label="商品ID">' + c.product_id + '</td><td data-label="卡密"><span class="adm-mono" id="cardCode-' + c.id + '">' + escH(masked) + '</span> <button class="btn small ghost" data-id="' + c.id + '" onclick="adminRevealCard(this.dataset.id, this)">显示</button></td><td data-label="状态">' + statusHtml + '</td><td data-label="预留订单">' + (c.reserved_order_id ? '#' + c.reserved_order_id : '—') + '</td><td data-label="操作"><div class="row">' + (canDisable ? '<button class="btn small ghost" data-id="' + c.id + '" data-dis="' + (c.is_disabled ? 0 : 1) + '" onclick="adminToggleCard(this.dataset.id, this.dataset.dis)">' + (c.is_disabled ? '启用' : '禁用') + '</button>' : '') + (canDel ? ' <button class="btn small danger" data-id="' + c.id + '" onclick="adminDelCard(this.dataset.id)">删除</button>' : '<span class="muted">受保护</span>') + '</div></td></tr>';
     }
     h += '</tbody></table></div>';
     h += paginationHTML(r.page || 1, r.total_pages || 1, 'renderAdminCards');
@@ -1475,6 +1515,24 @@ async function adminImportCards(){
   el('ci-codes').value = '';
   renderAdminCards(1);
 }
+// P2-7：一次只允许管理员主动看一张完整卡密。点“显示”按单调 GET /api/admin/cards/:id/reveal；
+// 再次点击或看另一张时，前一张恢复掩码。明文只写内存 DOM，不存 localStorage/sessionStorage；不新增批量导出。
+async function adminRevealCard(id, btn){
+  var span = el('cardCode-' + id);
+  if (!span) return;
+  var masked = (window._cardMasked && window._cardMasked[id]) || maskCardCode('');
+  if (window._revealedCardId && window._revealedCardId !== String(id)) {
+    var prev = el('cardCode-' + window._revealedCardId);
+    if (prev) prev.textContent = (window._cardMasked && window._cardMasked[window._revealedCardId]) || '****';
+  }
+  if (window._revealedCardId === String(id)) { span.textContent = masked; window._revealedCardId = null; if (btn) btn.textContent = '显示'; return; }
+  var r = await api('/api/admin/cards/' + encodeURIComponent(id) + '/reveal');
+  if (!r.ok){ toast(r.error || '查看失败', 'error'); return; }
+  if (!r.code){ toast('后端 reveal 接口未返回卡密', 'error'); return; }
+  span.textContent = r.code;
+  window._revealedCardId = String(id);
+  if (btn) btn.textContent = '隐藏';
+}
 async function adminToggleCard(id, dis){
   var r = await api('/api/admin/cards/' + id + '/disable', 'POST', { disabled: Number(dis) === 1 });
   if (!r.ok){ toast(r.error, 'error'); return; }
@@ -1504,7 +1562,7 @@ async function renderAdminUpstream(){
   h += '<div class="adm-card"><h3>第二步：浏览商品目录（来自缓存）</h3><p class="muted">勾选要导入的商品，导入前会展示成本、加价与最终售价预览。重新导入已存在的商品时，不会覆盖管理员人工修改的标题与简介。</p><div class="admin-toolbar"><input id="upQ" placeholder="搜索上游商品名称 / ID" oninput="adminUpstreamFilter()"><button class="btn" onclick="adminUpstreamImport()">批量导入已选</button></div><div id="upCatalog">' + (hasCache ? '<div class="muted">加载中…</div>' : '<div class="muted">暂无缓存，请先同步。</div>') + '</div><div id="upPreview" class="muted" style="margin-top:10px"></div></div>';
   h += '<div class="adm-card"><h3>第三步：上游订单与异常</h3>';
   if (!alerts.length) h += '<div class="muted">暂无置顶告警（pending_upstream 订单）</div>';
-  else { h += '<table class="adm-table"><tr><th>订单号</th><th>原因</th><th>操作</th></tr>'; for (var ai = 0; ai < alerts.length; ai++){ var ao = alerts[ai]; h += '<tr><td data-label="订单号"><span class="adm-mono">' + escH(ao.order_no) + '</span></td><td data-label="原因">' + escH(ao.admin_note || '') + '</td><td data-label="操作"><button class="btn small" data-id="' + ao.id + '" onclick="adminOrderDetail(this.dataset.id)">详情</button> <button class="btn small ghost" data-id="' + ao.id + '" onclick="adminUpstreamRetry(' + ao.id + ')">重试</button></td></tr>'; } h += '</table>'; }
+  else { h += '<table class="adm-table"><thead><tr><th>订单号</th><th>原因</th><th>操作</th></tr></thead><tbody>'; for (var ai = 0; ai < alerts.length; ai++){ var ao = alerts[ai]; h += '<tr><td data-label="订单号"><span class="adm-mono">' + escH(ao.order_no) + '</span></td><td data-label="原因">' + escH(ao.admin_note || '') + '</td><td data-label="操作"><button class="btn small" data-id="' + ao.id + '" onclick="adminOrderDetail(this.dataset.id)">详情</button> <button class="btn small ghost" data-id="' + ao.id + '" onclick="adminUpstreamRetry(' + ao.id + ')">重试</button></td></tr>'; } h += '</tbody></table>'; }
   h += '</div>';
   h += '<div class="adm-card"><h3>上游订单列表</h3><div id="upOrders"><div class="muted">加载中…</div></div></div>';
   h += '</div>';
@@ -1515,7 +1573,7 @@ async function renderAdminUpstream(){
   if (uoEl) {
     var uolist = (uo && uo.upstream_orders) || [];
     if (!uolist.length) uoEl.innerHTML = '<div class="muted">暂无上游订单</div>';
-    else { var uh = '<table class="adm-table"><tr><th>订单ID</th><th>上游单号</th><th>状态</th><th>金额</th><th>创建时间</th></tr>'; for (var ui = 0; ui < uolist.length; ui++){ var u = uolist[ui]; uh += '<tr><td data-label="订单ID">' + u.order_id + '</td><td data-label="上游单号"><span class="adm-mono">' + escH(u.prodseller_order_id) + '</span></td><td data-label="状态">' + escH(u.status) + '</td><td data-label="金额">' + u.amount + '</td><td data-label="创建时间">' + escH(fmtTime(u.created_at)) + '</td></tr>'; } uh += '</table>'; uoEl.innerHTML = uh; }
+    else { var uh = '<table class="adm-table"><thead><tr><th>订单ID</th><th>上游单号</th><th>状态</th><th>金额</th><th>创建时间</th></tr></thead><tbody>'; for (var ui = 0; ui < uolist.length; ui++){ var u = uolist[ui]; uh += '<tr><td data-label="订单ID">' + u.order_id + '</td><td data-label="上游单号"><span class="adm-mono">' + escH(u.prodseller_order_id) + '</span></td><td data-label="状态">' + escH(u.status) + '</td><td data-label="金额">' + u.amount + '</td><td data-label="创建时间">' + escH(fmtTime(u.created_at)) + '</td></tr>'; } uh += '</tbody></table>'; uoEl.innerHTML = uh; }
   }
 }
 window._upCatalog = [];
@@ -1650,7 +1708,7 @@ async function renderAdminAudit(page){
   function selOpts3(opts, cur){ var h = ''; for (var i = 0; i < opts.length; i++) h += '<option value="' + opts[i][0] + '"' + (String(cur) === String(opts[i][0]) ? ' selected' : '') + '>' + opts[i][1] + '</option>'; return h; }
   var h = '<div class="admin-page"><div class="admin-page-head"><h2>操作审计</h2></div>';
   h += '<p class="muted">记录确认收款、人工发货、订单取消、上游重试、配置修改等关键操作。审计不记录密码、查单凭证、完整卡密、API Key。</p>';
-  h += '<div class="admin-toolbar"><select id="auditAction" onchange="adminAuditSearch()">' + selOpts3([['', '全部操作'], ['confirm_payment', '确认收款'], ['fulfill', '人工发货'], ['cancel', '取消订单'], ['upstream_retry', '上游重试'], ['settings_update', '配置修改'], ['product_delete', '删除商品'], ['auto_cancel_timeout', '超时自动取消']], f.action) + '</select><input id="auditOrderId" placeholder="按订单 ID 筛选" value="' + escH(f.order_id) + '" onkeydown="if(event.key===\'Enter\')adminAuditSearch()"><button class="btn" onclick="adminAuditSearch()">搜索</button><button class="btn ghost" onclick="adminAuditReset()">重置</button></div>';
+  h += '<div class="admin-toolbar"><select id="auditAction" onchange="adminAuditSearch()">' + selOpts3([['', '全部操作'], ['confirm_payment', '确认收款（历史）'], ['manual_confirm_payment', '人工确认收款'], ['fulfill', '人工发货'], ['cancel', '取消订单'], ['upstream_retry', '上游重试'], ['settings_update', '配置修改'], ['product_delete', '删除商品'], ['auto_cancel_timeout', '超时自动取消']], f.action) + '</select><input id="auditOrderId" placeholder="按订单 ID 筛选" value="' + escH(f.order_id) + '" onkeydown="if(event.key===\'Enter\')adminAuditSearch()"><button class="btn" onclick="adminAuditSearch()">搜索</button><button class="btn ghost" onclick="adminAuditReset()">重置</button></div>';
   if (!list.length) h += '<div class="adm-empty">暂无审计记录</div>';
   else {
     h += '<div class="adm-table-wrap"><table class="adm-table"><thead><tr><th>时间</th><th>订单 ID</th><th>操作</th><th>状态变化</th><th>说明</th></tr></thead><tbody>';
