@@ -16,6 +16,7 @@
   - `bash tests/d1-local-test.sh`（仅 `--local`，绝不 `--remote`）
 - [x] 浏览器验收（staging）：下单 → 查询密码取卡密 → 错密码拒绝 → 管理端操作全流程。（2026-10-17 最终验收通过，HEAD 62d8797，staging Version 375c8e5e；另有 API 直测覆盖白名单负向、/secret、/pay 假 TXID。）
 - [x] 无未提交变更；HEAD 与远端同步。（文档更新提交后复核。）
+- [ ] 本分支 `fix/txid-race-safety-2026-10-18`（HEAD `1127fc4`，P1-1/P1-2 已实现，**未推送**）：本地 txid-race-deterministic 71/71、review-p1-backend 139/139、review-fixes 272/272、d1-local ALL OK（`current_version=17`）。**Staging 尚未部署本分支**，部署须逐项授权。浏览器 CI 套件本地运行有 pre-existing `#captchaCode` 超时（基线复现，与本次改动无关，GitHub CI 为准），不得声称为本地通过。
 
 ## B. 真正可收款运营（与 A 分开，不得混同）
 
@@ -38,6 +39,16 @@
 - [ ] 观察待付款订单：超时自动取消是否正常；无卡密预留泄漏。
 - [ ] 观察后台告警：上游 402/409/429、异常订单。
 - [ ] 首笔真实订单全流程人工跟进（下单 → 到账 → 发货 → 买家取卡密）。
+
+## F. TXID 认领安全（v17，P1-1/P1-2，本分支新增）
+
+- [ ] 迁移 v17 已应用：`GET /api/admin/migrate` → `current_version = 17`；`schema-check` → `ok=true`（含 `txid_claims` 六列：`tx_hash` / `order_id` / `claimed_at` / `claim_token` / `source` / `order_lease_token`）。v16（6 个查询索引）已应用，不是“尚未应用”。
+- [ ] 租约-first：`fulfillAfterPayment` 先原子获取订单租约再碰认领表；无租约不触碰认领；认领失败只释放本请求租约、不触碰认领行。
+- [ ] 令牌回滚：`releaseTxidClaim` 单条条件删除，同时匹配 `(tx_hash, order_id, claim_token)` + 当前订单租约；`claim_token` 为空的遗留行永不被令牌回滚删除；失败路径不删认领行。
+- [ ] 人工与链上共享全局认领：同一 `txid_claims`，`tx_hash` 主键决定胜负；`source` 首次写入获胜不改写；`manual_confirmed` 仅表示人工确认，不构成链上证据，不伪造回执/区块高度/确认数。
+- [ ] 人工账本 fail-closed：账本写入失败时不推订单为已付款/已交付；仅重读确认已有同订单 + 同 TXID + 同状态 `manual_confirmed` 行才可幂等继续，否则释放租约、认领保留、同订单重试。
+- [ ] 确定性测试证据：`tests/txid-race-deterministic-test.mjs` 71/71（Barrier/Deferred 确定性交错，不依赖调度/时间窗口；覆盖同订单认领回滚竞态、租约接管 + 过期回滚、双管理员并发人工确认、人工/链上双向竞态、账本失败恢复）。
+- [ ] 未验证项仍 BLOCKED / NOT VERIFIED：真实 Turnstile Widget、真实链上收款、P1-11 真实上游幂等。本地 Mock / CI / Staging 浏览器操作不得描述为真实链上支付或真实上游采购验证。自动采购门禁（`prodseller_enabled=0`）保持关闭。
 
 ## E. 域名上线（zhixuanpro.com，仅清单；本轮只更新清单，不注册/改 DNS/绑生产域名）
 

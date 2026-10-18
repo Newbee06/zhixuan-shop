@@ -55,6 +55,8 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 | v16 | P2-4（补 6 个查询索引：`idx_cards_product`、`idx_cards_used`、`idx_orders_no`、`idx_orders_status`、`idx_orders_created`、`idx_sessions_expires`；仅补 MIGRATIONS v1–v15 真缺失的，schema.sql 新库已含，`IF NOT EXISTS` 幂等；不删历史数据，不加 claim_token 列） |
 | v17 | P1-1/P1-2（`txid_claims` 加 `claim_token`（每次新认领的密码学安全随机令牌，回滚须同时匹配令牌 + 当前订单租约）+ `source`（`chain_verified` / `manual_confirmed`，人工与链上共享同一全局原子认领）+ `order_lease_token`（认领时持有者的订单租约，接管时收养更新）；`ADD COLUMN` 幂等，旧库真正加列、新库 schema.sql 已含为 no-op；现有认领记录保留，旧行三列为默认值） |
 
+> v17 核对（与 `src/worker.js` MIGRATIONS v17 + `migrations/0017_txid_claim_token_source_lease.sql` 一致）：三列均为 `ADD COLUMN`；`claim_token` 为 `randomHex(32)`；`source` 默认 `'chain_verified'`（v17 前只有链上路径写认领表）；`order_lease_token` 默认空。`GET /api/admin/schema-check` 按 `expectedTables` 校验 `txid_claims` 六列齐全。预置版本仍为 10（`schema.sql` 只预置 v1–v10），v11–v17 由 Worker 按序执行，不得把预置版本改到 17（否则 v11 图标种子等会被跳过）。
+
 ## 兼容性
 
 - 新版 Worker 可读旧库（迁移前版本号落后时自动升级；升级完成前请求会返回迁移错误，不得伪装成功）。

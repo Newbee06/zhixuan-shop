@@ -10,7 +10,7 @@ AI 会员 / 代充 / 成品号 / 卡密商城，单 Worker + 单 D1，Cloudflare
 
 客户付给你（USDT 到你的收款地址）→ CF cron 每 1 分钟轮询链上到账（精确金额匹配）→ 若商品 `source=prodseller` 则调 ProdSeller 拿货；若 `source=self` 则本地卡密自动发或人工发货 → 交付内容在站内查单页查看（**不发邮件**）。
 
-三条收款确认路径（CF 轮询 / 手动 TXID 核验 / 管理员确认收款）都复用同一个 `fulfillAfterPayment(env, order, txHash, ctx)`，不写三份重复发货逻辑。仅支持 OKX|USDT0·X Layer 与 Binance|USDT·BEP20 两种组合；TRC20 / ERC20 / 站内转账代码已删除，旧订单不自动认账、转管理员人工处理（见 docs/PAYMENT_FLOW.md）。
+三条收款确认路径（CF 轮询 / 手动 TXID 核验 / 管理员确认收款）都复用同一个 `fulfillAfterPayment(env, order, txHash, ctx)`，不写三份重复发货逻辑。人工确认与链上确认共享同一 `txid_claims` 全局认领（`source` 区分 `chain_verified` / `manual_confirmed`，后者仅表示人工确认、不构成链上证据）。仅支持 OKX|USDT0·X Layer 与 Binance|USDT·BEP20 两种组合；TRC20 / ERC20 / 站内转账代码已删除，旧订单不自动认账、转管理员人工处理（见 docs/PAYMENT_FLOW.md）。
 
 ## 功能
 
@@ -246,7 +246,7 @@ npx wrangler deploy
 
 ## 数据库迁移（版本化，兼容旧库，幂等、非破坏性）
 
-新库直接用 `schema.sql` 建表（已含 v1–v15 结构，版本预置到 v10）；**旧库无需手动迁移**，Worker 首次请求时自动按版本顺序执行 `migrations/0001–0015`（v11–v15 幂等运行，v11 种子图标）：
+新库直接用 `schema.sql` 建表（已含 v1–v17 结构，版本预置到 v10）；**旧库无需手动迁移**，Worker 首次请求时自动按版本顺序执行 `migrations/0001–0017`（v11–v17 幂等运行，v11 种子图标，v16 补 6 个查询索引，v17 给 `txid_claims` 加认领三列）：
 
 - v1：订单轮询字段（`query_token_hash` 等兼容列）。
 - v2：商品上游字段（`in_stock` 等）。
@@ -255,6 +255,8 @@ npx wrangler deploy
 - v5：验证码与限流（`captcha_codes`、`order_rate`）。
 - v6：认领 / TXID / 异常 / 查单限流（`orders.claim_token`、`claimed_at`、`exception_reason`、`refund_status`、`refund_ref`，`txid_claims`、`lookup_rate`、`schema_migrations`）。
 - v7：上游轮询租约（`orders.upstream_lock`、`upstream_lock_expires_at`）+ `upstream_orders.order_id` 去重（留最新行）与唯一索引。
+- v16：查询索引补齐（`idx_cards_product`、`idx_cards_used`、`idx_orders_no`、`idx_orders_status`、`idx_orders_created`、`idx_sessions_expires`；`IF NOT EXISTS` 幂等，不删历史数据）。
+- v17：TXID 认领令牌化 + 人工/链上共享全局认领（`txid_claims` 加 `claim_token`（每次新认领的 `randomHex(32)`）+ `source`（`chain_verified` / `manual_confirmed`）+ `order_lease_token`（认领时持有者的订单租约）；`ADD COLUMN` 幂等，现有认领行保留）。
 
 机制：每次 API 请求只轻量查 `schema_migrations` 当前版本；版本已最新时**不再执行 PRAGMA / DDL / 历史修复**；版本落后时才按序迁移，每个版本成功后才写入版本记录，失败抛带版本号的明确错误且**不标记成功**。管理员可经 `GET /api/admin/migrate` 查看版本、`POST /api/admin/migrate` 手动触发。
 
@@ -266,7 +268,7 @@ npx wrangler deploy
 2. 部署后第一次打开后台，用 `admin` 登录会强制改密（至少 8 位）；改密后旧会话全部作废。
 3. 旧订单（无 salt 哈希）仅走管理员流程：客户联系客服核实交付内容；新订单从部署后开始用查询密码。
 4. 部署前备份生产 D1（`wrangler d1 export` 或 CF 面板快照），以防回滚。
-5. 回滚方案：重新部署 main 分支的旧版 Worker 即可；旧库新增的列和表可保留（新增表：`upstream_orders` / `upstream_cache` / `captcha_codes` / `order_rate` / `admin_audit` / `login_attempts` / `txid_claims` / `lookup_rate` / `payments` / `scan_cursors` / `pay_rate` / `app_icons` / `secret_attempts`；新增列：`query_token_hash` / `query_password_hash` / `query_password_salt` / `reserved_*` / `claim_token` / `claimed_at` / `exception_reason` / `refund_*` / `upstream_lock` / `upstream_lock_expires_at` / `app_icon_key` / `schema_migrations`），旧版代码不读取它们，不影响旧版运行。**v8 唯一索引 caveat**：回滚后新库的 v8 唯一索引（`idx_orders_amount_claim` / `idx_orders_contact_pending`）仍会约束旧版下单——旧版无 INSERT 重试逻辑，高并发下金额/联系人冲突时旧版下单会直接报 500。回滚前确认无高并发下单场景，或先评估 DROP 索引（须先人工评估重复数据，见 `migrations/README.md`）。
+5. 回滚方案：重新部署 main 分支的旧版 Worker 即可；旧库新增的列和表可保留（新增表：`upstream_orders` / `upstream_cache` / `captcha_codes` / `order_rate` / `admin_audit` / `login_attempts` / `txid_claims` / `lookup_rate` / `payments` / `scan_cursors` / `pay_rate` / `app_icons` / `secret_attempts`；新增列：`query_token_hash` / `query_password_hash` / `query_password_salt` / `reserved_*` / `claim_token` / `claimed_at` / `exception_reason` / `refund_*` / `upstream_lock` / `upstream_lock_expires_at` / `app_icon_key` / `schema_migrations` / `txid_claims.claim_token` / `txid_claims.source` / `txid_claims.order_lease_token`），旧版代码不读取它们，不影响旧版运行。**v8 唯一索引 caveat**：回滚后新库的 v8 唯一索引（`idx_orders_amount_claim` / `idx_orders_contact_pending`）仍会约束旧版下单——旧版无 INSERT 重试逻辑，高并发下金额/联系人冲突时旧版下单会直接报 500。回滚前确认无高并发下单场景，或先评估 DROP 索引（须先人工评估重复数据，见 `migrations/README.md`）。
 
 ## 目录
 
@@ -278,8 +280,9 @@ npx wrangler deploy
 - `tests/stock-test.mjs` — 库存口径专项测试
 - `tests/security-test.mjs` — 安全专项测试（鉴权/订单状态机/查询密码/卡密预留/审计）
 - `tests/concurrency-test.mjs` — 并发 / 故障恢复 / 迁移专项测试（真并行 + 屏障，验最终 DB 状态）
+- `tests/txid-race-deterministic-test.mjs` — TXID 认领竞态确定性回归测试（v17：Barrier/Deferred 确定性交错，不依赖调度/时间窗口；覆盖同订单认领回滚竞态、租约接管、双管理员并发人工确认、人工/链上双向竞态、账本失败恢复）
 - `tests/browser-acceptance.mjs` — 浏览器验收（需 playwright-core + 本机 Chromium + 本地 wrangler dev，见文件头注释）
 - `tests/d1-local-test.sh` — Wrangler D1 本地环境迁移验证（仅 `--local`，不碰生产库）
-- `migrations/` — 版本化迁移 SQL（0001–0015）与说明
+- `migrations/` — 版本化迁移 SQL（0001–0017）与说明
 - `translations-zh.json / translations-zh.sql` — 上游商品中文标题/简介翻译（品牌名保留英文，链接/格式原样保留）
 - `README.md` — 本文件

@@ -28,6 +28,8 @@
 - 支付组合白名单：仅 `OKX|X Layer` 与 `Binance|BEP20`。下单、轮询、TXID 核验、扫描四处均校验白名单；非白名单订单不自动认账，只保留超时自动取消。
 - 链上核验严格：合约地址校验、Transfer 事件、收款地址、按合约实际 `decimals()` 精确 BigInt 金额匹配、按链确认数（X Layer 1、BEP20 15）防重组。decimals 读取失败 fail-closed。
 - TRC20 / ERC20 / 站内转账代码已删除，无任何外部调用路径。
+- TXID 认领安全（v17）：租约-first（先原子获取订单租约，再碰认领表；无租约不触碰认领）；认领令牌化（每次新认领 `randomHex(32)` 的 `claim_token`，回滚须同时匹配令牌 + 当前订单租约；遗留空令牌行永不被令牌回滚删除）；同订单接管收养认领（重绑 `order_lease_token`，`source` 不改写）；失败路径不删认领行。
+- 人工与链上共享同一 `txid_claims` 全局原子认领（`tx_hash` 主键决定胜负），`source` 区分 `'chain_verified'` / `'manual_confirmed'`；`manual_confirmed` 仅表示管理员系统外核对后人工确认，不构成链上证据，不伪造回执/区块高度/确认数。人工账本写入失败时 fail-closed：仅重读确认已有同订单 + 同 TXID + 同状态 `manual_confirmed` 行才可幂等继续，否则释放本请求租约、认领保留、返回失败。
 - 收款二维码走第三方 qrserver.com（前端调 `api.qrserver.com` 生成，收款地址以查询参数传给第三方）；收款地址本就是公开收款信息，接受现状。
 
 ## 管理端鉴权

@@ -50,11 +50,48 @@ PYTHONPATH=/opt/muse/skills/custom-connector-setup/bin python3 ~/workspace/custo
 | 旧订单（v14 无 salt 哈希）买家无法自助取卡 | 仅管理员流程：后台查看交付内容 / 重置查询密码 / 联系客服 |
 | 管理员被锁（登录失败过多） | 等 15 分钟自动解封；或 D1 中清 `login_attempts`（需用户授权，生产 D1 禁动） |
 | 审计写入失败（响应 `ok:true` + `audit_failed:true`） | **不得重复操作**：业务已提交，重复操作会重复发货/重复确认。立即核查 `admin_audit` 表，确认缺失的审计行后手动补记（操作、订单、旧状态、新状态、原因），再继续后续操作 |
+| TXID 已用于其他订单（`/pay` / 人工确认被拒） | 查 `txid_claims` 确认该 TXID 的归属订单（`order_id`）与来源（`source`：`chain_verified` 链上认领 / `manual_confirmed` 人工认领）。归属争议不得由接口自动改写：管理员在 D1 中核查后手动处理。不得删除他人认领行去“释放”TXID |
+| 人工确认账本写入失败（“人工确认账本写入失败，请重试”） | fail-closed 恢复：TXID 认领已保留、租约已释放，**同订单直接重试**即可（重试会收养同一认领行，不重复建行）。不得换订单重试同一 TXID（会被主键认领拒绝）；不得手动删认领行 |
+| 同订单并发 / 过期租约接管后旧请求仍在跑 | 预期行为：旧请求的认领回滚条件（令牌 + 当前租约）已不成立，删不掉新持有者的认领；新持有者收养认领（`order_lease_token` 重绑），`source` 不改写。若发现认领行丢失，先查 `txid_claims.claim_token` / `order_lease_token` 与 `orders.claim_token`，确认是哪个租约持有者所为，不得凭猜测恢复 |
+| 认领行 `claim_token` 为空（v17 前遗留行） | 遗留行永不被令牌回滚删除。如需处理遗留认领归属，管理员在 D1 中人工核查后手动处理，不得用接口回滚删除 |
 | 查单接口返回 410 | `GET /api/orders` 为旧接口，文案“旧接口停用，请用订单号或下单邮箱+验证码走当前查单流程”（已落地）。不要让用户以为邮箱查单已关闭 |
+
+## TXID 认领与人工确认（v17，P1-1/P1-2）
+
+### 新机制：如何避免错误回滚
+
+旧顺序（先认领 TXID、后抢订单租约）的竞态：请求 A 插认领成功，请求 B 看到同订单已有认领，B 抢到订单租约开始履约，A 订单认领失败触发回滚删掉 B 依赖的认领，第三订单可重认领同一 TXID。新顺序为**租约-first**：
+
+1. `fulfillAfterPayment` 先原子获取订单租约（`claimOrderForPayment`：单条条件 UPDATE，`status='pending_payment'` 且未认领或租约已超 5 分钟；成功时写 `paid_at` 与 `tx_hash`）。
+2. 获租约后才碰 `txid_claims`（`claimTxid`）；无租约的请求不触碰认领。
+3. 认领失败只释放本请求租约（清 `paid_at`），不触碰认领行。
+4. 回滚删除（`releaseTxidClaim`）是单条条件删除，同时匹配 `(tx_hash, order_id, claim_token)` + `EXISTS(orders.claim_token = 本请求租约)`：租约被接管后旧请求的 `EXISTS` 不成立，无法删除新持有者的认领。
+5. 失败路径不再删除认领行：认领保留，同订单重试时收养同一行，不重复建行，不向他单开放 TXID。
+6. 同订单接管：新租约持有者收养认领，只重绑 `order_lease_token`；`source` 首次写入获胜，永不改写。
+
+### 人工与链上共用全局 TXID 防重，两种来源语义区别
+
+- 同一 `txid_claims`，`tx_hash` 为主键，全局原子消费：两个并发请求（人工/链上任意组合）同时 INSERT 时，胜负由主键唯一约束决定，败者按归属拒绝（同订单收养，他单拒绝）。不再另建防重表，不再靠先 SELECT 后 INSERT。
+- `source='chain_verified'`：链上验证通过后认领（网络 + 白名单合约 + 收款地址 + 精确金额 + 回执 + 确认数全部通过）。
+- `source='manual_confirmed'`：管理员在系统外核对到账后人工确认认领（须填人工原因 + 显式 `manual_confirm=true`）。**仅表示人工确认，不构成链上证据**，不伪造回执/区块高度/确认数。人工确认写认领 + `payments manual_confirmed` 账本行 + 审计 + 订单 `【人工确认收款】` 备注。
+- 仅当订单带有 64 位十六进制 TXID 时人工确认才写认领行/账本行；无 TXID 的人工确认不伪造认领。
+- v17 前遗留：人工确认只写 `payments manual_confirmed` 行、不写认领表。`claimTxid` 仍兼容检查遗留人工行（归属他单则拒绝；归属本单则新建认领行收敛到全局认领表，之后以认领表为准）。`claim_token` 为空的遗留认领行永不被令牌回滚删除。
+
+### 账本写入失败恢复策略
+
+- 人工账本（`payments manual_confirmed`）写入失败时 **fail-closed**：不把订单推为已付款/已交付；仅当重读确认已有同订单 + 同 TXID + 同状态 `manual_confirmed` 行时才按幂等重试继续；否则释放本请求租约、认领保留、返回失败。恢复 = 同订单直接重试（收养同一认领行）。
+- 审计写入失败语义仍为 P1-7：业务已提交时返回 `ok:true` + `audit_failed:true`，**不得重复业务副作用**，须立即核查 `admin_audit` 并手动补记（见“常见问题”）。
+- 不得用“删除认领行”作为恢复手段；归属争议一律管理员在 D1 中核查 `txid_claims` 后手动处理。
+
+### v17 迁移信息
+
+- `txid_claims` 加 `claim_token`（每次新认领的密码学安全随机令牌 `randomHex(32)`，回滚唯一凭证）+ `source`（`'chain_verified'` / `'manual_confirmed'`，首次写入获胜）+ `order_lease_token`（认领时持有者的订单租约令牌）。
+- 均为 `ADD COLUMN` 幂等；`schema.sql` 新库已含三列；预置版本保持 10（v11–v17 由 Worker 按序执行）。现有认领行保留，旧行 `source` 默认 `'chain_verified'`。
+- 部署后验证：`GET /api/admin/migrate` → `current_version = 17`；`GET /api/admin/schema-check` → `ok=true`（含 `txid_claims` 六列校验）。v16（6 个查询索引）已应用，不是“尚未应用”；v17 在其之上追加。
 
 ## 回滚
 
-重新部署 main 分支的旧版 Worker 即可。旧库新增的列和表（新增表：`upstream_orders` / `upstream_cache` / `captcha_codes` / `order_rate` / `admin_audit` / `login_attempts` / `txid_claims` / `lookup_rate` / `payments` / `scan_cursors` / `pay_rate` / `app_icons` / `secret_attempts`；新增列：`query_token_hash` / `query_password_hash` / `query_password_salt` / `reserved_*` / `claim_token` / `claimed_at` / `exception_reason` / `refund_*` / `upstream_lock` / `upstream_lock_expires_at` / `app_icon_key` / `schema_migrations`）可保留，旧版代码不读取它们，不影响旧版运行。回滚前备份 D1。
+重新部署 main 分支的旧版 Worker 即可。旧库新增的列和表（新增表：`upstream_orders` / `upstream_cache` / `captcha_codes` / `order_rate` / `admin_audit` / `login_attempts` / `txid_claims` / `lookup_rate` / `payments` / `scan_cursors` / `pay_rate` / `app_icons` / `secret_attempts`；新增列：`query_token_hash` / `query_password_hash` / `query_password_salt` / `reserved_*` / `claim_token` / `claimed_at` / `exception_reason` / `refund_*` / `upstream_lock` / `upstream_lock_expires_at` / `app_icon_key` / `schema_migrations` / `txid_claims.claim_token` / `txid_claims.source` / `txid_claims.order_lease_token`）可保留，旧版代码不读取它们，不影响旧版运行。回滚前备份 D1。
 
 **v8 唯一索引 caveat**：回滚后新库的 v8 唯一索引（`idx_orders_amount_claim` / `idx_orders_contact_pending`）仍会约束旧版下单——旧版无 INSERT 重试逻辑，高并发下金额/联系人冲突时旧版下单会直接报 500。回滚前确认无高并发下单场景，或先评估 DROP 索引（须先人工评估重复数据，见 `migrations/README.md`）。
 

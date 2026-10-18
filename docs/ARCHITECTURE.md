@@ -7,7 +7,7 @@
 | 组件 | 说明 |
 |---|---|
 | Worker | `src/worker.js`，全部 API 与路由；`fetch` / `scheduled` 两个入口 |
-| D1 | `aisou-lite-db`（生产）/ `zhixuan-shop-staging-db`（staging），`schema.sql` 为新库基表，旧库由 Worker 启动时按版本迁移（v1–v15） |
+| D1 | `aisou-lite-db`（生产）/ `zhixuan-shop-staging-db`（staging），`schema.sql` 为新库基表，旧库由 Worker 启动时按版本迁移（v1–v17） |
 | Cron | `*/1 * * * *` 轮询付款 + 上游激活轮询；`0 2 * * *` 7 天清理 + 上游轮询 |
 | 上游 | ProdSeller（`prodseller.com/v1`），仅 `source=prodseller` 商品走它；`prodseller_enabled` 门禁默认关闭 |
 | 邮件 | 已移除（`sendEmail` 返回 `email_removed`）；交付内容只在站内查单页可见 |
@@ -43,13 +43,13 @@ pending_payment ──管理员取消──▶ cancelled（仅未付款且未认
 
 - 自营卡密：下单时立即预留（原子条件更新 `reserved_order_id IS NULL`），抢不到回滚删单；取消/超时释放；发货优先用本单预留卡。
 - 认领租约：`claim_token` + `claimed_at`，处理者崩溃后超租约可被接管；接管时识别上次副作用（上游单号/已标记卡密），不重复采购、不重复发卡。
-- TXID 认领：同一链上交易只能被一个订单认领（`txid_claims` 唯一，严格先到先得，永不抢占）。
+- TXID 认领：同一链上交易只能被一个订单认领（`txid_claims` 唯一，严格先到先得，永不抢占）。v17 令牌化 + 租约-first：`fulfillAfterPayment` 先原子获取订单租约再碰认领表；每次新认领生成 `randomHex(32)` 的 `claim_token`；回滚为单条条件删除，同时匹配 `(tx_hash, order_id, claim_token)` + 当前订单租约仍属本请求；同订单接管时新租约持有者收养认领（重绑 `order_lease_token`），`source` 首次写入获胜不改写；失败路径不删认领行，保留供同订单安全重试。人工与链上共享同一全局认领表，`source` 区分 `'chain_verified'` / `'manual_confirmed'`；`manual_confirmed` 仅表示人工确认，不构成链上证据。
 - 付款账本：`payments` 表，同一事件（`chain, tx_hash, event_key`）唯一，重复轮询/并发提交不重复入账。
 - 上游幂等：`Idempotency-Key = order_no`，重试不重复采购；`upstream_orders` 按 `order_id` 唯一。
 
 ## 支付（摘要，详见 docs/PAYMENT_FLOW.md）
 
-仅 OKX|USDT0·X Layer 与 Binance|USDT·BEP20。TRC20 / ERC20 / 站内转账代码已删除。收款确认三条路径（轮询 / TXID 核验 / 管理员确认）复用同一 `fulfillAfterPayment`。
+仅 OKX|USDT0·X Layer 与 Binance|USDT·BEP20。TRC20 / ERC20 / 站内转账代码已删除。收款确认三条路径（轮询 / TXID 核验 / 管理员确认）复用同一 `fulfillAfterPayment`；人工确认与链上确认共享同一 `txid_claims` 全局认领（`source` 区分），人工账本写入失败时 fail-closed（见 `docs/PAYMENT_FLOW.md`“TXID 认领安全（v17）”）。
 
 ## 查单与凭证（摘要，详见 docs/SECURITY.md）
 

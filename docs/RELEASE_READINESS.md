@@ -1,6 +1,6 @@
 > ⚠️ §一–§八为第四轮历史快照，仅文末附录为最新状态。
 >
-> 文末附录（本次整改，2026-10-18）为最新状态；旧章节中与附录冲突的表述（邮箱查单、审计失败、`/pay` 验证码、商品卡字号）以附录及 `docs/SECURITY.md` / `docs/ARCHITECTURE.md` 为准。历史章节不改写（保留当时快照）。
+> 文末附录（本次整改，2026-10-18）为最新状态；**其中最后一份附录（v17，分支 `fix/txid-race-safety-2026-10-18`）为当前最新**；旧章节中与附录冲突的表述（邮箱查单、审计失败、`/pay` 验证码、商品卡字号、人工确认 TXID 认领）以最新附录及 `docs/SECURITY.md` / `docs/ARCHITECTURE.md` / `docs/PAYMENT_FLOW.md` 为准。历史章节不改写（保留当时快照）。
 >
 > # 智选商城 — 上线就绪报告（Release Readiness，第四轮）
 
@@ -759,3 +759,65 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 | 真实 Staging | 已部署的 Staging Worker + 独立 Staging D1 + 真实浏览器/API 验收，仍不发起真实链上转账 | ✅ CI run [39101195597](https://github.com/Newbee06/zhixuan-shop/actions/runs/39101195597) 五 Job 全绿（回归/浏览器/浏览器 review/D1 迁移/静态）。Staging 已部署：Worker `zhixuan-shop-staging`（https://zhixuan-shop-staging.f-00a.workers.dev），Version ID `96c09853-7705-4bae-8a81-ea4f66196dcd`，D1 `zhixuan-shop-staging-db`（`4fb3878b-02bf-4cac-b833-716c050242e6`），迁移 v16，6 个 v16 索引齐全，`GET /api/orders` 410 新文案已验证，首页 200，`/api/config` 正确（站名智选、dummy 收款地址）。⚠️ **Staging 浏览器验收待完成**（由父级用 live browser + 已保存管理员会话做，本 PR 不含该结果，不得声称已通过）。最新 SHA `08db7a8`，PR #3 见上。 |
 
 **P1-11 真实上游沙箱仍 BLOCKED；双链真实收款 NOT VERIFIED（未真实转账）。**
+
+---
+
+## 附录：TXID 认领令牌化 + 租约-first + 人工/链上共享全局认领（v17，2026-10-18，分支 `fix/txid-race-safety-2026-10-18`）
+
+本附录为**当前最新状态**（以本文档顶部注记为准）。文档结论以代码为准：编写前已实际阅读 `src/worker.js`（`fulfillAfterPayment` / `claimTxid` / `releaseTxidClaim` / `claimOrderForPayment` / `confirm-payment` / MIGRATIONS v17）与 `migrations/0017_txid_claim_token_source_lease.sql` 核对。
+
+分支状态：`fix/txid-race-safety-2026-10-18`，HEAD `1127fc4`（P1-1/P1-2 已实现，**未推送**）。**Staging 尚未部署本分支**，部署须逐项授权。生产下一步仍需逐项授权。
+
+### 根因（P1-1，旧顺序竞态）
+
+旧顺序是先 TXID 认领、后抢订单租约：请求 A 插认领成功；请求 B 看到同订单已有认领，B 抢到订单租约开始履约；A 订单认领失败触发回滚，删掉 B 依赖的认领；第三订单可重认领同一 TXID。旧口径中“同秒删除后重建仅为极低概率边际风险”一类的说法未经证明，**本文档不采用该结论**（全文已检索，不存在该表述；如在别处流传，以本附录为准）。
+
+### 改动（代码事实）
+
+- **v17 迁移**：`txid_claims` 加 3 列，均为 `ADD COLUMN` 幂等：
+- `claim_token`：每次新认领的密码学安全随机令牌 `randomHex(32)`，回滚唯一凭证；
+- `source`：`'chain_verified'` | `'manual_confirmed'`，首次写入获胜；
+- `order_lease_token`：认领时持有者的订单租约令牌。
+- 预置版本保持 10（`schema.sql` 只预置 v1–v10）；`schema.sql` 新库已含三列，旧库真正加列、新库为 no-op。现有认领行保留，旧行 `source` 默认 `'chain_verified'`（v17 前只有链上路径写认领表）。部署后验证：`GET /api/admin/migrate` → `current_version = 17`；`GET /api/admin/schema-check` → `ok=true`。**v16（6 个查询索引）已应用，不是“尚未应用”**。
+- **P1-1 租约-first**：`fulfillAfterPayment` 先原子获取订单 `claim_token` 租约（`claimOrderForPayment`，单条条件 UPDATE，租约 5 分钟），再碰 `txid_claims`；无租约不触碰认领。认领失败只释放本请求租约（清 `paid_at`），不触碰认领行。
+- **P1-1 令牌回滚**：`releaseTxidClaim` 为单条条件删除，同时匹配 `(tx_hash, order_id, claim_token)` + `EXISTS(orders.claim_token = 本请求租约)`。租约被接管后旧请求的 `EXISTS` 不成立，删不掉新持有者的认领。`claim_token` 为空的遗留行永不被令牌回滚删除。失败路径不再删除认领行（保留供同订单安全重试）。同订单接管时新租约持有者收养认领（重绑 `order_lease_token`），`source` 不被改写。新 TXID 取代旧 TXID 时，仅当本请求持有当前订单租约且旧认领属于本订单，才可释放旧 TXID 的认领（不留孤儿认领）。
+- **P1-2 共享全局认领**：人工与链上共享同一 `txid_claims`（`tx_hash PRIMARY KEY`），全局原子消费由主键唯一约束决定胜负；不再另建防重表，不再靠先 SELECT 后 INSERT。人工确认（`confirm-payment`，须填人工原因 + 显式 `manual_confirm=true`）写 `source='manual_confirmed'` 认领 + `payments manual_confirmed` 账本行（`event_key=manual:<订单ID>`）+ 审计 + 订单 `` 备注标记。`manual_confirmed` 仅表示管理员系统外核对后人工确认，**不构成链上证据**，不伪造回执/区块高度/确认数。仅当订单带有 64 位十六进制 TXID 时人工确认才写认领行/账本行；无 TXID 的人工确认不伪造认领。v17 前遗留的人工 `payments manual_confirmed` 行仍做兼容检查（归属他单则拒绝；归属本单则新建认领行收敛到全局认领表，之后以认领表为准）。
+- **P1-2 账本 fail-closed**：人工账本写入失败时绝不静默把订单推为已付款/已交付；仅当重读确认已有同订单 + 同 TXID + 同状态 `manual_confirmed` 行时才可按幂等重试继续，否则释放本请求租约、认领保留、返回失败，同订单可安全重试，不向他单开放 TXID。审计失败语义仍为 P1-7（`ok:true` + `audit_failed:true`，不得重复业务副作用）。
+
+### 旧结论取代对照（历史文档不改写，以本附录为准）
+
+| 旧表述（出处） | 新口径（代码事实） |
+|---|---|
+| `docs/PAYMENT_FLOW.md` 旧句“管理员确认……不认领 TXID” | 已修正：人工确认写共享全局认领（`source='manual_confirmed'`）+ 账本 + 审计 + 备注；`manual_confirmed` 不构成链上证据 |
+| `docs/PR_REVIEW.md` A-01（历史记录）“管理员人工确认不再认领未核验 TXID” | 历史快照，不改写。当前行为：未链上核验的 TXID 在链上通道仍拒绝发货；人工通道走独立 `manualConfirm` 分支写 `manual_confirmed` 认领，不伪装成链上已付 |
+| `docs/CODE_REVIEW_2026-10-17.md` P1-2（历史记录）“管理员确认收款不认领 TXID → 同一笔链上付款可重复用于第二笔订单” | 历史快照，不改写。该漏洞已由 P1-2 共享全局认领修复：人工确认的 TXID 同样占用全局认领，他单无法重用 |
+| 流传过的“同秒删除后重建仅为极低概率边际风险” | 未经证明，不采用。本附录以租约-first + 令牌回滚消除该交错，而非以概率为其辩护 |
+
+`docs/PR_REVIEW.md`、`docs/CODE_REVIEW_2026-10-17.md` 为历史记录，本次未改写；其中与本附录冲突的旧表述以本附录为准。
+
+### 确定性测试证据（本地真实执行，非真实链上）
+
+- `tests/txid-race-deterministic-test.mjs`：**71 passed**。Barrier/Deferred 确定性交错（`env.__testHooks` + DB 失败注入），不依赖调度/时间窗口。覆盖：A 同订单认领回滚竞态（人工）、B 租约接管 + 过期回滚（链上 `/pay`）、C 双管理员并发人工确认（Barrier 汇合到原子 INSERT 点，恰好一个获胜、一认领 + 一账本、败者保持待付款 + 释放租约、重试无新增副作用）、D 人工/链上双向竞态（伪造回执 / 错金额 / 确认数不足永不占用 TXID）、E 账本/失败恢复（认领表写失败不谎称“已用于其他订单”、无孤儿、租约释放、重试成功；账本写失败 fail-closed、认领保留、重试幂等；已写账本后可恢复履约、重复 `/pay`、人工重确认、跨订单重用；新 TXID 接管仅当前租约持有者可取代旧认领）。
+- 其余本地套件：`review-p1-backend` **139**、**`review-fixes` 272**；其余本地套件全绿；`d1-local` ALL OK（`current_version=17`）。
+- 本地测试均为 Mock / 本地 D1 / 确定性交错，**不是真实链上支付验证，不是真实上游采购验证**。`prodseller_enabled` 门禁保持关闭。
+
+### 仍 BLOCKED / 未验证（未声称完成）
+
+- **真实 Turnstile Widget 未验证**：仅 Mock 验证逻辑，未做真实 Site Key + Secret Key 端到端验证。
+- **真实链上收款 NOT VERIFIED**：OKX|X Layer 与 Binance|BEP20 均无真实转账证据；真实链上小额验收、真实收款地址配置仍待执行。
+- **P1-11 真实上游幂等仍 BLOCKED**：`Idempotency-Key` 重放语义无真实服务商证据；绝不调用真实 ProdSeller 接口，未验证。
+- **浏览器 CI 套件本地运行有 pre-existing `#captchaCode` 超时**（基线复现，与本次改动无关，GitHub CI 为准），不得声称为本地通过。
+- 支付只保留 OKX|X Layer + Binance|BEP20；TRC20 / ERC20 / 站内转账代码已删，旧订单不自动认账。
+- 生产下一步（备份生产 D1 → 部署 → 绑 `zhixuanpro.com` → 小额实测）仍需逐项授权；本分支未推送，Staging 未部署本分支。
+
+### 同步修改内容（本文档任务）
+
+- `docs/RELEASE_READINESS.md`：本附录；顶部注记改为“最后一份附录（v17）为当前最新”。
+- `docs/PRODUCTION_CHECKLIST.md`：A 节补本分支本地证据 + Staging 未部署说明；新增 F 节（v17 部署前核验清单）。
+- `docs/RUNBOOK.md`：新增“TXID 认领与人工确认（v17）”节（防错误回滚机制、两种来源语义、账本失败恢复、v17 迁移信息）+ 常见问题 4 行 + 回滚新增列清单补 v17 三列。
+- `docs/PAYMENT_FLOW.md`：修正“人工确认不认领 TXID”旧句；新增“TXID 认领安全（v17）”节。
+- `docs/ARCHITECTURE.md`：D1 迁移 v1–v15 → v1–v17；TXID 认领条目补令牌化/租约-first/共享认领；支付摘要补人工共享认领 + fail-closed。
+- `docs/SECURITY.md`：支付安全摘要补 v17 认领令牌化/共享认领/账本 fail-closed。
+- `migrations/README.md`：v17 行已与实现一致（本次核对通过），补核对注记（schema-check 六列校验、预置版本保持 10 的原因）。
+- `README.md`：迁移节 v1–v15 → v1–v17、镜像 0001–0015 → 0001–0017，补 v16/v17 条目与 v17 三列回滚清单，补确定性测试文件条目，三路径句补人工共享认领口径。
+- 已核实无需改动：`/api/orders` 410 文案（已落地“旧接口停用，请用订单号或下单邮箱+验证码走当前查单流程”）、邮箱双查规则与隐私风险、邮箱 + 图形验证码 ≠ 所有权证明、自动采购门禁关闭、真实资金安全限制——此前附录已与代码一致，本次未改动。
