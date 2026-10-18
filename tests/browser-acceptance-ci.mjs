@@ -554,7 +554,8 @@ await page.waitForTimeout(800);
     delete document.documentElement.dataset.theme;
     return out;
   });
-  check('P2-12: 深色售罄按钮背景与文字', s.soldBg === 'rgba(255, 69, 58, 0.2)' && s.soldColor === 'rgb(255, 157, 153)', JSON.stringify(s));
+  // PR2 移植后：深色售罄统一为 PR2 配色（.28 / #ff9d97），取代 PR3 的 .20 / #ff9d99。
+  check('P2-12: 深色售罄按钮背景与文字', s.soldBg === 'rgba(255, 69, 58, 0.28)' && s.soldColor === 'rgb(255, 157, 151)', JSON.stringify(s));
   check('P2-12: Hero 布局与标题字号（1440）', s.h1 === '52px' && s.heroDisplay === 'flex', JSON.stringify(s));
 }
 // 390/360：Hero 标题、合集标题一行、浮动卡片
@@ -572,9 +573,11 @@ for (const w of [390, 360]) {
       chip: chip ? getComputedStyle(chip).getPropertyValue('font-size') : 'none',
     };
   });
-  check(`P2-12: Hero 标题字号 ${w}`, h.h1 === '36px', JSON.stringify(h));
+  // PR2 移植后：移动端 Hero 标题 10px（与缩放卡内“智选”渲染约 9.6px 统一，用户确认），取代移植前 36px。
+  check(`P2-12: Hero 标题字号 ${w}`, h.h1 === '10px', JSON.stringify(h));
   check(`P2-12: 合集标题 ${w} 一行`, h.titleOneLine === true, JSON.stringify(h));
-  check(`P2-12: 浮动卡片字号 ${w}`, h.chip === '12px', JSON.stringify(h));
+  // PR2 移植后：芯片不再手调移动端字号，取桌面基础 13px（视觉上由 scale(0.37) 缩小），取代移植前移动端覆盖 12px。
+  check(`P2-12: 浮动卡片字号 ${w}`, h.chip === '13px', JSON.stringify(h));
 }
 // 付款块倒计时每秒更新与到期变红
 {
