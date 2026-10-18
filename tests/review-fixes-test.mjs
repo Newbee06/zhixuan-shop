@@ -223,7 +223,7 @@ check('init: change password', r.json && r.json.ok === true, JSON.stringify(r.js
   setGate(1);
 }
 
-// P1-2：管理员确认收款会认领链上 TXID（反转旧行为）。
+// P1-2（2026-10-18 整改）：人工确认通道绝不写 txid_claims；改写 payments manual_confirmed 行 + 审计 manual_confirm_payment + admin_note【人工确认收款】前缀。
 {
   const tx = 'a'.repeat(64);
   r = await call('POST', '/api/admin/products', { title: '手动商品-P1-2', category: 'recharge', stock_type: 'manual', sell_price: 4, source: 'self' }, cookie);
@@ -232,7 +232,11 @@ check('init: change password', r.json && r.json.ok === true, JSON.stringify(r.js
   const o = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(tx, o.id);
   r = await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-2' }, cookie);
-  check('P1-2: admin confirm claims chain txid', r.json && r.json.ok === true && q('SELECT * FROM txid_claims WHERE tx_hash=?', tx) && q('SELECT * FROM txid_claims WHERE tx_hash=?', tx).order_id === o.id, JSON.stringify(r.json));
+  check('P1-2: admin manual confirm succeeds (manual channel)', r.json && r.json.ok === true, JSON.stringify(r.json));
+  check('P1-2: manual confirm NEVER writes txid_claims', !q('SELECT * FROM txid_claims WHERE tx_hash=?', tx));
+  check('P1-2: manual confirm writes manual_confirmed ledger row', (() => { const p = q("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", tx); return p && Number(p.order_id) === Number(o.id); })());
+  check('P1-2: manual confirm audit action = manual_confirm_payment', !!q("SELECT * FROM admin_audit WHERE order_id=? AND action='manual_confirm_payment'", o.id));
+  check('P1-2: manual confirm admin_note has 【人工确认收款】 prefix', (q('SELECT admin_note FROM orders WHERE id=?', o.id).admin_note || '').includes('【人工确认收款】'));
   // 同一 TXID 第二单确认 → 认领冲突，拒绝
   r = await orderCall({ product_id: pM.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const o2 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
@@ -557,7 +561,7 @@ for (const termStatus of ['cancelled', 'failed']) {
 {
   // 阻塞事件：订单有新鲜 claim_token，/pay 链上核验命中后履约失败（订单已被认领），扫描不得越过该事件块。
   const oBlock = insertOrder({ status: 'pending_payment', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x6666666666666666666666666666666666666666', actual_amount: 5.0037, claim_token: 'FRESH-BLOCK', claimed_at: "datetime('now')", contact: freshContact() });
-  evm.logs = [evmLogFor(oBlock, 'a1'.repeat(32), 9980)]; // TXID 须全新：P1-2 已认领 a*64，复用会变成终态拒绝而非阻塞
+  evm.logs = [evmLogFor(oBlock, 'a1'.repeat(32), 9980)]; // TXID 须全新：P1-2 已人工确认消耗 a*64（payments manual_confirmed），复用会变成终态拒绝而非阻塞
   evm.latest = 10000;
   const ctxB = makeCtx(); await worker.scheduled({ type: 'cron', cron: '*/1 * * * *' }, env, ctxB); await ctxB.drain();
   const curB = q("SELECT * FROM scan_cursors WHERE chain=?", 'BEP20|0x6666666666666666666666666666666666666666');
@@ -860,11 +864,11 @@ for (const termStatus of ['cancelled', 'failed']) {
   evm.receipt = null; evm.latest = 10000; evm.logs = [];
 }
 
-// P3-17：GET /api/orders?contact= 返回 410，文案为 查询密码（不是 查单凭证）。
+// P3-17（2026-10-18 整改）：GET /api/orders?contact= 返回 410，文案为“旧接口停用，请用订单号或下单邮箱+验证码走当前查单流程”（P1-6，不再称“邮箱查单已关闭”）。
 {
   r = await call('GET', '/api/orders?contact=x@test.example');
   check('P3-17: GET /api/orders?contact= -> 410', r.status === 410, JSON.stringify(r.json));
-  check('P3-17: 410 text says 查询密码, not 查单凭证', r.json && /查询密码/.test(r.json.error || '') && !/查单凭证/.test(r.json.error || ''), JSON.stringify(r.json));
+  check('P3-17: 410 text says 旧接口停用 + 订单号或下单邮箱+验证码', r.json && /旧接口停用/.test(r.json.error || '') && /订单号或下单邮箱/.test(r.json.error || '') && /验证码/.test(r.json.error || '') && !/查单凭证/.test(r.json.error || ''), JSON.stringify(r.json));
 }
 
 // P3-18：/lookup 错密码统一返回“查单凭证错误”（salted 订单与 legacy 订单相同）。
@@ -1095,9 +1099,10 @@ for (const termStatus of ['cancelled', 'failed']) {
   check('P3-20: audit failure reset side effect applied (hash set)', !!qA('SELECT query_password_hash FROM orders WHERE id=?', oReset.id).query_password_hash);
 }
 
-// P3-30：claimTxid 重读为空 → “认领失败，请重试”。
-// 模拟手段：BEFORE INSERT 触发器 RAISE(IGNORE) 让 INSERT 无声失败（changes=0，不抛错），
-// 随后重读无占用行 → 走“认领失败，请重试”分支（不得谎称“已用于其他订单”）。
+// P3-30（2026-10-18 整改重定向）：claimTxid INSERT 失败（模拟 D1 临时错误）时不得谎称“已用于其他订单”、不得留孤儿行；
+// 失败是临时的，移除障碍后轮询重试应能成功认领（轮询是恢复路径）。
+// 人工确认通道永不写 txid_claims，故改走仍用 claimTxid 的链上 /pay + 轮询路径。
+// /pay 设计：核验通过但履约失败时走 deferred（auto:false，轮询重试），不把临时失败谎报为“已用于其他订单”。
 {
   const { db: dbS, env: envS, worker: workerS } = makeEnv();
   const qS = (sql, ...p) => dbS.prepare(sql).get(...p);
@@ -1113,13 +1118,33 @@ for (const termStatus of ['cancelled', 'failed']) {
     let j = null; try { j = JSON.parse(txt); } catch {}
     return { status: res.status, json: j, txt, headers: res.headers };
   }
-  let rr = await callS('POST', '/api/admin/login', { password: 'admin' });
-  const ckS = rr.headers.get('set-cookie') || '';
-  await callS('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'admin123' }, ckS);
-  dbS.prepare("INSERT INTO orders (order_no, query_password, product_id, status, contact, tx_hash, pay_method, pay_chain) VALUES ('AISCLAIM30', '', 1, 'pending_payment', 'claim30@test.example', ?, 'Binance', 'BEP20')").run('e'.repeat(64));
+  function mkCaptchaS(code = 'AB12') {
+    const id = 'CAPS' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    dbS.prepare("INSERT INTO captcha_codes (id, code_hash, expires_at, attempts) VALUES (?, ?, datetime('now','+5 minutes'), 0)").run(id, sha256(code));
+    return id;
+  }
+  // /pay 走链上核验，需给隔离库配 mock RPC（否则默认真实 RPC 在 mock 下抛错，/pay 会走 deferred 而非认领分支）。
+  dbS.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('rpc_urls', ?)").run(JSON.stringify({ 'X Layer': ['https://mock-xlayer'], 'BEP20': ['https://mock-bsc'] }));
+  dbS.prepare("INSERT INTO orders (order_no, query_password, product_id, status, contact, tx_hash, pay_method, pay_chain, pay_address, actual_amount) VALUES ('AISCLAIM30', '', 1, 'pending_payment', 'claim30@test.example', '', 'Binance', 'BEP20', '0x2222222222222222222222222222222222222222', 9.0055)").run();
   const o = qS("SELECT * FROM orders WHERE order_no='AISCLAIM30'");
-  rr = await callS('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P3-30' }, ckS);
-  check('P3-30: claimTxid re-read empty -> 认领失败，请重试', rr.json && !rr.json.ok && /认领失败，请重试/.test(rr.json.error || ''), JSON.stringify(rr.json));
+  const tx30 = 'e'.repeat(64);
+  evm.receipt = evmReceiptFor(o, tx30, 100);
+  evm.latest = 115; // BEP20 需 15 确认
+  const cidS = mkCaptchaS('AB12');
+  const rr = await callS('POST', '/api/orders/' + o.order_no + '/pay', { txid: tx30, captcha_id: cidS, captcha_code: 'AB12' });
+  check('P3-30: claim failure does NOT falsely report 已用于其他订单', rr.json && !/已用于其他订单/.test(JSON.stringify(rr.json)), JSON.stringify(rr.json));
+  check('P3-30: no orphan txid_claims row after failed claim', !qS('SELECT * FROM txid_claims WHERE tx_hash=?', tx30));
+  check('P3-30: failed claim leaves order pending (retry possible)', qS('SELECT status FROM orders WHERE id=?', o.id).status === 'pending_payment');
+  // 移除障碍 → 轮询重试应成功认领（认领行归属本单），证明临时失败未污染状态。
+  dbS.exec('DROP TRIGGER trg_ignore_claim');
+  evm.receipt = null;
+  evm.logs = [evmLogFor(o, tx30, 100)];
+  evm.latest = 115;
+  const ctxS = makeCtx();
+  await workerS.scheduled({ type: 'cron', cron: '*/1 * * * *' }, envS, ctxS);
+  await ctxS.drain();
+  check('P3-30: retry after transient failure claims txid for this order', (() => { const t = qS('SELECT * FROM txid_claims WHERE tx_hash=?', tx30); return t && Number(t.order_id) === Number(o.id); })());
+  evm.receipt = null; evm.latest = 10000; evm.logs = [];
 }
 
 // P2-7：全局锁触发时计数清零（30 次失败来自 6 个 IP，各 5 次；第 7 个 IP 正确密码也被 429 挡）。
@@ -1187,8 +1212,8 @@ check('P1-18: RUNBOOK rollback mentions v8 unique-index caveat + new-table list'
 // P2-19：RELEASE_READINESS 顶部历史快照横幅。
 check('P2-19: RELEASE_READINESS starts with history-snapshot banner', releaseReadiness.includes('§一–§八为第四轮历史快照'));
 
-// P2-20：d1-local-test.sh 口径（v15、真实下单 + /secret、精确 COUNT、查询密码术语）。
-check('P2-20: d1-local-test.sh comments say v15', d1LocalSh.includes('版本=15') && d1LocalSh.includes('迁移到 v15'));
+// P2-20：d1-local-test.sh 口径（v16、真实下单 + /secret、精确 COUNT、查询密码术语）。
+check('P2-20: d1-local-test.sh comments say v16', d1LocalSh.includes('版本=16') && d1LocalSh.includes('迁移到 v16'));
 check('P2-20: d1-local-test.sh has real fresh-DB order + /secret assertions', d1LocalSh.includes('/api/orders/$FRESH_NO/secret') && d1LocalSh.includes('FRESH-DB SECRET OK'));
 check('P2-20: d1-local-test.sh dedup uses precise COUNT parse, no grep -o \'1\'', !d1LocalSh.includes("grep -o '1'") && d1LocalSh.includes('DEDUP_COUNT'));
 check('P2-20: d1-local-test.sh uses 查询密码 terminology, no 查单凭证', d1LocalSh.includes('查询密码') && !d1LocalSh.includes('查单凭证'));
@@ -1243,15 +1268,23 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   check('payui: address head/tail highlight', frontendHtml.includes('payAddrHighlighted') && frontendHtml.includes('pay-addr-hl'));
   check('payui: countdown clock format + expired state', frontendHtml.includes("mm + ':' + ss") && frontendHtml.includes('已过期，请重新下单'));
   // fmtCountdown 功能测试：从前端源码提取函数真跑（时钟格式 MM:SS / H:MM:SS，过期态）。
+  // P3-19（harness 修复）：fmtCountdown 依赖同文件 parseExpiry，须一并提取并注入，否则 eval 报 parseExpiry is not defined。
   {
+    const feStartP = frontendHtml.indexOf('function parseExpiry(');
+    let feIP = frontendHtml.indexOf('{', feStartP), feDepthP = 0, feJP = feIP;
+    for (; feJP < frontendHtml.length; feJP++) { if (frontendHtml[feJP] === '{') feDepthP++; else if (frontendHtml[feJP] === '}') { feDepthP--; if (feDepthP === 0) break; } }
+    const parseExpiryFn = new Function('return (' + frontendHtml.slice(feStartP, feJP + 1) + ')')();
     const feStart = frontendHtml.indexOf('function fmtCountdown(');
     let feI = frontendHtml.indexOf('{', feStart), feDepth = 0, feJ = feI;
     for (; feJ < frontendHtml.length; feJ++) { if (frontendHtml[feJ] === '{') feDepth++; else if (frontendHtml[feJ] === '}') { feDepth--; if (feDepth === 0) break; } }
-    const fmtCountdownFn = new Function('return (' + frontendHtml.slice(feStart, feJ + 1) + ')')();
+    const fmtCountdownFn = new Function('parseExpiry', 'return (' + frontendHtml.slice(feStart, feJ + 1) + ')')(parseExpiryFn);
     const isoPlus = (ms) => new Date(Date.now() + ms).toISOString().replace('T', ' ').slice(0, 19);
     check('payui: fmtCountdown 20min -> MM:SS', /^\d{2}:\d{2}$/.test(fmtCountdownFn(isoPlus(20 * 60 * 1000))), fmtCountdownFn(isoPlus(20 * 60 * 1000)));
     check('payui: fmtCountdown 70min -> H:MM:SS', /^\d+:\d{2}:\d{2}$/.test(fmtCountdownFn(isoPlus(70 * 60 * 1000))), fmtCountdownFn(isoPlus(70 * 60 * 1000)));
     check('payui: fmtCountdown expired -> 已过期', fmtCountdownFn(isoPlus(-60 * 1000)) === '已过期，请重新下单');
+    check('payui: fmtCountdown Z-suffixed ISO -> MM:SS', /^\d{2}:\d{2}$/.test(fmtCountdownFn(new Date(Date.now() + 20 * 60 * 1000).toISOString())));
+    check('payui: fmtCountdown +08:00 ISO -> MM:SS (P3-19 no double Z)', /^\d{2}:\d{2}$/.test(fmtCountdownFn(new Date(Date.now() + 20 * 60 * 1000 + 8 * 3600 * 1000).toISOString().replace('Z', '+08:00'))));
+    check('payui: fmtCountdown invalid -> 时间格式错误', fmtCountdownFn('not-a-date') === '时间格式错误');
     // fmtCountdownLine：正常带“剩余”前缀，过期不带（避免“剩余已过期”）。
     const feStart2 = frontendHtml.indexOf('function fmtCountdownLine(');
     let feI2 = frontendHtml.indexOf('{', feStart2), feDepth2 = 0, feJ2 = feI2;

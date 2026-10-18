@@ -266,7 +266,7 @@ function insertHistBEP20Order(orderNo, actualAmount, contact, cardCode) {
 {
   r = await call('GET', '/api/admin/schema-check', null, cookie);
   check('7. schema-check ok', r.json && r.json.ok === true && r.json.precheck && r.json.precheck.ok === true, JSON.stringify(r.json));
-  check('7. schema-check version 15', r.json && r.json.precheck && r.json.precheck.current_version === 15, JSON.stringify(r.json));
+  check('7. schema-check version 16', r.json && r.json.precheck && r.json.precheck.current_version === 16, JSON.stringify(r.json));
   // 模拟缺表：删 payments 表后预检应报告问题（随后重建）
   db.exec('DROP TABLE payments');
   r = await call('GET', '/api/admin/schema-check', null, cookie);
@@ -303,7 +303,7 @@ function insertHistBEP20Order(orderNo, actualAmount, contact, cardCode) {
   // 密钥缺失 → fail-closed（绝不降级为无验证）
   const envNoSecret = { ...env, TURNSTILE_SECRET_KEY: '' };
   const ctx2 = makeCtx();
-  const reqNoSecret = new Request('http://test/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'ts3@test.example', delivery_email: 'ts3@test.example' }, contact: 'ts3@test.example', pay_method: 'Binance', pay_chain: 'BEP20', turnstile_token: 'any-token' }) });
+  const reqNoSecret = new Request('http://test/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'ts3@test.example', delivery_email: 'ts3@test.example' }, contact: 'ts3@test.example', pay_method: 'Binance', pay_chain: 'BEP20', query_password: 'rr-test-pw', turnstile_token: 'any-token' }) });
   const resNoSecret = await worker.fetch(reqNoSecret, envNoSecret, ctx2);
   await ctx2.drain();
   const txtNoSecret = await resNoSecret.text();
@@ -424,13 +424,15 @@ db.prepare('DELETE FROM order_rate').run();
     let j = null; try { j = JSON.parse(txt); } catch {}
     return { status: res.status, json: j, txt };
   }
-  // 触发迁移（首次请求自动跑 v9 + v10 + v11 + v12 + v13 + v14）
+  // 触发迁移（首次请求自动跑 v9 + v10 + v11 + v12 + v13 + v14 + v15 + v16）
   const migV9 = await callV9('GET', '/api/config');
-  check('15. v9/v10/v11/v12/v13/v14/v15 migration applied (config ok)', migV9.json && migV9.json.ok === true, migV9.txt.slice(0, 200));
+  check('15. v9/v10/v11/v12/v13/v14/v15/v16 migration applied (config ok)', migV9.json && migV9.json.ok === true, migV9.txt.slice(0, 200));
   const verV9 = dbV9.prepare('SELECT MAX(version) AS v FROM schema_migrations').get();
-  check('15. v9+v10+v11+v12+v13+v14+v15 version marked', verV9 && verV9.v === 15, JSON.stringify(verV9));
+  check('15. v9+v10+v11+v12+v13+v14+v15+v16 version marked', verV9 && verV9.v === 16, JSON.stringify(verV9));
   const idxV9 = dbV9.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_orders_amount_claim'").get();
   check('15. v9 index excludes BinanceUID', idxV9 && /pay_method != 'BinanceUID'/.test(idxV9.sql || ''), (idxV9 && idxV9.sql) || '');
+  const idxV16 = dbV9.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_orders_no'").get();
+  check('15. v16 query indexes applied (idx_orders_no exists)', !!idxV16, (idxV16 && idxV16.sql) || 'missing');
   // 第二笔同金额 BinanceUID 订单（不同联系方式）：v8 旧索引下会 500，v9 下应成功。
   // 白名单禁止新 BinanceUID 订单走 API，故直接 INSERT 测索引本身（索引不区分下单途径）。
   let ordV9Inserted = false;
@@ -524,7 +526,7 @@ db.prepare('DELETE FROM order_rate').run();
   check('16i. activation product without activation_email rejected', r.json && !r.json.ok && /activation_email/.test(r.json.error || ''), JSON.stringify(r.json).slice(0, 300));
   r = await orderAct({ contact_email: 'r7-act2@test.example', delivery_email: 'r7-act2@test.example', activation_email: 'act-a@test.example', activation_email_confirm: 'act-b@test.example' }, 'r7-act2@test.example');
   check('16i. activation email mismatch rejected', r.json && !r.json.ok && /不一致/.test(r.json.error || ''), JSON.stringify(r.json).slice(0, 300));
-  r = await orderAct({ contact_email: 'r7-act3@test.example', delivery_email: 'r7-act3@test.example', activation_email: 'act-c@test.example', activation_email_confirm: 'act-c@test.example' }, 'r7-act3@test.example');
+  r = await call('POST', '/api/orders', { product_id: actProd.id, quantity: 1, customer_fields: { contact_email: 'r7-act3@test.example', delivery_email: 'r7-act3@test.example', activation_email: 'act-c@test.example', activation_email_confirm: 'act-c@test.example' }, contact: 'r7-act3@test.example', pay_method: 'Binance', pay_chain: 'BEP20', query_password: 'rr-test-pw', captcha_id: await newCaptcha(), captcha_code: 'AB12', activation_confirm: true });
   check('16i. activation product with valid activation_email succeeds', r.json && r.json.ok === true, JSON.stringify(r.json).slice(0, 300));
   if (r.json && r.json.ok) {
     const { cf } = persisted(r.json.order.order_no);

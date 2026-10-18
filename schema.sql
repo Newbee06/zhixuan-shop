@@ -46,8 +46,8 @@ CREATE TABLE IF NOT EXISTS cards (
   UNIQUE(product_id, code),
   FOREIGN KEY(product_id) REFERENCES products(id)
 );
-CREATE INDEX IF NOT EXISTS idx_cards_product ON cards(product_id);
-CREATE INDEX IF NOT EXISTS idx_cards_used ON cards(product_id, is_used, is_disabled);
+CREATE INDEX IF NOT EXISTS idx_cards_product ON cards(product_id); -- v16（P2-4）：旧库经迁移补建，新库本文件已含
+CREATE INDEX IF NOT EXISTS idx_cards_used ON cards(product_id, is_used, is_disabled); -- v16（P2-4）
 CREATE INDEX IF NOT EXISTS idx_cards_reserved ON cards(reserved_order_id);
 CREATE INDEX IF NOT EXISTS idx_cards_avail ON cards(product_id, is_used, is_disabled, reserved_order_id);
 
@@ -99,9 +99,9 @@ CREATE TABLE IF NOT EXISTS orders (
   fulfilled_at TEXT,
   FOREIGN KEY(product_id) REFERENCES products(id)
 );
-CREATE INDEX IF NOT EXISTS idx_orders_no ON orders(order_no);
-CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
-CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
+CREATE INDEX IF NOT EXISTS idx_orders_no ON orders(order_no); -- v16（P2-4）：旧库经迁移补建，新库本文件已含
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status); -- v16（P2-4）
+CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at); -- v16（P2-4）
 CREATE INDEX IF NOT EXISTS idx_orders_actual ON orders(pay_address, actual_amount, status);
 CREATE INDEX IF NOT EXISTS idx_orders_txhash ON orders(tx_hash);
 CREATE INDEX IF NOT EXISTS idx_orders_expires ON orders(status, expires_at);
@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   expires_at TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at); -- v16（P2-4）：旧库经迁移补建，新库本文件已含
 
 -- 默认设置（占位值，部署后请在后台改为真实值）
 INSERT OR IGNORE INTO settings (key, value) VALUES
@@ -227,9 +227,10 @@ CREATE TABLE IF NOT EXISTS lookup_rate (
 );
 CREATE INDEX IF NOT EXISTS idx_lookup_rate_ip ON lookup_rate(ip, created_at);
 
--- 数据库迁移版本：schema.sql 只建结构（已含 v11–v15 的表/列），版本预置到 v10；
--- v11–v15 迁移在 Worker 首次请求时幂等运行（v11 种子 58 张图标、v12/v13 暗版刷新、v14/v15 列/表）。
--- 不要把预置版本改到 15：否则 v11 迁移被跳过，新库 app_icons 为空表，图标选择器无数据。
+-- 数据库迁移版本：schema.sql 只建结构（已含 v11–v16 的表/列/索引），版本预置到 v10；
+-- v11–v16 迁移在 Worker 首次请求时幂等运行（v11 种子 58 张图标、v12/v13 暗版刷新、v14/v15 列/表、v16 补 6 索引）。
+-- 不要把预置版本改到 16：否则 v11 迁移被跳过，新库 app_icons 为空表，图标选择器无数据。
+-- 新库用本文件建库后 6 个 v16 索引已存在，v16 执行为 no-op；旧库升级时 v16 真正建索引。
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))

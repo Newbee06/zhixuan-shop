@@ -1,17 +1,70 @@
 #!/bin/bash
 # D1 本地环境迁移验证（仅 --local，绝不碰 --remote 生产库）
 # 覆盖：
-#  1. 旧库（去掉 v6/v7 部分，无 schema_migrations）→ Worker 首次请求自动迁移 → 版本=15、旧数据保留
+#  1. 旧库（去掉 v6/v7 部分，无 schema_migrations）→ Worker 首次请求自动迁移 → 版本=16、旧数据保留
 #  2. 旧库重复 upstream_orders 去重（保留每个 order_id 的最新行）+ 唯一索引创建
-#  3. 迁移幂等：重复调用 POST /api/admin/migrate，版本仍为 15，不报错、不丢数据
-#  4. 迁移失败恢复：上游订单表结构损坏 → 迁移失败（500、不标版本）→ 修复后重试 → 成功到 v7
+#  3. 迁移幂等：重复调用 POST /api/admin/migrate，版本仍为 16，不报错、不丢数据
+#  4. 迁移失败恢复：上游订单表结构损坏 → 迁移失败（500、不标版本）→ 修复后重试 → 成功到 v16
 #  5. 新库（当前 schema.sql）→ 无需迁移、API 正常
-#  6. 真正空库（不导入任何 schema）→ Worker 首次请求自动建基表 + 迁移到 v15 + schema-check ok
+#  6. 真正空库（不导入任何 schema）→ Worker 首次请求自动建基表 + 迁移到 v16 + schema-check ok
+#  7. v16 索引：旧库/空库迁移后 6 个索引（idx_cards_product、idx_cards_used、idx_orders_no、idx_orders_status、idx_orders_created、idx_sessions_expires）必须存在；新库 schema.sql 自带 6 个索引，与迁移后结构一致
 # 全部使用虚构数据，不读取、不复制生产数据。
 set -e
 cd "$(dirname "$0")/.."
 # 优先用仓库锁定的本地 wrangler（package.json + package-lock.json），否则回退 npx（CI 仍需显式版本时见工作流）。
 if [ -x "node_modules/.bin/wrangler" ]; then WR="node_modules/.bin/wrangler"; else WR="npx --yes wrangler@4.151.0"; fi
+
+# P3-9：精确解析 wrangler d1 execute --local 的 JSON 输出（不截第一个数字、不拼子串匹配）。
+# 用法：VAL=$(d1_json_value "SELECT COUNT(*) AS c FROM ..." "c")
+# 输出：指定字段的实际值；空结果输出 EMPTY；SQL/命令失败或 JSON 解析失败时打印错误并返回非零
+# （set -e 下即失败退出，不静默放行、不把解析失败当 0/通过）。
+d1_json_value() {
+  local sql="$1" field="$2" raw
+  raw=$($WR d1 execute aisou-lite-db --local --command="$sql" 2>&1) || { echo "FAIL: d1 execute failed: $sql" >&2; echo "$raw" >&2; return 1; }
+  FIELD="$field" RAW="$raw" python3 -c '
+import json, os, sys
+t = os.environ["RAW"]
+try:
+    d = json.loads(t[t.index("\n["):])
+except Exception:
+    try:
+        d = json.loads(t)
+    except Exception:
+        print("FAIL: D1 JSON parse failed", file=sys.stderr); print(t[:500], file=sys.stderr); sys.exit(2)
+rows = (d[0].get("results") or []) if isinstance(d, list) and d else []
+if not rows:
+    print("EMPTY"); sys.exit(0)
+print(rows[0].get(os.environ["FIELD"], "EMPTY"))
+'
+}
+
+# 精确解析 /api/admin/migrate 响应中的 current_version（不用 grep 子串匹配）。
+# 用法：check_migrate_version "$响应体" 16 "上下文"；非 JSON 或版本不符即失败退出。
+check_migrate_version() {
+  local body="$1" want="$2" ctx="$3"
+  echo "$body" | WANT="$want" CTX="$ctx" python3 -c '
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+except Exception as e:
+    print("FAIL: [%s] migrate response is not JSON: %s" % (os.environ["CTX"], e), file=sys.stderr); sys.exit(2)
+v = d.get("current_version")
+if v != int(os.environ["WANT"]):
+    print("FAIL: [%s] migrate current_version != %s (got %r, body=%s)" % (os.environ["CTX"], os.environ["WANT"], v, json.dumps(d)[:300]), file=sys.stderr); sys.exit(1)
+print("MIGRATE VERSION OK [%s]: current_version=%s" % (os.environ["CTX"], v))
+'
+}
+
+# 断言 6 个 v16 索引各恰好存在 1 个（验实际行数，不用 grep 子串）。
+# 用法：check_v16_indexes "old-db"；任一索引缺失/重复即失败退出。
+check_v16_indexes() {
+  local ctx="$1" idx c
+  for idx in idx_cards_product idx_cards_used idx_orders_no idx_orders_status idx_orders_created idx_sessions_expires; do
+    c=$(d1_json_value "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='index' AND name='$idx';" "c")
+    [ "$c" = "1" ] || { echo "FAIL: [$ctx] v16 index $idx count != 1 (got '$c')"; exit 1; }
+  done
+  echo "V16 INDEXES OK [$ctx]: 6/6"
+}
 PORT=8791
 BASE="http://127.0.0.1:$PORT"
 TMPDIR_D1="${TMPDIR:-/tmp}"
@@ -34,6 +87,19 @@ for pat in [
 s = re.sub(r"-- TXID 原子认领[\s\S]*?CREATE INDEX IF NOT EXISTS idx_lookup_rate_ip ON lookup_rate\(ip, created_at\);\n", '', s)
 s = re.sub(r"-- 上游轮询租约[^\n]*\n  upstream_lock TEXT NOT NULL DEFAULT '',\n  upstream_lock_expires_at TEXT,\n", '', s)
 s = re.sub(r"CREATE UNIQUE INDEX IF NOT EXISTS idx_upstream_orders_order_unique ON upstream_orders\(order_id\);\n", '', s)
+# v16：旧库模拟须去掉 6 个 v16 索引（否则旧库已含索引，测不到 v16 真正建索引；新库 schema.sql 仍保留它们）。
+# 行尾可能带 "-- v16（P2-4）..." 注释，用 [^\n]* 一并去掉。
+for _idx_pat in [
+    r"CREATE INDEX IF NOT EXISTS idx_cards_product ON cards\(product_id\);[^\n]*\n",
+    r"CREATE INDEX IF NOT EXISTS idx_cards_used ON cards\(product_id, is_used, is_disabled\);[^\n]*\n",
+    r"CREATE INDEX IF NOT EXISTS idx_orders_no ON orders\(order_no\);[^\n]*\n",
+    r"CREATE INDEX IF NOT EXISTS idx_orders_status ON orders\(status\);[^\n]*\n",
+    r"CREATE INDEX IF NOT EXISTS idx_orders_created ON orders\(created_at\);[^\n]*\n",
+    r"CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions\(expires_at\);[^\n]*\n",
+]:
+    s = re.sub(_idx_pat, '', s)
+for _must_absent in ['idx_cards_product', 'idx_cards_used', 'idx_orders_no', 'idx_orders_status', 'idx_orders_created', 'idx_sessions_expires']:
+    assert _must_absent not in s, 'old schema still contains ' + _must_absent
 s = re.sub(r"-- 数据库迁移版本[\s\S]*?INSERT OR IGNORE INTO schema_migrations \(version\) VALUES \(1\), \(2\), \(3\), \(4\), \(5\), \(6\), \(7\), \(8\), \(9\), \(10\)(, \(11\))?;\n", '', s)
 s = re.sub(r"-- 第四轮（Release Readiness）[\s\S]*$", '', s)
 open('/tmp/d1-old-schema.sql', 'w', encoding='utf-8').write(s)
@@ -71,17 +137,15 @@ curl -s -b "$COOKIE_JAR_FILE" -X POST "$BASE/api/admin/change-password" -H 'cont
 echo "--- old-db /api/admin/migrate ---"
 MIG=$(curl -s -b "$COOKIE_JAR_FILE" "$BASE/api/admin/migrate")
 echo "$MIG"
-echo "$MIG" | grep -q '"current_version":15' || { echo "FAIL: old-db migrate version != 15"; exit 1; }
-echo "OLD-DB MIGRATION OK: version 15"
+check_migrate_version "$MIG" 16 "old-db migrate"
+echo "OLD-DB MIGRATION OK: version 16"
 # 旧数据保留（经 D1 直接查）
 $WR d1 execute aisou-lite-db --local --command="SELECT order_no, status FROM orders WHERE order_no='AISOLDD1001';" 2>&1 | grep -q "AISOLDD1001" || { echo "FAIL: old order lost"; exit 1; }
 $WR d1 execute aisou-lite-db --local --command="SELECT code FROM cards WHERE code='OLD-D1-CARD-1';" 2>&1 | grep -q "OLD-D1-CARD-1" || { echo "FAIL: old card lost"; exit 1; }
 echo "OLD-DB DATA PRESERVED"
-# 去重：同一 order_id 只剩 1 行，且保留最新行 PS-OLD-2
 # 去重：同一 order_id 只剩 1 行，且保留最新行 PS-OLD-2（精确解析 COUNT，不拼凑单字符；两步解析，避免嵌套引号）
-DEDUP_RAW=$($WR d1 execute aisou-lite-db --local --command="SELECT COUNT(*) AS c FROM upstream_orders WHERE order_id=(SELECT id FROM orders WHERE order_no='AISOLDD1001');" 2>&1)
-DEDUP_COUNT=$(printf '%s' "$DEDUP_RAW" | python3 -c 'import sys,json; t=sys.stdin.read(); d=json.loads(t[t.index("\n["):]); print(d[0]["results"][0]["c"])')
-[ "$DEDUP_COUNT" = "1" ] || { echo "FAIL: dedup count != 1 (got '$DEDUP_COUNT')"; echo "$DEDUP_RAW"; exit 1; }
+DEDUP_COUNT=$(d1_json_value "SELECT COUNT(*) AS c FROM upstream_orders WHERE order_id=(SELECT id FROM orders WHERE order_no='AISOLDD1001');" "c")
+[ "$DEDUP_COUNT" = "1" ] || { echo "FAIL: dedup count != 1 (got '$DEDUP_COUNT')"; exit 1; }
 UPSTREAM_KEPT=$($WR d1 execute aisou-lite-db --local --command="SELECT prodseller_order_id FROM upstream_orders WHERE order_id=(SELECT id FROM orders WHERE order_no='AISOLDD1001');" 2>&1)
 echo "$UPSTREAM_KEPT" | grep -q "PS-OLD-2" || { echo "FAIL: dedup did not keep latest row PS-OLD-2"; echo "$UPSTREAM_KEPT"; exit 1; }
 echo "$UPSTREAM_KEPT" | grep -q "PS-OLD-1" && { echo "FAIL: dedup left stale row PS-OLD-1"; exit 1; }
@@ -89,11 +153,13 @@ echo "DEDUP OK: kept latest PS-OLD-2 only"
 # 唯一索引存在
 $WR d1 execute aisou-lite-db --local --command="SELECT name FROM sqlite_master WHERE type='index' AND name='idx_upstream_orders_order_unique';" 2>&1 | grep -q "idx_upstream_orders_order_unique" || { echo "FAIL: unique index missing"; exit 1; }
 echo "UNIQUE INDEX OK: idx_upstream_orders_order_unique"
-# 幂等：重复迁移两次，版本仍 7，不报错
+# v16：旧库迁移后 6 个索引必须存在（旧库模拟已去掉它们）
+check_v16_indexes "old-db"
+# 幂等：重复迁移两次，版本仍 16，不报错
 for i in 1 2; do
   MIGX=$(curl -s -b "$COOKIE_JAR_FILE" -X POST "$BASE/api/admin/migrate" -H 'X-Admin-API: 1')
   echo "re-migrate $i: $MIGX"
-  echo "$MIGX" | grep -q '"current_version":15' || { echo "FAIL: re-migrate $i version != 15"; exit 1; }
+  check_migrate_version "$MIGX" 16 "re-migrate $i"
   echo "$MIGX" | grep -q '"ok":true' || { echo "FAIL: re-migrate $i not ok"; exit 1; }
 done
 echo "IDEMPOTENT MIGRATION OK"
@@ -121,10 +187,10 @@ done
 FAIL_BODY=$(curl -s "$BASE/api/config")
 echo "fail body: $(echo "$FAIL_BODY" | head -c 300)"
 echo "$FAIL_BODY" | grep -q '"ok":false' || { echo "FAIL: broken migration did not return ok:false"; exit 1; }
-# 版本未标为 15（经 D1 直接查：schema_migrations 无 15，或表不存在）
-VER7=$($WR d1 execute aisou-lite-db --local --command="SELECT COUNT(*) FROM schema_migrations WHERE version=15;" 2>&1 | grep -o '[0-9]' | head -1)
-if [ "$VER7" = "1" ]; then echo "FAIL: failed migration incorrectly marked version 15"; exit 1; fi
-echo "FAILURE NOT MARKED OK: version 15 not recorded after failed migration"
+# 版本未标为 16（经 D1 直接查：schema_migrations 无 16，或表不存在；精确解析 COUNT，不截第一个数字）
+VER16=$(d1_json_value "SELECT COUNT(*) AS c FROM schema_migrations WHERE version=16;" "c")
+if [ "$VER16" = "1" ]; then echo "FAIL: failed migration incorrectly marked version 16"; exit 1; fi
+echo "FAILURE NOT MARKED OK: version 16 not recorded after failed migration"
 # 修复：按正确结构重建 upstream_orders（含 id 列）。
 # 注意：v3（建表迁移）已标记为已应用，不会重跑，因此不能只 DROP 表——必须按正确结构重建，否则 v8 仍会因表不存在而失败。
 # 这是迁移机制的设计假设（已应用的迁移不重跑；表被误删需人工按正确结构重建），此处验证的是“失败不标版本 + 修复后重试成功”。
@@ -132,12 +198,12 @@ $WR d1 execute aisou-lite-db --local --command="DROP TABLE upstream_orders; CREA
 FIX_BODY=$(curl -s "$BASE/api/config")
 echo "fix body: $(echo "$FIX_BODY" | head -c 300)"
 echo "$FIX_BODY" | grep -q '"ok":true' || { echo "FAIL: migration did not recover after fix"; exit 1; }
-FIX_VER=$($WR d1 execute aisou-lite-db --local --command="SELECT MAX(version) FROM schema_migrations;" 2>&1 | grep -o "15" | head -1)
-[ "$FIX_VER" = "15" ] || { echo "FAIL: version != 15 after fix"; exit 1; }
-echo "FAILURE RECOVERY OK: fixed db migrated to v15"
+FIX_VER=$(d1_json_value "SELECT MAX(version) AS v FROM schema_migrations;" "v")
+[ "$FIX_VER" = "16" ] || { echo "FAIL: version != 16 after fix (got '$FIX_VER')"; exit 1; }
+echo "FAILURE RECOVERY OK: fixed db migrated to v16"
 kill $DEV_PID 2>/dev/null; trap - EXIT; wait $DEV_PID 2>/dev/null || true
 
-# --- 真正空库：不导入任何 schema，Worker 首次请求必须自动建基表 + 迁移到 v15 ---
+# --- 真正空库：不导入任何 schema，Worker 首次请求必须自动建基表 + 迁移到 v16 ---
 rm -rf .wrangler/state
 $WR dev --local --port $PORT > "$TMPDIR_D1/wrangler-dev-empty.log" 2>&1 &
 DEV_PID=$!
@@ -149,9 +215,11 @@ done
 EMPTY_CFG=$(curl -s "$BASE/api/config")
 echo "$EMPTY_CFG" | grep -q '"ok":true' || { echo "FAIL: empty db /api/config not ok (base tables missing?)"; echo "$EMPTY_CFG" | head -c 300; exit 1; }
 echo "EMPTY-DB CONFIG OK: first request migrated empty db"
-EMPTY_VER=$($WR d1 execute aisou-lite-db --local --command="SELECT MAX(version) FROM schema_migrations;" 2>&1 | grep -o "15" | head -1)
-[ "$EMPTY_VER" = "15" ] || { echo "FAIL: empty db version != 15 after migration"; exit 1; }
-echo "EMPTY-DB MIGRATION OK: version 15"
+EMPTY_VER=$(d1_json_value "SELECT MAX(version) AS v FROM schema_migrations;" "v")
+[ "$EMPTY_VER" = "16" ] || { echo "FAIL: empty db version != 16 after migration (got '$EMPTY_VER')"; exit 1; }
+echo "EMPTY-DB MIGRATION OK: version 16"
+# 空库迁移后 6 个 v16 索引必须存在
+check_v16_indexes "empty-db"
 # 空库预检：登录改密后 schema-check 必须 ok=true（无差异）
 rm -f "$COOKIE_JAR_FILE"
 curl -s -c "$COOKIE_JAR_FILE" -X POST "$BASE/api/admin/login" -H 'content-type: application/json' -d '{"password":"admin"}' > /dev/null
@@ -163,8 +231,8 @@ kill $DEV_PID 2>/dev/null; trap - EXIT; wait $DEV_PID 2>/dev/null || true
 
 # --- 新库：当前 schema.sql ---
 rm -rf .wrangler/state
-# schema.sql 自 v15 起不再建 schema_migrations 表（仅 INSERT 预置版本），与 Worker runMigrations 一致：先建表再执行 schema.sql。
-# 注意：schema.sql 缺 CREATE TABLE schema_migrations 是代码侧缺陷（已在最终汇报中精确报告），测试侧按运行时行为先建表，不改 schema.sql。
+# schema.sql 建 schema_migrations 表（IF NOT EXISTS）；此处先建表是幂等的安全措施，与 Worker runMigrations 一致。
+# （旧注释称 schema.sql 不建该表，与实际文件不符，已纠正；schema.sql 第 233 行起确有 CREATE TABLE schema_migrations。）
 $WR d1 execute aisou-lite-db --local --command="CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')));" > /dev/null 2>&1
 $WR d1 execute aisou-lite-db --local --file=schema.sql > "$TMPDIR_D1/d1-new-schema.log" 2>&1
 $WR dev --local --port $PORT > "$TMPDIR_D1/wrangler-dev2.log" 2>&1 &
@@ -182,6 +250,8 @@ MIG2=$(curl -s -b "$COOKIE_JAR_FILE" "$BASE/api/admin/migrate")
 echo "$MIG2"
 echo "$MIG2" | grep -q '"up_to_date":true' || { echo "FAIL: fresh db not up_to_date"; exit 1; }
 echo "FRESH-DB OK: up_to_date"
+# 新库 schema.sql 自带 6 个 v16 索引，与迁移后结构一致
+check_v16_indexes "fresh-db"
 # 新库下单 → 查询密码查单断言（真实下单 + /secret 验密；P2-20：此处此前只取了 product id 就结束，现补齐）
 # 下单需有效收款地址（种子为占位符会拒单），先经管理员接口配置。
 curl -s -b "$COOKIE_JAR_FILE" -X POST "$BASE/api/admin/settings" -H 'content-type: application/json' -H 'X-Admin-API: 1' -d '{"settings":{"usdt_addresses":"{\"OKX|X Layer\":\"0x1111111111111111111111111111111111111111\",\"Binance|BEP20\":\"0x2222222222222222222222222222222222222222\"}"}}' | grep -q '"ok":true' || { echo "FAIL: fresh-db set usdt_addresses"; exit 1; }
