@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [fix/review-findings-2026-10-18]
+    branches: [fix/review-findings-2026-10-18, fix/txid-race-safety-2026-10-18]
   workflow_dispatch:
 
 # 默认只读。除非有经证实的必要需求，不授予写权限。
@@ -150,6 +150,8 @@ jobs:
         run: node tests/review-fixes-test.mjs
       - name: Review P1 backend test (P1-1/P1-2/P1-3/P2-1/P2-2/P2-3/P2-7/P2-10/P3-1..P3-7 + extra boundaries)
         run: node tests/review-p1-backend-test.mjs
+      - name: TXID race deterministic test (P1-1 claim_token + lease-first, P1-2 global dedup, consumed-TXID protection)
+        run: node tests/txid-race-deterministic-test.mjs
       - name: Review config test (CI secret scan patterns, .gitignore, untracked secrets)
         run: node tests/review-config-test.mjs
       - name: Job summary
@@ -157,7 +159,7 @@ jobs:
         run: |
           {
             echo "## Business regression — ${{ job.status }}"
-            echo "- mock-test / stock-test / security-test / concurrency-test / release-readiness-test / payment-whitelist-test / app-icons-test / review-fixes-test / review-p1-backend-test / review-config-test: see logs for counts"
+            echo "- mock-test / stock-test / security-test / concurrency-test / release-readiness-test / payment-whitelist-test / app-icons-test / review-fixes-test / review-p1-backend-test / txid-race-deterministic-test / review-config-test: see logs for counts"
           } >> "$GITHUB_STEP_SUMMARY"
 
   migration:
@@ -202,7 +204,9 @@ jobs:
           set -e
           rm -rf .wrangler/state
           npx wrangler d1 execute aisou-lite-db --local --file=schema.sql
-          npx wrangler dev --local --port 8791 > /tmp/wrangler-dev-ci.log 2>&1 &
+          # B-P0：首登须建站令牌。wrangler dev 侧经 --var 注入，测试进程侧经下方 env 注入，两侧同值；
+          # 未配令牌时 Worker 登录 fail-closed 503，浏览器验收会失败。
+          npx wrangler dev --local --port 8791 --var ZHIXUAN_SETUP_TOKEN:test-setup-token > /tmp/wrangler-dev-ci.log 2>&1 &
           DEV_PID=$!
           trap "kill $DEV_PID 2>/dev/null; true" EXIT
           for i in $(seq 1 30); do
@@ -214,6 +218,7 @@ jobs:
           kill $DEV_PID 2>/dev/null; trap - EXIT; true
         env:
           BASE: http://127.0.0.1:8791
+          ZHIXUAN_SETUP_TOKEN: test-setup-token
       - name: Upload wrangler dev log on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -232,7 +237,8 @@ jobs:
 
   browser-review:
     name: Browser review-frontend (Playwright)
-    # 独立 Job（与 browser 隔离）：review-frontend-test 需要全新库（默认管理员密码 admin），
+    # 独立 Job（与 browser 隔离）：review-frontend-test 需要全新库，首登走建站令牌
+    # （ZHIXUAN_SETUP_TOKEN，见下方 wrangler dev --var 与 step env，两侧同值；B-P0 起不再接受默认密码）；
     # browser-acceptance-ci 会把管理员密码改成 browser-ci-setup-temp-123，两者不可共用同一库。
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -251,7 +257,9 @@ jobs:
           set -e
           rm -rf .wrangler/state
           npx wrangler d1 execute aisou-lite-db --local --file=schema.sql
-          npx wrangler dev --local --port 8791 > /tmp/wrangler-dev-review.log 2>&1 &
+          # B-P0：首登须建站令牌。wrangler dev 侧经 --var 注入，测试进程侧经下方 env 注入，两侧同值；
+          # 未配令牌时 Worker 登录 fail-closed 503，浏览器验收会失败。
+          npx wrangler dev --local --port 8791 --var ZHIXUAN_SETUP_TOKEN:test-setup-token > /tmp/wrangler-dev-review.log 2>&1 &
           DEV_PID=$!
           trap "kill $DEV_PID 2>/dev/null; true" EXIT
           for i in $(seq 1 30); do
@@ -263,6 +271,7 @@ jobs:
           kill $DEV_PID 2>/dev/null; trap - EXIT; true
         env:
           BASE: http://127.0.0.1:8791
+          ZHIXUAN_SETUP_TOKEN: test-setup-token
       - name: Upload wrangler dev log on failure
         if: failure()
         uses: actions/upload-artifact@v4
