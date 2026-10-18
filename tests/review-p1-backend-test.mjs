@@ -273,7 +273,9 @@ const t = setup(); t.initBase();
 const cookie = await t.adminLogin();
 await t.call('POST', '/api/admin/products', { title: '手动商品-P1-2', category: 'recharge', stock_type: 'manual', sell_price: 4, source: 'self'}, cookie);
 const pM = t.q("SELECT * FROM products WHERE title='手动商品-P1-2'");
-// 无证据确认：缺原因拒绝；有原因 → 人工确认态，绝不写 txid_claims
+// 无证据确认：缺原因拒绝；有原因 → 人工确认态，写 txid_claims 全局认领（source=manual_confirmed，与链上共享同一全局原子认领；
+// v17 语义变更：旧断言“人工确认绝不写 txid_claims”已被 P1-2 根治要求取代——人工与链上必须共享同一全局原子消费机制，
+// 否则先 SELECT 后 INSERT 的人工路径与链上路径之间仍有 TOCTOU 窗口）
 const forged = 'd'.repeat(64);
 let r = await t.orderCall({ product_id: pM.id, quantity: 1});
 const ordE = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
@@ -285,7 +287,7 @@ r = await t.call('POST', '/api/admin/orders/' + ordE.id + '/confirm-payment', { 
 check('P1-2: explicit manual_confirm=false rejected', r.json &&!r.json.ok, JSON.stringify(r.json));
 r = await t.call('POST', '/api/admin/orders/' + ordE.id + '/confirm-payment', { reason: '已在收款地址核对到账', manual_confirm: true}, cookie);
 check('P1-2: manual confirm with reason ok + marked manual', r.json && r.json.ok === true && /人工确认/.test(r.json.message || ''), JSON.stringify(r.json));
-check('P1-2: manual confirm NEVER writes txid_claims',!t.q('SELECT * FROM txid_claims WHERE tx_hash=?', forged));
+check('P1-2: manual confirm writes shared txid_claims (source=manual_confirmed)', (() => { const row = t.q('SELECT * FROM txid_claims WHERE tx_hash=?', forged); return row && row.order_id === ordE.id && row.source === 'manual_confirmed' && !!row.claim_token; })());
 check('P1-2: manual confirm writes manual_confirmed ledger row', (() => { const row = t.q("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", forged); return row && row.order_id === ordE.id;})());
 check('P1-2: manual confirm marks order admin_note', (t.q('SELECT admin_note FROM orders WHERE id=?', ordE.id).admin_note || '').includes('人工确认收款'));
 check('P1-2: manual confirm audit action distinct',!!t.q("SELECT * FROM admin_audit WHERE order_id=? AND action='manual_confirm_payment'", ordE.id));

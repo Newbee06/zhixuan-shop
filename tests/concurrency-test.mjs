@@ -263,8 +263,8 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   check('concurrent fulfill: order completed with one delivery', finalM.status === 'completed' && (finalM.delivery_content === 'DELIVERY-A' || finalM.delivery_content === 'DELIVERY-B'), JSON.stringify(finalM));
 }
 
-// ===== 5. 管理员人工确认收款（P1-2 整改：人工通道绝不写 txid_claims，改写 manual_confirmed 账本行；同一 TXID 仍只能用一次）=====
-// 订单 A：人工商品，手动设置 tx_hash 后管理员确认 → 订单完成，且 TXID 记入 payments manual_confirmed 行（不进 txid_claims）。
+// ===== 5. 管理员人工确认收款（P1-2 v17：人工通道写 txid_claims 全局认领 source=manual_confirmed + manual_confirmed 账本行；同一 TXID 仍只能用一次）=====
+// 订单 A：人工商品，手动设置 tx_hash 后管理员确认 → 订单完成，且 TXID 记入 txid_claims（source=manual_confirmed）+ payments manual_confirmed 行。
 // 订单 B：同一 tx，管理员确认 → 已被他单人工确认消耗，确认被拒绝（“已用于其他订单”），订单保持待付款。
 // 一笔付款只能发一次货：人工确认路径同样防复用，不留“同一 TXID 复用于第二单”的口子。
 {
@@ -273,11 +273,11 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const pTx = q("SELECT * FROM products WHERE title='TXID测试商品'");
   r = await orderCall({ product_id: pTx.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'tx-a@test.example' } });
   const ordA = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  // 直接设置 tx_hash（模拟客户已提交 TXID），再管理员确认 → 完成，写 manual_confirmed 行，不写 txid_claims
+  // 直接设置 tx_hash（模拟客户已提交 TXID），再管理员确认 → 完成，写 manual_confirmed 行 + 共享 txid_claims 认领
   db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(txHash2, ordA.id);
   r = await call('POST', '/api/admin/orders/' + ordA.id + '/confirm-payment', { reason: 'A 确认' }, cookie);
   check('admin confirm fulfills order A', r.json && r.json.ok === true, JSON.stringify(r.json));
-  check('admin confirm NEVER writes txid_claims (P1-2)', !q('SELECT * FROM txid_claims WHERE tx_hash=?', txHash2));
+  check('admin confirm writes shared txid_claims (P1-2 v17, source=manual_confirmed)', (() => { const row = q('SELECT * FROM txid_claims WHERE tx_hash=?', txHash2); return row && Number(row.order_id) === Number(ordA.id) && row.source === 'manual_confirmed' && !!row.claim_token; })());
   check('admin confirm writes manual_confirmed ledger row (P1-2)', (() => { const p = q("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", txHash2); return p && Number(p.order_id) === Number(ordA.id); })());
   // 订单 B：同一 tx，管理员确认 → 已被他单人工确认消耗，拒绝
   r = await orderCall({ product_id: pTx.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'tx-b@test.example' } });
@@ -507,7 +507,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const cp = await callOld('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'old-db-pass-123' }, ocookie);
   check('old-db change-password ok', cp.json && cp.json.ok === true, JSON.stringify(cp.json));
   const mg = await callOld('GET', '/api/admin/migrate', null, ocookie);
-  check('old-db migrated to v16', mg.json && mg.json.ok === true && mg.json.current_version === 16, JSON.stringify(mg.json));
+  check('old-db migrated to v17', mg.json && mg.json.ok === true && mg.json.current_version === 17, JSON.stringify(mg.json));
   check('old-db: old order preserved', !!dbOld.prepare("SELECT * FROM orders WHERE order_no='AISOLD001'").get());
   check('old-db: old card preserved', !!dbOld.prepare("SELECT * FROM cards WHERE code='OLD-CARD-1'").get());
   check('old-db: old product preserved', !!dbOld.prepare("SELECT * FROM products WHERE slug='old-prod'").get());

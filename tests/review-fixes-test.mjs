@@ -223,7 +223,9 @@ check('init: change password', r.json && r.json.ok === true, JSON.stringify(r.js
   setGate(1);
 }
 
-// P1-2（2026-10-18 整改）：人工确认通道绝不写 txid_claims；改写 payments manual_confirmed 行 + 审计 manual_confirm_payment + admin_note【人工确认收款】前缀。
+// P1-2（v17 语义变更）：人工确认通道写 txid_claims 全局认领（source=manual_confirmed，与链上共享同一全局原子认领）+ payments manual_confirmed 行 + 审计 manual_confirm_payment + admin_note【人工确认收款】前缀。
+// 旧断言“人工确认绝不写 txid_claims”已被 P1-2 根治要求取代（人工与链上必须共享同一全局原子消费机制，否则两路径间仍有 TOCTOU 窗口）；
+// manual_confirmed 仅表示人工确认，不构成链上证据，不伪造回执/区块高度/确认数。
 {
   const tx = 'a'.repeat(64);
   r = await call('POST', '/api/admin/products', { title: '手动商品-P1-2', category: 'recharge', stock_type: 'manual', sell_price: 4, source: 'self' }, cookie);
@@ -233,7 +235,7 @@ check('init: change password', r.json && r.json.ok === true, JSON.stringify(r.js
   db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(tx, o.id);
   r = await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-2' }, cookie);
   check('P1-2: admin manual confirm succeeds (manual channel)', r.json && r.json.ok === true, JSON.stringify(r.json));
-  check('P1-2: manual confirm NEVER writes txid_claims', !q('SELECT * FROM txid_claims WHERE tx_hash=?', tx));
+  check('P1-2: manual confirm writes shared txid_claims (source=manual_confirmed)', (() => { const row = q('SELECT * FROM txid_claims WHERE tx_hash=?', tx); return row && Number(row.order_id) === Number(o.id) && row.source === 'manual_confirmed' && !!row.claim_token; })());
   check('P1-2: manual confirm writes manual_confirmed ledger row', (() => { const p = q("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", tx); return p && Number(p.order_id) === Number(o.id); })());
   check('P1-2: manual confirm audit action = manual_confirm_payment', !!q("SELECT * FROM admin_audit WHERE order_id=? AND action='manual_confirm_payment'", o.id));
   check('P1-2: manual confirm admin_note has 【人工确认收款】 prefix', (q('SELECT admin_note FROM orders WHERE id=?', o.id).admin_note || '').includes('【人工确认收款】'));
@@ -1101,7 +1103,7 @@ for (const termStatus of ['cancelled', 'failed']) {
 
 // P3-30（2026-10-18 整改重定向）：claimTxid INSERT 失败（模拟 D1 临时错误）时不得谎称“已用于其他订单”、不得留孤儿行；
 // 失败是临时的，移除障碍后轮询重试应能成功认领（轮询是恢复路径）。
-// 人工确认通道永不写 txid_claims，故改走仍用 claimTxid 的链上 /pay + 轮询路径。
+// 人工确认通道现共享 txid_claims（v17），P3-30 仍改走链上 /pay + 轮询路径（claimTxid INSERT 失败语义与人工路径无关）。
 // /pay 设计：核验通过但履约失败时走 deferred（auto:false，轮询重试），不把临时失败谎报为“已用于其他订单”。
 {
   const { db: dbS, env: envS, worker: workerS } = makeEnv();
@@ -1212,8 +1214,8 @@ check('P1-18: RUNBOOK rollback mentions v8 unique-index caveat + new-table list'
 // P2-19：RELEASE_READINESS 顶部历史快照横幅。
 check('P2-19: RELEASE_READINESS starts with history-snapshot banner', releaseReadiness.includes('§一–§八为第四轮历史快照'));
 
-// P2-20：d1-local-test.sh 口径（v16、真实下单 + /secret、精确 COUNT、查询密码术语）。
-check('P2-20: d1-local-test.sh comments say v16', d1LocalSh.includes('版本=16') && d1LocalSh.includes('迁移到 v16'));
+// P2-20：d1-local-test.sh 口径（v17、真实下单 + /secret、精确 COUNT、查询密码术语）。
+check('P2-20: d1-local-test.sh comments say v17', d1LocalSh.includes('版本=17') && d1LocalSh.includes('迁移到 v17'));
 check('P2-20: d1-local-test.sh has real fresh-DB order + /secret assertions', d1LocalSh.includes('/api/orders/$FRESH_NO/secret') && d1LocalSh.includes('FRESH-DB SECRET OK'));
 check('P2-20: d1-local-test.sh dedup uses precise COUNT parse, no grep -o \'1\'', !d1LocalSh.includes("grep -o '1'") && d1LocalSh.includes('DEDUP_COUNT'));
 check('P2-20: d1-local-test.sh uses 查询密码 terminology, no 查单凭证', d1LocalSh.includes('查询密码') && !d1LocalSh.includes('查单凭证'));
