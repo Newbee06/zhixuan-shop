@@ -18,11 +18,11 @@ function wrapStmt(sql) {
     bind(...a) { params = a; return api; },
     async first() { try { const st = db.prepare(sql); const r = st.get(...params); return r === undefined ? null : r; } catch (e) { throw e; } },
     async all() { const st = db.prepare(sql); const rows = st.all(...params); return { results: rows }; },
-    async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; },
+    async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes, last_row_id: info.lastInsertRowid } }; },
   };
   return api;
 }
-const env = { DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', RESEND_API_KEY: 'test-resend', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
+const env = { ZHIXUAN_SETUP_TOKEN: 'test-setup-token', DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', RESEND_API_KEY: 'test-resend', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
 async function mockFetch(url, opts = {}) {
   const u = String(url);
   if (u.includes('api.resend.com')) return new Response(JSON.stringify({ id: 'mock-mail' }), { status: 200 });
@@ -57,9 +57,9 @@ async function orderCall(body) {
   return call('/api/orders', 'POST', { query_password: 'stock-test-pw', ...body, captcha_id: cid, captcha_code: 'AB12' });
 }
 // admin login + 首次改密（新规则：未改密的会话不能调管理接口）
-let loginRes = await call('/api/admin/login', 'POST', { password: 'admin' });
+let loginRes = await call('/api/admin/login', 'POST', { setup_token: 'test-setup-token' });
 let cookie = (loginRes.headers.get('set-cookie') || '').split(';')[0];
-let changeRes = await call('/api/admin/change-password', 'POST', { old_password: 'admin', new_password: 'test-admin-password-123' }, { Cookie: cookie });
+let changeRes = await call('/api/admin/change-password', 'POST', { old_password: '', new_password: 'test-admin-password-123' }, { Cookie: cookie });
 if (!changeRes.json || !changeRes.json.ok) { console.log('FAIL: change-password', JSON.stringify(changeRes.json)); process.exit(1); }
 const adminHeaders = { Cookie: cookie };
 let pass = 0, fail = 0;

@@ -29,11 +29,11 @@ function wrapStmt(sql) {
     bind(...a) { params = a; return api; },
     async first() { try { const st = db.prepare(sql); const r = st.get(...params); return r === undefined ? null : r; } catch (e) { throw e; } },
     async all() { const st = db.prepare(sql); const rows = st.all(...params); return { results: rows }; },
-    async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; },
+    async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes, last_row_id: info.lastInsertRowid } }; },
   };
   return api;
 }
-const env = { DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
+const env = { ZHIXUAN_SETUP_TOKEN: 'test-setup-token', DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
 async function mockFetch(url, opts = {}) { throw new Error('Unexpected fetch: ' + url); }
 globalThis.fetch = mockFetch;
 env.__fetch = mockFetch;
@@ -97,11 +97,11 @@ r = await call('GET', '/api/admin/stats', null, 'session_token=fake-token-123');
 check('fake session cookie 401', r.status === 401);
 
 // ===== 2. 登录 + 改密 + 退出 =====
-r = await call('POST', '/api/admin/login', { password: 'admin' });
+r = await call('POST', '/api/admin/login', { setup_token: 'test-setup-token' });
 check('login initial admin ok', r.json && r.json.ok === true);
 let cookie = (r.headers.get('set-cookie') || '').split(';')[0];
 check('login response has no password hash/token in body', !JSON.stringify(r.json).includes('password_hash') && !JSON.stringify(r.json).includes('session_token'));
-r = await call('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'sec-test-pass-123' }, cookie);
+r = await call('POST', '/api/admin/change-password', { old_password: '', new_password: 'sec-test-pass-123' }, cookie);
 check('change-password ok', r.json && r.json.ok === true);
 r = await call('GET', '/api/admin/me', null, cookie);
 check('me after change-password ok, must_change=false', r.json && r.json.ok === true && r.json.must_change_password === false);
@@ -182,7 +182,7 @@ const pwB = 'sec-pw-2';
 r = await call('POST', '/api/admin/orders/' + ordB.id + '/fulfill', { delivery_content: 'MANUAL-KEY' }, cookie);
 check('pending_payment cannot fulfill directly', r.json && !r.json.ok && /待付款/.test(r.json.error || ''), JSON.stringify(r.json));
 // 确认收款 -> 卡密自动发（用预留卡）
-r = await call('POST', '/api/admin/orders/' + ordB.id + '/confirm-payment', { reason: '测试确认' }, cookie);
+r = await call('POST', '/api/admin/orders/' + ordB.id + '/confirm-payment', { reason: '测试确认' , manual_confirm: true }, cookie);
 check('confirm-payment ok', r.json && r.json.ok === true, JSON.stringify(r.json));
 const ordBAfter = q('SELECT * FROM orders WHERE id=?', ordB.id);
 check('confirm-payment -> completed with reserved card', ordBAfter.status === 'completed' && ordBAfter.delivery_content === 'SEC-CARD-ONLY-1', JSON.stringify(ordBAfter));
@@ -230,11 +230,12 @@ r = await call('GET', '/api/orders?contact=c2@test.example');
 check('email lookup closed -> 410', r.status === 410 && r.json && r.json.ok === false, JSON.stringify(r.json));
 // 旧订单兼容：直接插入一个无凭证哈希的旧订单，旧密码只返回概要（无交付内容）
 db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at, delivery_content, fulfilled_at) VALUES ('AISLEGACY001','123456','',?, '{}', 1, 5, 5, 5, '', '2099-01-01 00:00:00', '{}', 'legacy@test.example', 'OKX', 'X Layer', '', 'completed', datetime('now'), 'LEGACY-SECRET-KEY', datetime('now'))").run(pManual);
-r = await call('POST', '/api/orders/AISLEGACY001/lookup', { credential: '' });
+// B-P1-6: /lookup 需图形验证码（每次新取，一次有效）+ 按单记数。
+r = await call('POST', '/api/orders/AISLEGACY001/lookup', { credential: '', captcha_id: mkCaptcha('AB12'), captcha_code: 'AB12' });
 check('legacy order without credential -> 401', r.status === 401);
-r = await call('POST', '/api/orders/AISLEGACY001/lookup', { credential: 'wrong' });
+r = await call('POST', '/api/orders/AISLEGACY001/lookup', { credential: 'wrong', captcha_id: mkCaptcha('AB12'), captcha_code: 'AB12' });
 check('legacy order wrong password -> 401', r.status === 401);
-r = await call('POST', '/api/orders/AISLEGACY001/lookup', { credential: '123456' });
+r = await call('POST', '/api/orders/AISLEGACY001/lookup', { credential: '123456', captcha_id: mkCaptcha('AB12'), captcha_code: 'AB12' });
 check('legacy order with password -> summary only (no delivery)', r.json && r.json.ok === true && r.json.legacy === true && !r.json.order.delivery_content && !r.json.order.customer_fields, JSON.stringify(r.json));
 // GET 旧订单也不返回交付内容（不经 URL 凭证）
 r = await call('GET', '/api/orders/AISLEGACY001');
@@ -268,7 +269,7 @@ check('csrf: change-password without proof -> 403', r.status === 403, JSON.strin
 r = await orderCall({ product_id: pManual, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'paid1@test.example' } });
 check('paid-flow order created', r.json && r.json.ok === true, JSON.stringify(r.json));
 const ordP = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-r = await call('POST', '/api/admin/orders/' + ordP.id + '/confirm-payment', { reason: '测试已付款' }, cookie);
+r = await call('POST', '/api/admin/orders/' + ordP.id + '/confirm-payment', { reason: '测试已付款' , manual_confirm: true }, cookie);
 check('confirm-payment manual -> pending_fulfill', r.json && r.json.ok === true, JSON.stringify(r.json));
 check('order is pending_fulfill after confirm', q('SELECT status FROM orders WHERE id=?', ordP.id).status === 'pending_fulfill');
 // 普通取消已付款待发货订单 → 409 拒绝
@@ -301,7 +302,7 @@ check('cancelled cannot refund-confirm again', r.json && !r.json.ok, JSON.string
 // 异常（不退款）仅记录原因，状态不变
 r = await orderCall({ product_id: pManual, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'paid2@test.example' } });
 const ordP2 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-await call('POST', '/api/admin/orders/' + ordP2.id + '/confirm-payment', { reason: '测试' }, cookie);
+await call('POST', '/api/admin/orders/' + ordP2.id + '/confirm-payment', { reason: '测试' , manual_confirm: true }, cookie);
 r = await call('POST', '/api/admin/orders/' + ordP2.id + '/exception', { reason: '临时异常记录', refund_needed: false }, cookie);
 check('exception without refund ok', r.json && r.json.ok === true, JSON.stringify(r.json));
 check('order still pending_fulfill after note-only exception', q('SELECT status FROM orders WHERE id=?', ordP2.id).status === 'pending_fulfill');
@@ -320,7 +321,7 @@ check('refund_ref stored (second flow)', q('SELECT refund_ref FROM orders WHERE 
 
 // ===== 8d. 迁移状态端点 =====
 r = await call('GET', '/api/admin/migrate', null, cookie);
-check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 17, JSON.stringify(r.json));
+check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 18, JSON.stringify(r.json));
 r = await call('POST', '/api/admin/migrate', {}, cookie);
 check('migrate POST idempotent', r.json && r.json.ok === true && r.json.applied.length === 0, JSON.stringify(r.json));
 

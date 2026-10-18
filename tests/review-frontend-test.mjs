@@ -42,11 +42,19 @@ let ADMIN_PW = '';
   };
   if (await tryLogin('browser-ci-admin-123')) ADMIN_PW = 'browser-ci-admin-123';
   else if (await tryLogin('review-admin-123')) ADMIN_PW = 'review-admin-123';
-  else if (await tryLogin('admin')) {
-    const chg = await api('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'review-admin-123' }, ck);
-    if (chg.json && chg.json.ok) ADMIN_PW = 'review-admin-123';
+  else {
+    // B-P0: new DB first login uses setup token (runner injects via ZHIXUAN_SETUP_TOKEN); no public default password.
+    const setupToken = process.env.ZHIXUAN_SETUP_TOKEN || '';
+    if (setupToken) {
+      const r = await api('POST', '/api/admin/login', { setup_token: setupToken });
+      if (r.json && r.json.ok) {
+        ck = r.cookie;
+        const chg = await api('POST', '/api/admin/change-password', { old_password: '', new_password: 'review-admin-123' }, ck);
+        if (chg.json && chg.json.ok) ADMIN_PW = 'review-admin-123';
+      }
+    }
   }
-  if (!ADMIN_PW) { console.error('FATAL: admin setup failed (tried browser-ci-admin-123 / review-admin-123 / admin)'); process.exit(1); }
+if (!ADMIN_PW) { console.error('FATAL: admin setup failed (tried browser-ci-admin-123 / review-admin-123 / setup token)'); process.exit(1); }
   // 收款地址（下单/支付块渲染需要有效地址）
   await api('POST', '/api/admin/settings', { settings: { usdt_addresses: JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111', 'Binance|BEP20': '0x2222222222222222222222222222222222222222' }) } }, ck);
   // 卡密测试：找一个可导入卡密的商品，否则新建一个一次性测试商品；导入一条已知掩码测试卡密。

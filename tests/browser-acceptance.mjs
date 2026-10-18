@@ -1,4 +1,6 @@
 // 浏览器验收（第二轮）：真实 Playwright Chromium + 本地 wrangler dev --local（D1 本地环境）。
+// 【已废弃 / 手动脚本】本文件不再由任何 npm 脚本或 CI 运行（package.json test:browser 走 browser-acceptance-ci.mjs）。
+// 保留仅供手动参考；手动运行时需先在 wrangler dev 环境配置 ZHIXUAN_SETUP_TOKEN，并用建站令牌登录（B-P0 起不再接受默认密码）。
 // 与 CI 版（browser-acceptance-ci.mjs）同一浏览器启动方式（npm `playwright` 包 + --no-sandbox，
 // 不用本机 /opt/meta-chromium/chrome——该系统 Chromium 的本地网络访问检查会挡 127.0.0.1，导致脚本在 VM 环境无法运行）。
 // 覆盖：下单成功页（内存凭证）→ 刷新后凭证不恢复 → POST 查单（URL 无凭证）→ 后台已付款订单无取消按钮 → 异常/退款流程 → 无横向溢出 → 控制台无 JS 错误
@@ -24,10 +26,10 @@ const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] }
     let j = null; try { j = await res.json(); } catch {}
     return { status: res.status, json: j };
   }
-  const login = await api('POST', '/api/admin/login', { password: 'admin' });
+  const login = await api('POST', '/api/admin/login', { setup_token: process.env.ZHIXUAN_SETUP_TOKEN || 'test-setup-token' });
   if (!login.json || !login.json.ok) { console.error('FATAL: setup admin login failed'); process.exit(1); }
   const ck = jar[jar.length - 1] || '';
-  const chg1 = await api('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'browser-setup-temp-123' }, ck);
+  const chg1 = await api('POST', '/api/admin/change-password', { old_password: '', new_password: 'browser-setup-temp-123' }, ck);
   if (!chg1.json || !chg1.json.ok) { console.error('FATAL: setup change-password failed'); process.exit(1); }
   const setAddr = await api('POST', '/api/admin/settings', { settings: { usdt_addresses: JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111', 'Binance|BEP20': '0x2222222222222222222222222222222222222222' }) } }, ck);
   if (!setAddr.json || !setAddr.json.ok) { console.error('FATAL: setup usdt_addresses failed', JSON.stringify(setAddr.json)); process.exit(1); }
@@ -203,7 +205,7 @@ const adminSetup = await page.evaluate(async () => {
   const ord = await fetch('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: pid, quantity: 1, customer_fields: { contact_email: 'browser-paid@test.example' }, contact: 'browser-paid@test.example', pay_method: 'OKX', pay_chain: 'X Layer', query_password: 'browser-pw123', captcha_id: cap.captcha_id, captcha_code: code }) }).then((r) => r.json());
   const ordRow = await fetch('/api/admin/orders?q=' + encodeURIComponent(ord.order.order_no)).then((r) => r.json());
   const oid = ordRow.orders[0].id;
-  const conf = await fetch('/api/admin/orders/' + oid + '/confirm-payment', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Admin-API': '1' }, body: JSON.stringify({ reason: '浏览器验收确认' }) }).then((r) => r.json());
+  const conf = await fetch('/api/admin/orders/' + oid + '/confirm-payment', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Admin-API': '1' }, body: JSON.stringify({ reason: '浏览器验收确认' , manual_confirm: true }) }).then((r) => r.json());
   return { me, pid, oid, conf, orderNo: ord.order.order_no };
 });
 check('admin setup: paid order created', adminSetup.conf && adminSetup.conf.ok === true, JSON.stringify(adminSetup.conf).slice(0, 200));

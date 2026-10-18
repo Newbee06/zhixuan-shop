@@ -865,15 +865,13 @@ async function doQueryList(){
     if (o.status === 'pending_payment') {
       h += '<p class="muted">待付款：请按精确应付金额付款，付完等待自动发货。</p>' + payBlockHTML(o, o.order_no);
     }
-    // P2-8：不再依赖后端不返回的 has_delivery；按 credential_type 分支，不再声称“暂无交付内容”。
-    if (o.credential_type === 'password') {
+    // B-P2-5：不再按后端已移除的凭证方案字段分支（该字段会向未认证调用方泄露订单凭证方案）。
+    // 统一渲染：查询密码输入（→ /secret）+ 旧订单凭证入口（→ /lookup，含图形验证码）。
+    // 新订单用查询密码取卡密；旧系统凭证订单用“旧订单凭证查询”。
+    {
       var pwId = 'qpw-' + escH(o.order_no);
       h += '<label>查询密码</label><input id="' + pwId + '" type="password" placeholder="请输入查询密码" autocomplete="off"><div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" data-pw="' + pwId + '" onclick="doQuerySecret(this.dataset.no, this.dataset.pw)">查看卡密</button></div><div id="qsec-' + escH(o.order_no) + '" style="margin-top:10px"></div>';
-    } else if (o.credential_type === 'token') {
-      var tkId = 'qtk-' + escH(o.order_no);
-      h += '<label>查单凭证（旧订单）</label><input id="' + tkId + '" placeholder="查单凭证" autocomplete="off"><div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" data-tk="' + tkId + '" onclick="doQueryLegacy(this.dataset.no, this.dataset.tk)">查看卡密</button></div><div id="qsec-' + escH(o.order_no) + '" style="margin-top:10px"></div>';
-    } else if (o.credential_type === 'legacy') {
-      h += '<p class="muted">该订单未设置查询密码，交付内容请联系客服核实后获取。</p>';
+      h += '<p class="muted">旧订单（系统凭证）请点“旧订单凭证查询”，按提示完成图形验证码后输入查单凭证。</p><div style="margin-top:4px"><button class="btn small ghost" data-no="' + escH(o.order_no) + '" onclick="doQueryLegacyStart(this.dataset.no)">旧订单凭证查询</button></div>';
     }
     h += '</div>';
   }
@@ -891,11 +889,26 @@ async function doQuerySecret(no, pwInputId){
   var delId = 'qdel-' + escH(no);
   if (box) box.innerHTML = '<p>交付内容：</p><div class="codebox" id="' + delId + '">' + escH(r.delivery_content || '') + '</div><button class="btn small" style="margin-top:8px" data-copy-target="' + delId + '">复制交付内容</button>';
 }
-// 旧订单（系统凭证）由 doQueryLegacy 处理（新查询页列表内按单输入凭证）。
-async function doQueryLegacy(no, tkInputId){
+// 旧订单（系统凭证）由 doQueryLegacy 处理（新查询页列表内按单输入凭证 + 图形验证码）。
+// 两步流程：先取新验证码（/lookup 的验证码一次有效），渲染到卡片内，用户填码后提交 /lookup。
+async function doQueryLegacyStart(no){
+  var box = el('qsec-' + no);
+  if (!box) return;
+  var r = await api('/api/captcha', 'GET');
+  if (!r.ok || !r.svg) { box.innerHTML = '<div class="muted">验证码获取失败，请重试</div>'; return; }
+  window._legacyCaptcha = window._legacyCaptcha || {};
+  window._legacyCaptcha[no] = r.captcha_id;
+  var tkId = 'qtk-' + escH(no);
+  var capId = 'qlcap-' + escH(no);
+  box.innerHTML = '<label>查单凭证（旧订单）</label><input id="' + tkId + '" placeholder="查单凭证" autocomplete="off"><label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="' + capId + '" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img src="data:image/svg+xml,' + encodeURIComponent(r.svg) + '" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px" onclick="doQueryLegacyStart(\'' + escH(no) + '\')"></div><div style="margin-top:8px"><button class="btn small" data-no="' + escH(no) + '" data-tk="' + tkId + '" data-cap="' + capId + '" onclick="doQueryLegacy(this.dataset.no, this.dataset.tk, this.dataset.cap)">查看卡密</button></div>';
+}
+async function doQueryLegacy(no, tkInputId, capInputId){
   var cred = el(tkInputId) ? el(tkInputId).value.trim() : '';
   if (!cred) { toast('请填写查单凭证（旧订单）', 'error'); return; }
-  var r = await api('/api/orders/' + encodeURIComponent(no) + '/lookup', 'POST', { credential: cred });
+  var capCode = capInputId && el(capInputId) ? el(capInputId).value.trim() : '';
+  if (!capCode) { toast('请填写图形验证码', 'error'); return; }
+  var capId = (window._legacyCaptcha && window._legacyCaptcha[no]) || '';
+  var r = await api('/api/orders/' + encodeURIComponent(no) + '/lookup', 'POST', { credential: cred, captcha_id: capId, captcha_code: capCode });
   var box = el('qsec-' + no);
   if (!r.ok){ if (box) box.innerHTML = '<div class="muted">' + escH(r.error) + '</div>'; else toast(r.error, 'error'); return; }
   if (box) box.innerHTML = renderQueryOrderDetail(r.order, !!r.legacy);
@@ -904,13 +917,13 @@ async function doQueryLegacy(no, tkInputId){
 // ===== 管理后台（SaaS 风格：信息密度优先，统一 Toast/Modal/Drawer） =====
 async function renderAdmin(){
   var me = await api('/api/admin/me');
-  if (!me.ok){ var html = '<div class="glass"><div class="h2">后台登录</div><p class="muted">初始密码 admin，首次登录强制改密。</p><label>密码</label><input id="apwd" type="password" onkeydown="if(event.key===\'Enter\')adminLogin()"><div style="margin-top:12px"><button class="btn" id="loginBtn" onclick="adminLogin()">登录</button></div></div>'; el('app').innerHTML = html; return; }
-  if (me.must_change_password){ var h2 = '<div class="glass"><div class="h2">首次登录请改密</div><p class="muted">为保护后台安全，首次登录必须修改初始密码。</p><label>旧密码</label><input id="oldpw" type="password"><label>新密码（至少8位）</label><input id="newpw" type="password"><div style="margin-top:12px"><button class="btn" id="changePwBtn" onclick="adminChangePw()">改密并进入后台</button></div></div>'; el('app').innerHTML = h2; return; }
+  if (!me.ok){ var html = '<div class="glass"><div class="h2">后台登录</div><p class="muted">首次建站请使用建站令牌登录（部署时配置的环境变量 ZHIXUAN_SETUP_TOKEN），登录后设置管理员密码。已有密码时用密码登录。</p><label>密码（已有密码时填写）</label><input id="apwd" type="password" onkeydown="if(event.key===\'Enter\')adminLogin()"><label>建站令牌（仅首次建站时填写）</label><input id="asetup" type="password" placeholder="首次建站令牌" onkeydown="if(event.key===\'Enter\')adminLogin()"><div style="margin-top:12px"><button class="btn" id="loginBtn" onclick="adminLogin()">登录</button></div></div>'; el('app').innerHTML = html; return; }
+  if (me.must_change_password){ var h2 = '<div class="glass"><div class="h2">首次登录请改密</div><p class="muted">为保护后台安全，首次登录必须修改初始密码。建站令牌登录时旧密码可留空。</p><label>旧密码（建站令牌登录可留空）</label><input id="oldpw" type="password"><label>新密码（至少8位）</label><input id="newpw" type="password"><div style="margin-top:12px"><button class="btn" id="changePwBtn" onclick="adminChangePw()">改密并进入后台</button></div></div>'; el('app').innerHTML = h2; return; }
   renderAdminHome();
 }
 async function adminLogin(){
   var btn = el('loginBtn'); setBtnLoading(btn, true);
-  var r = await api('/api/admin/login', 'POST', { password: el('apwd').value });
+  var r = await api('/api/admin/login', 'POST', { password: el('apwd').value, setup_token: el('asetup') ? el('asetup').value : '' });
   setBtnLoading(btn, false);
   if (!r.ok){ toast(r.error, 'error'); return; }
   toast('登录成功', 'success'); renderAdmin();
@@ -1122,7 +1135,7 @@ async function adminOrderDetail(id){
   else { auditHtml = '<table class="adm-table"><thead><tr><th>时间</th><th>操作</th><th>状态变化</th><th>说明</th></tr></thead><tbody>'; for (var ai = 0; ai < alist.length; ai++){ var a = alist[ai]; auditHtml += '<tr><td data-label="时间">' + escH(fmtTime(a.created_at)) + '</td><td data-label="操作">' + escH(a.action) + '</td><td data-label="状态变化">' + escH(a.before_status || '-') + ' → ' + escH(a.after_status || '-') + '</td><td data-label="说明">' + escH(a.note || '') + '</td></tr>'; } auditHtml += '</tbody></table>'; }
   var h = '<div class="drawer-section"><h4>基本信息</h4><div class="drawer-kv"><span class="k">订单号</span><span class="v adm-mono">' + escH(o.order_no) + '</span><span class="k">状态</span><span class="v">' + statusPill(o.status) + '</span><span class="k">商品</span><span class="v">' + escH(snap.title || '') + ' × ' + o.quantity + '</span><span class="k">金额</span><span class="v">' + o.total_usdt + ' USDT（精确应付 ' + (o.actual_amount || o.total_usdt) + ' USDT）</span><span class="k">支付</span><span class="v">' + escH(o.pay_method || '') + ' · ' + escH(o.pay_chain || '') + '</span><span class="k">创建时间</span><span class="v">' + escH(fmtTime(o.created_at)) + '</span><span class="k">付款时间</span><span class="v">' + escH(fmtTime(o.paid_at)) + '</span><span class="k">完成时间</span><span class="v">' + escH(fmtTime(o.fulfilled_at)) + '</span></div></div>';
   h += '<div class="drawer-section"><h4>客户信息</h4><div class="drawer-kv"><span class="k">联系方式</span><span class="v">' + escH(o.contact || '') + '</span><span class="k">客户字段</span><span class="v">' + escH(JSON.stringify(cf)) + '</span></div></div>';
-  h += '<div class="drawer-section"><h4>付款信息</h4><div class="drawer-kv"><span class="k">收款地址</span><span class="v adm-mono">' + escH(o.pay_address || o.wallet_address || '') + '</span><span class="k">TXID</span><span class="v adm-mono">' + escH(o.txid || o.tx_hash || '未提交') + '</span><span class="k">备注</span><span class="v">' + escH(o.admin_note || '') + '</span></div></div>';
+  h += '<div class="drawer-section"><h4>付款信息</h4><div class="drawer-kv"><span class="k">收款地址</span><span class="v adm-mono">' + escH(o.pay_address || o.wallet_address || '') + '</span><span class="k">已消费 TXID</span><span class="v adm-mono">' + escH(o.tx_hash || '无') + '</span><span class="k">待核验候选 TXID</span><span class="v adm-mono">' + escH(o.pending_tx_hash || '无') + '</span><span class="k">提交 TXID（遗留）</span><span class="v adm-mono">' + escH(o.txid || '无') + '</span>' + (o.payment_state === 'overpaid_pending' ? '<span class="k">付款状态</span><span class="v">超额付款待对账（已有入账付款后又收到第二笔真实付款，未重复发货，请在付款记录中对账）</span>' : '') + '<span class="k">备注</span><span class="v">' + escH(o.admin_note || '') + '</span></div></div>';
   if (o.exception_reason || o.refund_status) h += '<div class="drawer-section"><h4>异常 / 退款</h4><div class="drawer-kv"><span class="k">异常原因</span><span class="v">' + escH(o.exception_reason || '') + '</span><span class="k">退款状态</span><span class="v">' + escH(o.refund_status === 'pending' ? '退款待处理（须在系统外真实退款）' : (o.refund_status === 'refunded' ? '已确认退款' : o.refund_status || '无')) + '</span>' + (o.refund_ref ? '<span class="k">退款凭证</span><span class="v adm-mono">' + escH(o.refund_ref) + '</span>' : '') + '</div><p class="muted">本系统不执行真实退款。“确认已退款”仅表示管理员确认已在系统外完成退款，须填写退款凭证备查。</p></div>';
   h += '<div class="drawer-section"><h4>交付情况</h4>';
   if (o.data_expired) h += '<p class="muted">交付数据已超过 7 天自动清空</p>';
@@ -1136,7 +1149,7 @@ async function adminOrderDetail(id){
 async function adminConfirm(id){
   showModal({ title: '确认收款（人工操作）', bodyHTML: '<p>你正在手动确认该订单已收款。确认后系统将按人工确认通道发货（自营卡密自动发 / 上游走 ProdSeller），记为人工确认态（非链上自动核验）。<b>请确保已在收款地址核对到账</b>，误确认无法自动撤销。</p>', confirmText: '确认已收款', showInput: true, inputLabel: '操作原因（必填，记入审计）', inputPlaceholder: '如：已在收款地址核对到账，TXID xxx', onConfirm: async function(reason){
     if (!reason || !reason.trim()){ toast('请填写操作原因', 'error'); return false; }
-    var r = await api('/api/admin/orders/' + id + '/confirm-payment', 'POST', { reason: reason.trim() });
+    var r = await api('/api/admin/orders/' + id + '/confirm-payment', 'POST', { reason: reason.trim(), manual_confirm: true });
     if (!r.ok){ toast(r.error, 'error'); return false; }
     toast(r.message || '已确认', 'success'); closeDrawer(); renderAdminOrders(window._orderFilter.page || 1);
   }});

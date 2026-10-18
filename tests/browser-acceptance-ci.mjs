@@ -6,6 +6,24 @@
 // 订单异常界面、加载失败/空数据/错误提示；视口 1440/390/360；深色模式；横向溢出；控制台错误。
 // 任一检查失败即 process.exit(1)，不在 CI 中掩盖失败。
 import { chromium } from 'playwright';
+import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+
+// B-P1-4：验证码 SVG 不再含 <text> 节点（字符画成 <rect> 像素块），浏览器测试不得再解析 SVG 取码。
+// 改为经 D1 直接种子已知验证码（与 d1-local-test.sh 同法）：INSERT 一行 captcha_codes，code 固定 'AB12'。
+let _capSeq = 0;
+function seedCaptcha(code = 'AB12') {
+  _capSeq++;
+  const id = 'browser-ci-cap-' + _capSeq + '-' + Date.now();
+  const hash = createHash('sha256').update(code).digest('hex');
+  const wrangler = 'node_modules/.bin/wrangler';
+  const fs = require('node:fs');
+  const cmd = (fs.existsSync(wrangler) ? wrangler : 'npx wrangler') + ' d1 execute aisou-lite-db --local --command="INSERT INTO captcha_codes (id, code_hash, expires_at, attempts) VALUES (\'' + id + '\', \'' + hash + '\', datetime(\'now\',\'+5 minutes\'), 0);"';
+  execSync(cmd, { stdio: 'pipe' });
+  return { id, code };
+}
 
 const BASE = process.env.BASE || 'http://127.0.0.1:8791';
 let pass = 0, fail = 0;
@@ -32,7 +50,7 @@ if (!serverOk) { console.error('FAIL: dev server not reachable at ' + BASE + ' a
 
 // ===== 0. 前置：配置有效收款地址（支付白名单要求）=====
 // 下单需有效收款地址（种子为占位符会拒单）。经 HTTP 管理员接口配置：
-// 登录默认密码 → 改密为临时密码（首登强制改密）→ 配地址。
+// 建站令牌登录（B-P0）→ 改密为临时密码（首登强制改密）→ 配地址。
 // 注意：改密要求新密码 ≥8 位，无法改回 5 位的默认密码 'admin'；
 // 故浏览器内管理员登录改用临时密码登录并继续改密为 'browser-ci-admin-123'（仍测改密流程）。
 {
@@ -46,10 +64,10 @@ if (!serverOk) { console.error('FAIL: dev server not reachable at ' + BASE + ' a
     let j = null; try { j = await res.json(); } catch {}
     return { status: res.status, json: j };
   }
-  const login = await api('POST', '/api/admin/login', { password: 'admin' });
+  const login = await api('POST', '/api/admin/login', { setup_token: process.env.ZHIXUAN_SETUP_TOKEN || 'test-setup-token' });
   if (!login.json || !login.json.ok) { console.error('FATAL: setup admin login failed'); process.exit(1); }
   const ck = jar[jar.length - 1] || '';
-  const chg1 = await api('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'browser-ci-setup-temp-123' }, ck);
+  const chg1 = await api('POST', '/api/admin/change-password', { old_password: '', new_password: 'browser-ci-setup-temp-123' }, ck);
   if (!chg1.json || !chg1.json.ok) { console.error('FATAL: setup change-password failed'); process.exit(1); }
   const setAddr = await api('POST', '/api/admin/settings', { settings: { usdt_addresses: JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111', 'Binance|BEP20': '0x2222222222222222222222222222222222222222' }) } }, ck);
   if (!setAddr.json || !setAddr.json.ok) { console.error('FATAL: setup usdt_addresses failed', JSON.stringify(setAddr.json)); process.exit(1); }
@@ -99,14 +117,15 @@ await page.goto(BASE + '/#/product/1', { waitUntil: 'networkidle' });
 // 订单表单是异步渲染（先取商品再渲染），必须等 #captchaCode 出现后再填，否则值写不进去。
 await page.waitForSelector('#captchaCode', { timeout: 15000 });
 await page.waitForTimeout(300);
-const cap = await page.evaluate(async () => {
+// B-P1-4：SVG 无 <text>（字符为 <rect> 像素块），断言不可提取 + 经 D1 种子已知验证码提交。
+const capSvgCheck = await page.evaluate(async () => {
   const r = await fetch('/api/captcha'); const j = await r.json();
-  const doc = new DOMParser().parseFromString(j.svg, 'image/svg+xml');
-  const code = Array.from(doc.querySelectorAll('text')).map((t) => t.textContent).join('');
-  window._captchaId = j.captcha_id;
-  return { id: j.captcha_id, code };
+  return { svg: j.svg || '' };
 });
-check('captcha parsed from SVG', cap.code.length === 4, JSON.stringify(cap));
+check('captcha SVG has no <text> node (B-P1-4)', !/<text[\s>]/.test(capSvgCheck.svg) && /<rect/.test(capSvgCheck.svg));
+const cap = seedCaptcha();
+await page.evaluate((c) => { window._captchaId = c.id; }, cap);
+check('seeded captcha usable', cap.code.length === 4, JSON.stringify(cap));
 await page.evaluate((c) => {
   const contact = document.getElementById('contact');
   if (contact) contact.value = 'browser-ci@test.example';
@@ -156,14 +175,14 @@ check('after reload: storage still has no order/token',
 check('after reload: recover payment form shown', (await page.content()).includes('恢复支付信息'));
 check('after reload: recover order no prefilled', await page.evaluate((no) => (document.getElementById('recoverOrderNo') || {}).value === no, orderNo));
 check('after reload: recover captcha image shown', await page.evaluate(() => !!document.getElementById('recoverCaptchaImg')));
-const recCap = await page.evaluate(() => {
+const recSvg = await page.evaluate(() => {
   const img = document.getElementById('recoverCaptchaImg');
-  const svg = img ? decodeURIComponent(img.src.split(',').slice(1).join(',')) : '';
-  const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
-  return Array.from(doc.querySelectorAll('text')).map((t) => t.textContent).join('');
+  return img ? decodeURIComponent(img.src.split(',').slice(1).join(',')) : '';
 });
-check('recover captcha parsed from image SVG', recCap.length === 4, recCap);
-await page.fill('#recoverCaptchaCode', recCap);
+check('recover captcha SVG has no <text> node (B-P1-4)', !/<text[\s>]/.test(recSvg) && /<rect/.test(recSvg));
+const recSeed = seedCaptcha();
+await page.evaluate((id) => { window._recoverCaptchaId = id; }, recSeed.id);
+await page.fill('#recoverCaptchaCode', recSeed.code);
 await page.click('button:has-text("恢复支付信息")');
 await page.waitForTimeout(1500);
 const recoveredHtml = await page.content();
@@ -172,14 +191,8 @@ check('recover flow: /pay captcha input shown', await page.evaluate(() => !!docu
 
 // ===== 4. 查单页：订单号 + 验证码 → 列表；密码取卡密（未付款提示）；错误密码提示；邮箱不能查；URL 无凭证 =====
 async function freshQueryCaptcha() {
-  const c = await page.evaluate(async () => {
-    const r = await fetch('/api/captcha'); const j = await r.json();
-    const doc = new DOMParser().parseFromString(j.svg, 'image/svg+xml');
-    const code = Array.from(doc.querySelectorAll('text')).map((t) => t.textContent).join('');
-    window._qCaptchaId = j.captcha_id;
-    return { id: j.captcha_id, code };
-  });
-  return c;
+  // B-P1-4：不再解析 SVG 取码；经 D1 种子已知验证码。
+  return seedCaptcha();
 }
 await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
 await page.waitForTimeout(500);
@@ -262,17 +275,16 @@ for (const [tab, label] of [['data', '数据总览'], ['orders', '订单管理']
 }
 
 // ===== 6. 已付款订单：后台详情无普通取消按钮，有异常处理；异常/退款流程 =====
+const _seedCap2 = seedCaptcha();
+await page.evaluate((c) => { window._seedCap2 = c; }, _seedCap2);
 const adminSetup = await page.evaluate(async () => {
   const pr = await fetch('/api/admin/products', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Admin-API': '1' }, body: JSON.stringify({ title: 'CI验收人工商品', category: 'recharge', stock_type: 'manual', sell_price: 2, source: 'self' }) }).then((r) => r.json());
   const list = await fetch('/api/admin/products?q=' + encodeURIComponent('CI验收人工商品')).then((r) => r.json());
   const pid = list.products[0].id;
-  const cap2 = await fetch('/api/captcha').then((r) => r.json());
-  const doc = new DOMParser().parseFromString(cap2.svg, 'image/svg+xml');
-  const code = Array.from(doc.querySelectorAll('text')).map((t) => t.textContent).join('');
-  const ord = await fetch('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: pid, quantity: 1, customer_fields: { contact_email: 'browser-ci-paid@test.example' }, contact: 'browser-ci-paid@test.example', pay_method: 'OKX', pay_chain: 'X Layer', query_password: 'browser-ci-pw123', captcha_id: cap2.captcha_id, captcha_code: code }) }).then((r) => r.json());
+  const ord = await fetch('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: pid, quantity: 1, customer_fields: { contact_email: 'browser-ci-paid@test.example' }, contact: 'browser-ci-paid@test.example', pay_method: 'OKX', pay_chain: 'X Layer', query_password: 'browser-ci-pw123', captcha_id: window._seedCap2.id, captcha_code: window._seedCap2.code }) }).then((r) => r.json());
   const ordRow = await fetch('/api/admin/orders?q=' + encodeURIComponent(ord.order.order_no)).then((r) => r.json());
   const oid = ordRow.orders[0].id;
-  const conf = await fetch('/api/admin/orders/' + oid + '/confirm-payment', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Admin-API': '1' }, body: JSON.stringify({ reason: 'CI验收确认' }) }).then((r) => r.json());
+  const conf = await fetch('/api/admin/orders/' + oid + '/confirm-payment', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Admin-API': '1' }, body: JSON.stringify({ reason: 'CI验收确认' , manual_confirm: true }) }).then((r) => r.json());
   return { pid, oid, conf, orderNo: ord.order.order_no };
 });
 check('admin setup: paid order created', adminSetup.conf && adminSetup.conf.ok === true, JSON.stringify(adminSetup.conf).slice(0, 200));
@@ -345,17 +357,16 @@ check('refund flow: order cancelled after confirm', (await page.content()).inclu
 // ===== 6b. F-01 回归：恶意 delivery_content 不得突破 onclick（存储型 XSS）=====
 // 发货时交付内容含 onclick 突破载荷；打开管理员订单详情并点击“复制交付内容”（触发含 delivery_content 的 onclick）。
 // 若 escH 转义失效，载荷会突破属性并执行 alert(1) → dialog 监听捕获，测试失败。
+const _seedCap3 = seedCaptcha();
+await page.evaluate((c) => { window._seedCap3 = c; }, _seedCap3);
 const xssSetup = await page.evaluate(async () => {
   const pr = await fetch('/api/admin/products', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Admin-API': '1' }, body: JSON.stringify({ title: 'CI验收XSS商品', category: 'recharge', stock_type: 'manual', sell_price: 2, source: 'self' }) }).then((r) => r.json());
   const list = await fetch('/api/admin/products?q=' + encodeURIComponent('CI验收XSS商品')).then((r) => r.json());
   const pid = list.products[0].id;
-  const cap3 = await fetch('/api/captcha').then((r) => r.json());
-  const doc = new DOMParser().parseFromString(cap3.svg, 'image/svg+xml');
-  const code = Array.from(doc.querySelectorAll('text')).map((t) => t.textContent).join('');
-  const ord = await fetch('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: pid, quantity: 1, customer_fields: { contact_email: 'browser-ci-xss@test.example' }, contact: 'browser-ci-xss@test.example', pay_method: 'OKX', pay_chain: 'X Layer', query_password: 'browser-ci-pw123', captcha_id: cap3.captcha_id, captcha_code: code }) }).then((r) => r.json());
+  const ord = await fetch('/api/orders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ product_id: pid, quantity: 1, customer_fields: { contact_email: 'browser-ci-xss@test.example' }, contact: 'browser-ci-xss@test.example', pay_method: 'OKX', pay_chain: 'X Layer', query_password: 'browser-ci-pw123', captcha_id: window._seedCap3.id, captcha_code: window._seedCap3.code }) }).then((r) => r.json());
   const ordRow = await fetch('/api/admin/orders?q=' + encodeURIComponent(ord.order.order_no)).then((r) => r.json());
   const oid = ordRow.orders[0].id;
-  await fetch('/api/admin/orders/' + oid + '/confirm-payment', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Admin-API': '1' }, body: JSON.stringify({ reason: 'CI验收XSS确认' }) }).then((r) => r.json());
+  await fetch('/api/admin/orders/' + oid + '/confirm-payment', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Admin-API': '1' }, body: JSON.stringify({ reason: 'CI验收XSS确认' , manual_confirm: true }) }).then((r) => r.json());
   const payload = 'XSS-TEST" onclick="alert(1) //';
   const ful = await fetch('/api/admin/orders/' + oid + '/fulfill', { method: 'POST', headers: { 'content-type': 'application/json', 'X-Admin-API': '1' }, body: JSON.stringify({ delivery_content: payload }) }).then((r) => r.json());
   return { oid, orderNo: ord.order.order_no, ful };
@@ -418,14 +429,9 @@ check('7th page: unified email label + helper text',
   legacyPageHtml.includes('邮箱地址') && legacyPageHtml.includes('用于订单联系；需要邮件交付的商品，也会使用该邮箱接收卡密或账号。'));
 check('7th page: admin custom field preserved (custom_note rendered)',
   await page.evaluate(() => document.querySelectorAll('input[data-k="custom_note"]').length === 1));
-const legacyCap = await page.evaluate(async () => {
-  const r = await fetch('/api/captcha'); const j = await r.json();
-  const doc = new DOMParser().parseFromString(j.svg, 'image/svg+xml');
-  const code = Array.from(doc.querySelectorAll('text')).map((t) => t.textContent).join('');
-  window._captchaId = j.captcha_id;
-  return { id: j.captcha_id, code };
-});
-check('7th captcha parsed', legacyCap.code.length === 4, JSON.stringify(legacyCap));
+const legacyCap = seedCaptcha();
+await page.evaluate((c) => { window._captchaId = c.id; }, legacyCap);
+check('7th seeded captcha usable', legacyCap.code.length === 4, JSON.stringify(legacyCap));
 await page.fill('#contact', 'browser-ci-legacy@test.example');
 await page.fill('#captchaCode', legacyCap.code);
 // v15：查询密码必填（submitOrder 从 #query_password 读，后端拒空）；真实提交前填写。

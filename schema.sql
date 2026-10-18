@@ -84,6 +84,10 @@ CREATE TABLE IF NOT EXISTS orders (
   expires_at TEXT,
   last_checked_at TEXT,
   tx_hash TEXT NOT NULL DEFAULT '',
+  -- v18：未核验候选 TXID（用户提交、尚未取得全局消费权）；tx_hash 只代表已消费 TXID，候选绝不直接写 tx_hash
+  pending_tx_hash TEXT NOT NULL DEFAULT '',
+  -- v18：付款状态 ''=正常 / 'overpaid_pending'=已有入账付款后又收到第二笔真实付款，待人工对账/退款，不重复发货
+  payment_state TEXT NOT NULL DEFAULT '',
   customer_fields TEXT NOT NULL DEFAULT '{}',
   contact TEXT NOT NULL DEFAULT '',
   pay_method TEXT NOT NULL DEFAULT '',
@@ -305,6 +309,14 @@ CREATE TABLE IF NOT EXISTS secret_attempts (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_secret_attempts_order ON secret_attempts(order_no, created_at);
+
+-- v18：/lookup 按单尝试记录（与 /secret 的 secret_attempts 同口径：5 次/10 分钟，成功后清零）。
+CREATE TABLE IF NOT EXISTS lookup_attempts (
+  order_no TEXT NOT NULL,
+  ip TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lookup_attempts_order ON lookup_attempts(order_no, created_at);
 
 -- v15 无新增表/索引（仅 orders.query_password_salt 列，见 orders 建表语句）。
 -- 金额唯一性：部分唯一索引，仅约束待付款订单（过期未取消的仍占位，轮询自动取消后释放）。

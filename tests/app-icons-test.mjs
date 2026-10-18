@@ -26,11 +26,11 @@ function wrapStmt(sql) {
     bind(...a) { params = a; return api; },
     async first() { try { const st = db.prepare(sql); const r = st.get(...params); return r === undefined ? null : r; } catch (e) { throw e; } },
     async all() { const st = db.prepare(sql); const rows = st.all(...params); return { results: rows }; },
-    async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; },
+    async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes, last_row_id: info.lastInsertRowid } }; },
   };
   return api;
 }
-const env = { DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } } };
+const env = { ZHIXUAN_SETUP_TOKEN: 'test-setup-token', DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } } };
 globalThis.fetch = async () => new Response(JSON.stringify({}), { status: 200 });
 let code = fs.readFileSync(path.join(dir, 'src/worker.js'), 'utf8');
 const html = fs.readFileSync(path.join(dir, 'src/frontend.html'), 'utf8');
@@ -54,12 +54,12 @@ let pass = 0, fail = 0;
 function check(name, cond, extra = '') { if (cond) { pass++; console.log('PASS:', name); } else { fail++; console.log('FAIL:', name, extra); } }
 
 // 登录 + 改密
-let r = await call('POST', '/api/admin/login', { password: 'admin' });
+let r = await call('POST', '/api/admin/login', { setup_token: 'test-setup-token' });
 let cookie = '';
 const sc = r.headers.get('set-cookie') || '';
 if (sc) cookie = sc.split(';')[0];
 check('admin login', r.json && r.json.ok);
-r = await call('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'appicons-test-123' }, cookie);
+r = await call('POST', '/api/admin/change-password', { old_password: '', new_password: 'appicons-test-123' }, cookie);
 check('change password', r.json && r.json.ok);
 
 // 1. 迁移 v11：app_icons 60 行 + products.app_icon_key 列
@@ -171,10 +171,12 @@ check('frontend productImgHtml prefers app icon', html.includes('function produc
   const dqStart = html.indexOf('async function doQueryList');
   const dqEnd = html.indexOf('async function doQuerySecret', dqStart);
   const dqSrc = dqStart !== -1 && dqEnd !== -1 ? html.slice(dqStart, dqEnd) : '';
-  const pwIdx = dqSrc.indexOf("if (o.credential_type === 'password')");
-  const ppIdx = dqSrc.indexOf("if (o.status === 'pending_payment')");
-  check('P2-17: doQueryList found', !!dqSrc);
-  check('P2-17: password input branch is a standalone if (not else if)', pwIdx !== -1 && !dqSrc.includes("else if (o.credential_type === 'password')"));
+  // P2-17 更新（B-P2-5）：/query 不再返回 credential_type，前端 doQueryList 不再按凭证方案分支；
+  // 统一渲染查询密码输入（doQuerySecret）+ 旧订单凭证入口（doQueryLegacyStart，含图形验证码两步流程）。
+  const pwIdx = dqSrc.indexOf('doQuerySecret');
+  const legacyIdx = dqSrc.indexOf('doQueryLegacyStart');
+  const ppIdx = dqSrc.indexOf('pending_payment');
+  check('P2-17: doQueryList has generic secret input + legacy entry, no credential_type', pwIdx !== -1 && legacyIdx !== -1 && !dqSrc.includes('credential_type'));
   const between = (ppIdx !== -1 && pwIdx !== -1 && pwIdx > ppIdx) ? dqSrc.slice(ppIdx, pwIdx) : '';
   check('P2-17: password branch NOT inside pending_payment else-if chain (pending_payment block closed before it, no else if between)', ppIdx !== -1 && pwIdx > ppIdx && !between.includes('else if') && between.includes('}'));
   check('P2-17: password branch renders qpw-<order_no> input', dqSrc.includes("qpw-' + escH(o.order_no)") || dqSrc.includes('qpw-'));
@@ -190,7 +192,7 @@ const darkSeed = db.prepare("SELECT image_data FROM app_icons WHERE app_key='cha
 db.prepare("UPDATE app_icons SET image_data='data:image/jpeg;base64,FAKE-OLD-DARK' WHERE app_key='chatgpt' AND theme='dark'").run();
 db.prepare("DELETE FROM schema_migrations WHERE version=12").run();
 r = await call('POST', '/api/admin/migrate', {}, cookie);
-check('v12 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 17, JSON.stringify(r.json));
+check('v12 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 18, JSON.stringify(r.json));
 const darkAfter = db.prepare("SELECT image_data FROM app_icons WHERE app_key='chatgpt' AND theme='dark'").get().image_data;
 check('v12 refreshed dark icon to seed value', darkAfter === darkSeed, 'after len=' + darkAfter.length);
 check('v12 does not touch light icon', db.prepare("SELECT image_data FROM app_icons WHERE app_key='chatgpt' AND theme='light'").get().image_data === icons.chatgpt.light);
@@ -199,7 +201,7 @@ const tgSeed = db.prepare("SELECT image_data FROM app_icons WHERE app_key='teleg
 db.prepare("UPDATE app_icons SET image_data='data:image/jpeg;base64,FAKE-OLD-TELEGRAM-WHITE' WHERE app_key='telegram' AND theme='dark'").run();
 db.prepare("DELETE FROM schema_migrations WHERE version=13").run();
 r = await call('POST', '/api/admin/migrate', {}, cookie);
-check('v13 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 17, JSON.stringify(r.json));
+check('v13 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 18, JSON.stringify(r.json));
 const tgAfter = db.prepare("SELECT image_data FROM app_icons WHERE app_key='telegram' AND theme='dark'").get().image_data;
 check('v13 refreshed telegram dark to seed value', tgAfter === tgSeed, 'after len=' + tgAfter.length);
 
@@ -240,7 +242,7 @@ r = await call('POST', '/api/orders/query', { keywords: 'buyer@example.com', cap
 check('query-flow: query by email lists order (dual query), no delivery leak', r.json && r.json.ok && r.json.orders.length === 1 && r.json.orders[0].order_no === qfNo1 && !('delivery_content' in r.json.orders[0]) && !('has_delivery' in r.json.orders[0]), JSON.stringify(r.json));
 seedCaptcha('qf-cap-4', 'TEST');
 r = await call('POST', '/api/orders/query', { keywords: qfNo1, captcha_id: 'qf-cap-4', captcha_code: 'TEST' });
-check('query-flow: query by order_no lists order (no delivery, no has_delivery)', r.json && r.json.ok && r.json.orders.length === 1 && r.json.orders[0].order_no === qfNo1 && r.json.orders[0].credential_type === 'password' && !('delivery_content' in r.json.orders[0]) && !('has_delivery' in r.json.orders[0]), JSON.stringify(r.json));
+check('query-flow: query by order_no lists order (no delivery, no has_delivery, no credential_type)', r.json && r.json.ok && r.json.orders.length === 1 && r.json.orders[0].order_no === qfNo1 && !('credential_type' in r.json.orders[0]) && !('delivery_content' in r.json.orders[0]) && !('has_delivery' in r.json.orders[0]), JSON.stringify(r.json));
 seedCaptcha('qf-cap-5', 'TEST');
 r = await call('POST', '/api/orders/query', { keywords: 'nobody@example.com', captcha_id: 'qf-cap-5', captcha_code: 'TEST' });
 check('query-flow: query unknown returns empty list', r.json && r.json.ok && r.json.orders.length === 0, JSON.stringify(r.json));
@@ -250,19 +252,22 @@ r = await call('POST', '/api/orders/' + qfNo1 + '/secret', { password: '' });
 check('query-flow: secret empty password 401', r.status === 401, JSON.stringify(r.json));
 r = await call('POST', '/api/orders/' + qfNo1 + '/secret', { password: 'mypw123' });
 check('query-flow: secret correct password returns card', r.json && r.json.ok && r.json.delivery_content === 'TEST-CARD-123', JSON.stringify(r.json));
-for (let i = 0; i < 3; i++) await call('POST', '/api/orders/' + qfNo1 + '/secret', { password: 'wrongpw' });
-r = await call('POST', '/api/orders/' + qfNo1 + '/secret', { password: 'wrongpw' });
-check('query-flow: secret rate limited after 5 attempts (429)', r.status === 429, JSON.stringify(r.json));
-// legacy 订单（v14 遗留无 salt 哈希）：/secret 403 转客服，/lookup 只返回 summary（无卡密）
+// B-P2-6（P3-40 改写）：/secret 成功后清零按单记数——此前正确密码已成功一次（上方），
+// 若成功也占配额则此前累计已达上限；现正确语义为仅失败尝试占配额：再 5 次错 → 第 6 次正确 → 429。
+for (let i = 0; i < 5; i++) await call('POST', '/api/orders/' + qfNo1 + '/secret', { password: 'wrongpw' });
+r = await call('POST', '/api/orders/' + qfNo1 + '/secret', { password: 'mypw123' });
+check('query-flow: secret rate limited after 5 failures post-success (429)', r.status === 429, JSON.stringify(r.json));
+// legacy 订单（v14 遗留无 salt 哈希）：/secret 401 通用错误（B-P2-5），/lookup 401（无可用自助凭证，走管理流程）
 const qfLegacyNo = 'AISQFLEGACY1';
 db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, query_password_hash, query_password_salt, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, delivery_content, created_at) VALUES (?, '', '', ?, '', ?, '{}', 1, 1, 1, 1, '', '2099-01-01 00:00:00', ?, 'legacy@example.com', 'OKX', 'X Layer', '', 'completed', 'LEGACY-CARD-1', datetime('now'))").run(qfLegacyNo, sha256hex('legacypw'), qfPid, JSON.stringify({ contact_email: 'legacy@example.com' }));
 r = await call('POST', '/api/orders/' + qfLegacyNo + '/secret', { password: 'legacypw' });
-check('query-flow: legacy order secret 403 (admin flow only)', r.status === 403, JSON.stringify(r.json));
-r = await call('POST', '/api/orders/' + qfLegacyNo + '/lookup', { password: 'legacypw' });
+check('query-flow: legacy order secret 401 generic (B-P2-5, was 403 descriptive)', r.status === 401 && r.json && r.json.error === '查询密码错误', JSON.stringify(r.json));
+seedCaptcha('qf-cap-legacy', 'TEST');
+r = await call('POST', '/api/orders/' + qfLegacyNo + '/lookup', { password: 'legacypw', captcha_id: 'qf-cap-legacy', captcha_code: 'TEST' });
 check('query-flow: legacy order lookup 401 (no usable self-service credential, admin flow only)', r.status === 401, JSON.stringify(r.json));
 seedCaptcha('qf-cap-6', 'TEST');
 r = await call('POST', '/api/orders/query', { keywords: qfLegacyNo, captcha_id: 'qf-cap-6', captcha_code: 'TEST' });
-check('query-flow: legacy order lists as credential_type=legacy', r.json && r.json.ok && r.json.orders.length === 1 && r.json.orders[0].credential_type === 'legacy' && !('delivery_content' in r.json.orders[0]), JSON.stringify(r.json));
+check('query-flow: legacy order lists without credential_type', r.json && r.json.ok && r.json.orders.length === 1 && !('credential_type' in r.json.orders[0]) && !('delivery_content' in r.json.orders[0]), JSON.stringify(r.json));
 // 管理员重置查询密码（第二单，避免撞第一单的限流计数）
 const qfRow2 = db.prepare('SELECT * FROM orders WHERE order_no = ?').get(qfNo2);
 const qfId2 = qfRow2 ? qfRow2.id : 0;
@@ -272,11 +277,12 @@ r = await call('POST', '/api/orders/' + qfNo2 + '/secret', { password: 'secondpw
 check('query-flow: secret old password 401 after reset', r.status === 401, JSON.stringify(r.json));
 r = await call('POST', '/api/orders/' + qfNo2 + '/secret', { password: 'newpw456' });
 check('query-flow: secret new password returns card after reset', r.json && r.json.ok && r.json.delivery_content === 'TEST-CARD-789', JSON.stringify(r.json));
-// P3-40：/secret 门限顺序：5 次尝试后用正确密码调 /secret，仍应 429（门限先于密码校验）。
-// 第二单此前已用 2 次（旧密码 401 + 新密码成功各记 1 次），再补 3 次错误凑满 5 次，第 6 次正确密码 → 429。
-for (let i = 0; i < 3; i++) await call('POST', '/api/orders/' + qfNo2 + '/secret', { password: 'wrongpw' });
+// P3-40 改写（B-P2-6）：/secret 成功后清零按单记数——旧断言称“旧密码 401 + 新密码成功各记 1 次”，
+// 即成功也占配额；正确语义为仅失败尝试占配额（成功认证不得烧掉合法用户的防爆破预算）。
+// 本块仍验证“门限先于密码校验”：新密码成功已清零（上方），再补 5 次错误凑满 5 次，第 6 次正确密码 → 429。
+for (let i = 0; i < 5; i++) await call('POST', '/api/orders/' + qfNo2 + '/secret', { password: 'wrongpw' });
 r = await call('POST', '/api/orders/' + qfNo2 + '/secret', { password: 'newpw456' });
-check('P3-40: /secret correct password after 5 attempts -> 429 (gate before password check)', r.status === 429, JSON.stringify(r.json));
+check('P3-40: /secret correct password after 5 failures -> 429 (gate before password check)', r.status === 429, JSON.stringify(r.json));
 check('query-flow: frontend checkout has query_password field', html.includes('id="query_password"') && html.includes('设置查询订单的密码'));
 check('query-flow: frontend query page is keyword+list flow', html.includes('id="qkeywords"') && html.includes('doQueryList()') && html.includes('doQuerySecret(') && html.includes('doQueryLegacy('));
 check('query-flow: frontend query page says dual query (order no or email)', html.includes('订单号或下单邮箱') && html.includes('邮箱 + 图形验证码仅可查订单概要'));

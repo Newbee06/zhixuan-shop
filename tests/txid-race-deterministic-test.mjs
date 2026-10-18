@@ -103,6 +103,7 @@ function setup() {
   };
   const env = {
     DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } },
+    ZHIXUAN_SETUP_TOKEN: 'test-setup-token',
     PRODSELLER_API_KEY: 'test-key',
     PRODSELLER_BASE_URL: 'https://prodseller.com/v1',
     __fetch: mockFetch,
@@ -135,9 +136,10 @@ function setup() {
   function setSetting(key, value) { db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value); }
   function setGate(v) { setSetting('prodseller_enabled', String(v)); }
   async function adminLogin() {
-    let r = await call('POST', '/api/admin/login', { password: 'admin' });
+    // B-P0: new DB first login uses setup token (env.ZHIXUAN_SETUP_TOKEN); no public default password.
+    let r = await call('POST', '/api/admin/login', { setup_token: 'test-setup-token' });
     const c0 = r.headers.get('set-cookie') || '';
-    r = await call('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'admin123' }, c0);
+    r = await call('POST', '/api/admin/change-password', { old_password: '', new_password: 'txid-test-pass-123' }, c0);
     if (!r.json || !r.json.ok) throw new Error('admin setup failed: ' + JSON.stringify(r.json));
     return c0;
   }
@@ -542,7 +544,9 @@ function expireLease(t, orderId) {
   check('E3: duplicate confirm adds nothing', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1 && ledgerRows(t, tx).length === 1 && t.q('SELECT delivery_content FROM orders WHERE id=?', ord.id).delivery_content === 'E3-DELIVERY-1');
   // 同订单重复提交 TXID：/pay 状态守卫拒绝
   const rDupPay = await t.payCall(ord.order_no, tx);
-  check('E3: same-order duplicate /pay rejected', rDupPay.json && !rDupPay.json.ok, JSON.stringify(rDupPay.json));
+  // E3 语义更新（任务二）：已处理 TXID 重提为幂等成功（ok, auto:false），不再以“已非 pending_payment”拒绝；
+  // 关键安全属性（无新认领/账本/副作用）由下方断言覆盖。
+  check('E3: same-order duplicate /pay idempotent ok', rDupPay.json && rDupPay.json.ok === true && rDupPay.json.auto === false, JSON.stringify(rDupPay.json));
   // 不同订单重复用同一 TXID：人工 + 链上均拒绝
   r = await t.orderCall({ product_id: pM.id, quantity: 1 });
   const ord2 = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
@@ -603,7 +607,8 @@ function expireLease(t, orderId) {
   check('E4a: old claim still first order after replays', claimRow(t, txOld).order_id === ord.id);
   // ④ 同订单重复提交新 TXID：已非 pending_payment，拒绝，不产生重复副作用
   const rDup = await t.payCall(ord.order_no, txNew);
-  check('E4a: same-order duplicate /pay after fulfill rejected', rDup.json && !rDup.json.ok, JSON.stringify(rDup.json));
+  // E4a 语义更新（同 E3）：已入账 TXID 重提为幂等成功，不产生重复副作用。
+  check('E4a: same-order duplicate /pay after fulfill idempotent ok', rDup.json && rDup.json.ok === true && rDup.json.auto === false, JSON.stringify(rDup.json));
   check('E4a: still exactly two claims after duplicate', t.qa('SELECT * FROM txid_claims WHERE order_id=?', ord.id).length === 2);
 }
 // E4b：旧认领来源 manual_confirmed（账本写入失败后仅认领保留、订单仍 pending）；新 TXID 未验证/已验证分别处理
@@ -784,7 +789,8 @@ function expireLease(t, orderId) {
   check('F1: no upstream orders created by loser race', t.qa('SELECT * FROM upstream_orders WHERE order_id IN (?,?) AND prodseller_order_id != ?', oManual.id, oChain.id, '').length === 0);
   // 获胜后重复请求不能重复产生副作用
   const rRetry = winnerIsManual ? await confirm(t, winnerId, cookie, 'F1 重复确认') : await t.payCall(t.q('SELECT order_no FROM orders WHERE id=?', winnerId).order_no, tx);
-  check('F1: winner retry rejected', rRetry.json && !rRetry.json.ok, JSON.stringify(rRetry.json));
+  // F1 语义更新（同 E3）：胜者重提已处理 TXID 为幂等成功，不新增认领/账本。
+  check('F1: winner retry idempotent ok', rRetry.json && rRetry.json.ok === true && rRetry.json.auto === false, JSON.stringify(rRetry.json));
   check('F1: retry adds no claim', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1);
   t.env.__testHooks = {};
 }
@@ -981,6 +987,363 @@ function expireLease(t, orderId) {
   check('G10: same-TXID recovery adopts retained claim + fulfills', r.json && r.json.ok === true && r.json.auto === true, JSON.stringify(r.json));
   check('G10: exactly one claim after recovery', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1);
   check('G10: order pending_fulfill after recovery', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_fulfill');
+}
+
+
+// ================= 新增：任务一 A1.1 / A1.3、任务三 E4f/E4g、任务四 G11、任务五 B 项 =================
+{
+  // A1.1：旧认领查询抛 DB 异常 → fail-closed：订单 TXID、历史认领、账本、副作用全保持安全；DB 恢复后可安全重试。
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-A11-手动商品');
+  let r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const ord = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const txOld = 'a1'.repeat(32);
+  const txNew = 'a2'.repeat(32);
+  // 崩溃态：旧认领已写 + tx_hash 已填（fill 已完成），账本未写、未履约。
+  t.db.prepare("INSERT INTO txid_claims (tx_hash, order_id, claimed_at, claim_token, source, order_lease_token) VALUES (?, ?, datetime('now'), 'tok-old', 'chain_verified', '')").run(txOld, ord.id);
+  t.db.prepare('UPDATE orders SET tx_hash=?, pending_tx_hash=? WHERE id=?').run(txOld, txNew, ord.id);
+  const origPrepare = t.env.DB.prepare.bind(t.env.DB);
+  t.env.DB.prepare = (sql) => {
+    const st = origPrepare(sql);
+    if (String(sql) === 'SELECT 1 AS x FROM txid_claims WHERE tx_hash = ? AND order_id = ? LIMIT 1') {
+      st.first = async () => { throw new Error('injected old-claim query failure (A1.1)'); };
+    }
+    return st;
+  };
+  const rFail = await confirm(t, ord.id, cookie, 'A1.1 旧认领查询故障');
+  t.env.DB.prepare = origPrepare;
+  check('A1.1: old-claim query failure -> fail-closed !ok', rFail.json && !rFail.json.ok, JSON.stringify(rFail.json));
+  check('A1.1: tx_hash unchanged, old claim retained, no new claim/ledger', t.q('SELECT tx_hash FROM orders WHERE id=?', ord.id).tx_hash === txOld && !!claimRow(t, txOld) && !claimRow(t, txNew) && t.qa('SELECT * FROM payments WHERE tx_hash=?', txNew).length === 0);
+  check('A1.1: order still pending, no side effects', t.q('SELECT status, delivery_content FROM orders WHERE id=?', ord.id).status === 'pending_payment' && t.q('SELECT delivery_content FROM orders WHERE id=?', ord.id).delivery_content === '');
+  // DB 恢复后同订单安全重试：旧认领账本恢复（chain_verified → verified pending）+ 新 TXID 人工认领履约。
+  const rRetry = await confirm(t, ord.id, cookie, 'A1.1 DB 恢复后重试');
+  check('A1.1: retry after DB recovery succeeds', rRetry.json && rRetry.json.ok === true, JSON.stringify(rRetry.json));
+  check('A1.1: both claims retained after retry', !!claimRow(t, txOld) && !!claimRow(t, txNew));
+  check('A1.1: old claim ledger restored (verified)', t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='verified'", txOld).length === 1);
+  check('A1.1: new claim ledger manual_confirmed', t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", txNew).length === 1);
+  check('A1.1: first consumed tx_hash preserved (txOld)', t.q('SELECT tx_hash FROM orders WHERE id=?', ord.id).tx_hash === txOld);
+}
+{
+  // A1.3：模拟缺失 v17 列（INSERT INTO txid_claims 抛 no such column）→ 链上与人工路径均 fail-closed 报迁移错误，无降级写入，不发货。
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-A13-手动商品');
+  let r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const ord = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const txChain = 'b1'.repeat(32);
+  const txManual = 'b2'.repeat(32);
+  const origPrepare = t.env.DB.prepare.bind(t.env.DB);
+  t.env.DB.prepare = (sql) => {
+    const st = origPrepare(sql);
+    if (String(sql).indexOf('INSERT INTO txid_claims') !== -1) {
+      st.run = async () => { throw new Error('no such column: claim_token'); };
+    }
+    return st;
+  };
+  M.receipt = t.evmReceiptFor(ord, txChain, 9000);
+  const rChain = await t.payCall(ord.order_no, txChain);
+  check('A1.3: chain path schema fault -> fail-closed migration error', rChain.json && !rChain.json.ok && /迁移/.test(String(rChain.json.error || '')), JSON.stringify(rChain.json));
+  t.db.prepare('UPDATE orders SET pending_tx_hash=? WHERE id=?').run(txManual, ord.id);
+  const rManual = await confirm(t, ord.id, cookie, 'A1.3 人工路径 Schema 故障');
+  check('A1.3: manual path schema fault -> fail-closed migration error', rManual.json && !rManual.json.ok && /迁移/.test(String(rManual.json.error || '')), JSON.stringify(rManual.json));
+  t.env.DB.prepare = origPrepare;
+  check('A1.3: no downgrade claim rows written', t.qa('SELECT * FROM txid_claims WHERE tx_hash IN (?, ?)', txChain, txManual).length === 0);
+  check('A1.3: no ledger, order still pending, no fulfill', t.qa('SELECT * FROM payments WHERE tx_hash IN (?, ?)', txChain, txManual).length === 0 && t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_payment');
+}
+{
+  // E4f：已完成订单收到第二笔真实 TXID → overpaid_pending（认领 + 独立账本 + 超额态），不重复发货；管理员对账后清态。
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  await t.call('POST', '/api/admin/products', { title: '确定性-E4f-卡密商品', category: 'account', stock_type: 'card', sell_price: 4, source: 'self' }, cookie);
+  const pC = t.q("SELECT * FROM products WHERE title='确定性-E4f-卡密商品'");
+  t.db.prepare('INSERT INTO cards (product_id, code, is_used, is_disabled, order_id, reserved_order_id, reserved_at, created_at) VALUES (?, ?, 0, 0, NULL, NULL, NULL, ?)').run(pC.id, 'E4F-CARD-1', nowStr());
+  let r = await t.orderCall({ product_id: pC.id, quantity: 1 });
+  const ord = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const tx1 = 'c1'.repeat(32);
+  const tx2 = 'c2'.repeat(32);
+  M.receipt = t.evmReceiptFor(ord, tx1, 9000);
+  r = await t.payCall(ord.order_no, tx1);
+  check('E4f: first payment completes order', r.json && r.json.ok === true && r.json.auto === true && t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'completed', JSON.stringify(r.json));
+  const deliveryBefore = t.q('SELECT delivery_content FROM orders WHERE id=?', ord.id).delivery_content;
+  M.receipt = t.evmReceiptFor(ord, tx2, 9001);
+  r = await t.payCall(ord.order_no, tx2);
+  check('E4f: second real TXID -> overpaid (ok, overpaid, no re-fulfill)', r.json && r.json.ok === true && r.json.overpaid === true && r.json.auto === false, JSON.stringify(r.json));
+  check('E4f: order still completed, delivery unchanged', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'completed' && t.q('SELECT delivery_content FROM orders WHERE id=?', ord.id).delivery_content === deliveryBefore);
+  check('E4f: second claim retained (chain_verified)', !!claimRow(t, tx2) && claimRow(t, tx2).source === 'chain_verified' && claimRow(t, tx2).order_id === ord.id);
+  check('E4f: second ledger verified + overpaid_pending', (() => { const rows = t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='verified'", tx2); return rows.length === 1 && rows[0].reconcile_status === 'overpaid_pending'; })());
+  check('E4f: payment_state overpaid_pending', t.q('SELECT payment_state FROM orders WHERE id=?', ord.id).payment_state === 'overpaid_pending');
+  check('E4f: both claims retained', !!claimRow(t, tx1) && !!claimRow(t, tx2));
+  // 管理员对账超额付款 → reconciled + payment_state 清空。
+  const payRow2 = t.q("SELECT * FROM payments WHERE tx_hash=? AND status='verified'", tx2);
+  r = await t.call('POST', '/api/admin/payments/' + payRow2.id + '/reconcile', { note: 'E4f 超额付款已退回客户' }, cookie);
+  check('E4f: reconcile overpaid row ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+  check('E4f: payment_state cleared after reconcile', t.q('SELECT payment_state FROM orders WHERE id=?', ord.id).payment_state === '');
+  check('E4f: overpaid row reconciled', t.q('SELECT status FROM payments WHERE id=?', payRow2.id).status === 'reconciled');
+}
+{
+  // E4g：已入账（posted）订单 + 新核验 TXID → overpaid，不重复履约；他单重放新/旧 TXID 均被拒绝。
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-E4g-手动商品');
+  let r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const ord = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const tx1 = 'd1'.repeat(32);
+  const tx2 = 'd2'.repeat(32);
+  M.receipt = t.evmReceiptFor(ord, tx1, 9000);
+  r = await t.payCall(ord.order_no, tx1);
+  check('E4g: first payment -> pending_fulfill posted', r.json && r.json.ok === true && t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_fulfill' && t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='posted'", tx1).length === 1, JSON.stringify(r.json));
+  M.receipt = t.evmReceiptFor(ord, tx2, 9001);
+  r = await t.payCall(ord.order_no, tx2);
+  check('E4g: new verified TXID on posted order -> overpaid', r.json && r.json.ok === true && r.json.overpaid === true, JSON.stringify(r.json));
+  check('E4g: no re-fulfill, both claims retained', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_fulfill' && !!claimRow(t, tx1) && !!claimRow(t, tx2));
+  // 他单重放旧/新 TXID → 409 拒绝。
+  let r2 = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const ordOther = t.q('SELECT * FROM orders WHERE order_no=?', r2.json.order.order_no);
+  M.receipt = t.evmReceiptFor(ordOther, tx1, 9000);
+  r2 = await t.payCall(ordOther.order_no, tx1);
+  check('E4g: other-order replay of old TXID rejected 409', r2.status === 409 && r2.json && !r2.json.ok, JSON.stringify(r2.json));
+  M.receipt = t.evmReceiptFor(ordOther, tx2, 9001);
+  r2 = await t.payCall(ordOther.order_no, tx2);
+  check('E4g: other-order replay of new TXID rejected 409', r2.status === 409 && r2.json && !r2.json.ok, JSON.stringify(r2.json));
+  check('E4g: replay left no ledger for other order', t.qa('SELECT * FROM payments WHERE order_id=? AND status IN (?, ?, ?)', ordOther.id, 'verified', 'confirmed', 'posted').length === 0);
+}
+{
+  // G11：501 笔未付款订单，前 500 笔未到期，第 501 笔已过期且预留一张卡密；poll_enabled=0 一次定时任务 →
+  // 第 501 笔取消、卡密释放、审计仅一次、零 RPC、未到期订单不变、有认领/已验证付款/有效租约的订单不受影响。
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  await t.call('POST', '/api/admin/products', { title: '确定性-G11-卡密商品', category: 'account', stock_type: 'card', sell_price: 4, source: 'self' }, cookie);
+  const pC = t.q("SELECT * FROM products WHERE title='确定性-G11-卡密商品'");
+  t.db.prepare('INSERT INTO cards (product_id, code, is_used, is_disabled, order_id, reserved_order_id, reserved_at, created_at) VALUES (?, ?, 0, 0, NULL, NULL, NULL, ?)').run(pC.id, 'G11-CARD-1', nowStr());
+  const cardId = t.q('SELECT id FROM cards WHERE code=?', 'G11-CARD-1').id;
+  const ids = [];
+  for (let i = 0; i < 500; i++) ids.push(t.insertOrder({ product_id: pC.id, expires_at: "datetime('now','+30 minutes')" }).id);
+  const o501 = t.insertOrder({ product_id: pC.id, expires_at: "datetime('now','-1 minutes')" });
+  t.db.prepare('UPDATE cards SET reserved_order_id=?, reserved_at=? WHERE id=?').run(o501.id, nowStr(), cardId);
+  // 受保护的过期订单：有认领 / 有 verified 付款 / 有效租约。
+  const txClaim = 'e1'.repeat(32);
+  const oClaimed = t.insertOrder({ product_id: pC.id, expires_at: "datetime('now','-1 minutes')" });
+  t.db.prepare("INSERT INTO txid_claims (tx_hash, order_id, claimed_at, claim_token, source, order_lease_token) VALUES (?, ?, datetime('now'), 'tok-g11', 'chain_verified', '')").run(txClaim, oClaimed.id);
+  const oPaid = t.insertOrder({ product_id: pC.id, expires_at: "datetime('now','-1 minutes')" });
+  t.db.prepare("INSERT INTO payments (order_id, chain, pay_address, tx_hash, event_key, amount, status) VALUES (?, 'BEP20', '', ?, '', 10, 'verified')").run(oPaid.id, 'e2'.repeat(32));
+  const oLeased = t.insertOrder({ product_id: pC.id, expires_at: "datetime('now','-1 minutes')", claim_token: 'lease-g11', claimed_at: "datetime('now')" });
+  t.setSetting('poll_enabled', '0');
+  M.logs = [];
+  await t.scheduled();
+  check('G11: 501st expired order cancelled', t.q('SELECT status FROM orders WHERE id=?', o501.id).status === 'cancelled');
+  check('G11: reserved card released', t.q('SELECT reserved_order_id FROM cards WHERE id=?', cardId).reserved_order_id === null && t.q('SELECT is_used FROM cards WHERE id=?', cardId).is_used === 0);
+  check('G11: exactly one expiry audit', t.qa("SELECT * FROM admin_audit WHERE action='auto_cancel_timeout' AND order_id=?", o501.id).length === 1);
+  check('G11: zero RPC under poll_enabled=0', M.rpcCalls === 0);
+  check('G11: first 500 unexpired untouched', t.qa("SELECT * FROM orders WHERE id IN (SELECT id FROM orders WHERE status='pending_payment') AND id != ? AND id != ? AND id != ? AND id != ?", oClaimed.id, oPaid.id, oLeased.id, o501.id).length === 500);
+  check('G11: claimed order unaffected', t.q('SELECT status FROM orders WHERE id=?', oClaimed.id).status === 'pending_payment' && !!claimRow(t, txClaim));
+  check('G11: verified-payment order unaffected', t.q('SELECT status FROM orders WHERE id=?', oPaid.id).status === 'pending_payment');
+  check('G11: valid-lease order unaffected', t.q('SELECT status FROM orders WHERE id=?', oLeased.id).status === 'pending_payment');
+}
+{
+  // B-P1-4：验证码 SVG 无 <text> 节点（正则提取失败），且正常验证码仍可校验通过。
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-B14-手动商品');
+  const cap = await t.call('GET', '/api/captcha');
+  check('B-P1-4: captcha svg has no <text> node', cap.json && typeof cap.json.svg === 'string' && !/<text[\s>]/.test(cap.json.svg), JSON.stringify((cap.json || {}).svg || '').slice(0, 200));
+  check('B-P1-4: captcha svg has <rect> pixel blocks', cap.json && /<rect/.test(cap.json.svg || ''));
+  const capId = t.mkCaptcha('AB12');
+  const r = await t.orderCallWithCaptcha({ product_id: pM.id, quantity: 1 }, capId, 'AB12');
+  check('B-P1-4: normal captcha still verifies', r.json && r.json.ok === true, JSON.stringify(r.json));
+}
+{
+  // B-P1-6：/lookup 需验证码 + 按单原子记数（5 次/10 分钟），成功后清零。
+  resetMock();
+  const t = setup(); t.initBase();
+  const o1 = t.insertOrder({ query_password: 'legacy-pw-999' });
+  // 无验证码 → 401。
+  let r = await t.call('POST', '/api/orders/' + o1.order_no + '/lookup', { credential: 'legacy-pw-999' });
+  check('B-P1-6: /lookup without captcha -> 401', r.status === 401, JSON.stringify(r.json));
+  // 5 次错凭证（每次新验证码）→ 第 6 次正确凭证 → 429。
+  for (let i = 0; i < 5; i++) {
+    const cid = t.mkCaptcha('AB12');
+    const rr = await t.call('POST', '/api/orders/' + o1.order_no + '/lookup', { credential: 'wrong', captcha_id: cid, captcha_code: 'AB12' });
+    if (i === 0) check('B-P1-6: wrong cred still 401 (counted)', rr.status === 401, JSON.stringify(rr.json));
+  }
+  const cid6 = t.mkCaptcha('AB12');
+  r = await t.call('POST', '/api/orders/' + o1.order_no + '/lookup', { credential: 'legacy-pw-999', captcha_id: cid6, captcha_code: 'AB12' });
+  check('B-P1-6: 6th attempt after 5 failures -> 429', r.status === 429, JSON.stringify(r.json));
+  // 成功清零：新订单 2 错 → 成功 → 4 错 → 正确仍成功。
+  const o2 = t.insertOrder({ query_password: 'legacy-pw-999' });
+  for (let i = 0; i < 2; i++) { const cid = t.mkCaptcha('AB12'); await t.call('POST', '/api/orders/' + o2.order_no + '/lookup', { credential: 'wrong', captcha_id: cid, captcha_code: 'AB12' }); }
+  const cidOk = t.mkCaptcha('AB12');
+  r = await t.call('POST', '/api/orders/' + o2.order_no + '/lookup', { credential: 'legacy-pw-999', captcha_id: cidOk, captcha_code: 'AB12' });
+  check('B-P1-6: success after 2 failures ok + clears bucket', r.json && r.json.ok === true, JSON.stringify(r.json));
+  check('B-P1-6: lookup_attempts cleared on success', t.qa('SELECT * FROM lookup_attempts WHERE order_no=?', o2.order_no).length === 0);
+  // 注：首次成功后 legacy 订单已按 P2-2 迁移为 salted（/lookup 不再接受旧密码），故用记数证明清零：
+  // 若成功未清零，2 次旧失败 + 4 次新失败 = 6 次，第 5 次错凭证应 429；清零后第 5 次仍为 401。
+  for (let i = 0; i < 4; i++) { const cid = t.mkCaptcha('AB12'); await t.call('POST', '/api/orders/' + o2.order_no + '/lookup', { credential: 'wrong', captcha_id: cid, captcha_code: 'AB12' }); }
+  const cid5 = t.mkCaptcha('AB12');
+  r = await t.call('POST', '/api/orders/' + o2.order_no + '/lookup', { credential: 'wrong', captcha_id: cid5, captcha_code: 'AB12' });
+  check('B-P1-6: 5th failure after a success still 401 (bucket was cleared)', r.status === 401, JSON.stringify(r.json));
+}
+{
+  // B-P2-5：/secret 认证前失败统一 401 + “查询密码错误”；B-P2-6：成功后清零按单记数。
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-B25-手动商品');
+  // 空密码 → 401 通用文案。
+  const oSalted = t.insertOrder({ product_id: pM.id, query_password_hash: 'x', query_password_salt: 'y' });
+  let r = await t.call('POST', '/api/orders/' + oSalted.order_no + '/secret', { password: '' });
+  check('B-P2-5: /secret empty password -> 401 generic', r.status === 401 && r.json && r.json.error === '查询密码错误', JSON.stringify(r.json));
+  // 旧系统凭证订单 → 401 通用文案（不再 410 泄露）。
+  const oToken = t.insertOrder({ product_id: pM.id, query_token_hash: 'abc' });
+  r = await t.call('POST', '/api/orders/' + oToken.order_no + '/secret', { password: 'anything' });
+  check('B-P2-5: /secret token order -> 401 generic', r.status === 401 && r.json && r.json.error === '查询密码错误', JSON.stringify(r.json));
+  // legacy 无 salted 密码订单 → 401 通用文案（不再 403 泄露）。
+  const oLegacy = t.insertOrder({ product_id: pM.id });
+  r = await t.call('POST', '/api/orders/' + oLegacy.order_no + '/secret', { password: 'anything' });
+  check('B-P2-5: /secret legacy order -> 401 generic', r.status === 401 && r.json && r.json.error === '查询密码错误', JSON.stringify(r.json));
+  // /query 不返回 credential_type。
+  const q = await t.call('POST', '/api/orders/query', { keywords: oSalted.order_no, captcha_id: t.mkCaptcha('AB12'), captcha_code: 'AB12' });
+  check('B-P2-5: /query items carry no credential_type', q.json && Array.isArray(q.json.orders) && q.json.orders.every((o) => !('credential_type' in o)), JSON.stringify(q.json));
+  // B-P2-6：真实 salted 订单（经下单接口建）5 错 → 第 6 次正确 → 429；成功清零后 4 错 + 正确仍不 429。
+  let rr = await t.orderCall({ product_id: pM.id, quantity: 1, query_password: 'mypw1234' });
+  const oReal = t.q('SELECT * FROM orders WHERE order_no=?', rr.json.order.order_no);
+  for (let i = 0; i < 5; i++) await t.call('POST', '/api/orders/' + oReal.order_no + '/secret', { password: 'wrongpw' });
+  r = await t.call('POST', '/api/orders/' + oReal.order_no + '/secret', { password: 'mypw1234' });
+  check('B-P2-6: 6th attempt after 5 failures -> 429', r.status === 429, JSON.stringify(r.json));
+  rr = await t.orderCall({ product_id: pM.id, quantity: 1, query_password: 'mypw1234' });
+  const oReal2 = t.q('SELECT * FROM orders WHERE order_no=?', rr.json.order.order_no);
+  for (let i = 0; i < 2; i++) await t.call('POST', '/api/orders/' + oReal2.order_no + '/secret', { password: 'wrongpw' });
+  r = await t.call('POST', '/api/orders/' + oReal2.order_no + '/secret', { password: 'mypw1234' });
+  check('B-P2-6: success after 2 failures clears bucket (not 429)', r.status !== 429, JSON.stringify(r.json));
+  check('B-P2-6: secret_attempts cleared on success', t.qa('SELECT * FROM secret_attempts WHERE order_no=?', oReal2.order_no).length === 0);
+  for (let i = 0; i < 4; i++) await t.call('POST', '/api/orders/' + oReal2.order_no + '/secret', { password: 'wrongpw' });
+  r = await t.call('POST', '/api/orders/' + oReal2.order_no + '/secret', { password: 'mypw1234' });
+  check('B-P2-6: 4 failures after a success do not lock out', r.status !== 429, JSON.stringify(r.json));
+}
+{
+  // B-P2-7：stats.card_stock 排除已预留卡密（与 cardStockMap 同口径）。
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  await t.call('POST', '/api/admin/products', { title: '确定性-B27-卡密商品', category: 'account', stock_type: 'card', sell_price: 4, source: 'self' }, cookie);
+  const pC = t.q("SELECT * FROM products WHERE title='确定性-B27-卡密商品'");
+  t.db.prepare('INSERT INTO cards (product_id, code, is_used, is_disabled, order_id, reserved_order_id, reserved_at, created_at) VALUES (?, ?, 0, 0, NULL, NULL, NULL, ?), (?, ?, 0, 0, NULL, NULL, NULL, ?)').run(pC.id, 'B27-CARD-1', nowStr(), pC.id, 'B27-CARD-2', nowStr());
+  const oRes = t.insertOrder({ product_id: pC.id });
+  t.db.prepare('UPDATE cards SET reserved_order_id=? WHERE code=?').run(oRes.id, 'B27-CARD-1');
+  const st = await t.call('GET', '/api/admin/stats', undefined, cookie);
+  const expectedStock = t.q('SELECT COUNT(*) AS c FROM cards WHERE is_used=0 AND is_disabled=0 AND reserved_order_id IS NULL').c;
+  const withReserved = t.q('SELECT COUNT(*) AS c FROM cards WHERE is_used=0 AND is_disabled=0').c;
+  check('B-P2-7: stats card_stock excludes reserved', st.json && st.json.stats && st.json.stats.card_stock === expectedStock && withReserved === expectedStock + 1, JSON.stringify(st.json));
+}
+{
+  // B-P2-8：人工确认必须显式 manual_confirm === true；B-P2-10：商品/卡密条件写；B-P3-6：取消释放预留卡。
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-B28-手动商品');
+  let r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const ord = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  t.db.prepare('UPDATE orders SET pending_tx_hash=? WHERE id=?').run('f1'.repeat(32), ord.id);
+  r = await t.call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: 'B28 无 manual_confirm' }, cookie);
+  check('B-P2-8: confirm without manual_confirm -> 400', r.status === 400, JSON.stringify(r.json));
+  r = await t.call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: 'B28 显式 false', manual_confirm: false }, cookie);
+  check('B-P2-8: confirm with manual_confirm false -> 400', r.status === 400, JSON.stringify(r.json));
+  r = await t.call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: 'B28 显式 true', manual_confirm: true }, cookie);
+  check('B-P2-8: confirm with manual_confirm true -> ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+  // B-P2-10：有订单的商品删不掉；已预留卡删不掉/禁不掉；禁用幂等。
+  r = await t.call('DELETE', '/api/admin/products/' + pM.id, undefined, cookie);
+  check('B-P2-10: product with orders cannot be deleted (409)', r.status === 409, JSON.stringify(r.json));
+  await t.call('POST', '/api/admin/products', { title: '确定性-B210-卡密商品', category: 'account', stock_type: 'card', sell_price: 4, source: 'self' }, cookie);
+  const pC = t.q("SELECT * FROM products WHERE title='确定性-B210-卡密商品'");
+  t.db.prepare('INSERT INTO cards (product_id, code, is_used, is_disabled, order_id, reserved_order_id, reserved_at, created_at) VALUES (?, ?, 0, 0, NULL, NULL, NULL, ?), (?, ?, 0, 0, NULL, NULL, NULL, ?)').run(pC.id, 'B210-CARD-1', nowStr(), pC.id, 'B210-CARD-2', nowStr());
+  const cardRes = t.q('SELECT * FROM cards WHERE code=?', 'B210-CARD-1');
+  const cardFree = t.q('SELECT * FROM cards WHERE code=?', 'B210-CARD-2');
+  const oRes2 = t.insertOrder({ product_id: pC.id });
+  t.db.prepare('UPDATE cards SET reserved_order_id=? WHERE id=?').run(oRes2.id, cardRes.id);
+  r = await t.call('DELETE', '/api/admin/cards/' + cardRes.id, undefined, cookie);
+  check('B-P2-10: reserved card cannot be deleted', r.json && !r.json.ok && (r.status === 400 || r.status === 409), JSON.stringify(r.json));
+  r = await t.call('POST', '/api/admin/cards/' + cardRes.id + '/disable', { disabled: true }, cookie);
+  check('B-P2-10: reserved card cannot be disabled', r.json && !r.json.ok, JSON.stringify(r.json));
+  r = await t.call('POST', '/api/admin/cards/' + cardFree.id + '/disable', { disabled: true }, cookie);
+  check('B-P2-10: disable free card ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+  r = await t.call('POST', '/api/admin/cards/' + cardFree.id + '/disable', { disabled: true }, cookie);
+  check('B-P2-10: disable already-disabled card idempotent ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+  r = await t.call('DELETE', '/api/admin/cards/' + cardFree.id, undefined, cookie);
+  check('B-P2-10: disabled-but-free card can be deleted', r.json && r.json.ok === true, JSON.stringify(r.json));
+  // B-P3-6：管理员取消订单 → 预留卡直接释放（不再恢复为 reserved）。
+  r = await t.call('POST', '/api/admin/orders/' + oRes2.id + '/cancel', { reason: 'B36 取消释放' }, cookie);
+  check('B-P3-6: admin cancel ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+  check('B-P3-6: cancelled order releases reserved card', t.q('SELECT reserved_order_id FROM cards WHERE id=?', cardRes.id).reserved_order_id === null);
+}
+{
+  // B-P3-3：验证码 attempts 条件递增（3 次上限：2 错后正确仍过，3 错后正确亦被拒）；B-P2-9：限流 DB 故障 fail-closed。
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-B33-手动商品');
+  const capId = t.mkCaptcha('AB12');
+  let r = await t.orderCallWithCaptcha({ product_id: pM.id, quantity: 1 }, capId, 'XXXX');
+  check('B-P3-3: captcha wrong attempt 1 rejected', r.json && !r.json.ok, JSON.stringify(r.json));
+  r = await t.orderCallWithCaptcha({ product_id: pM.id, quantity: 1 }, capId, 'YYYY');
+  check('B-P3-3: captcha wrong attempt 2 rejected', r.json && !r.json.ok, JSON.stringify(r.json));
+  r = await t.orderCallWithCaptcha({ product_id: pM.id, quantity: 1 }, capId, 'AB12');
+  check('B-P3-3: correct captcha after 2 failures still verifies', r.json && r.json.ok === true, JSON.stringify(r.json));
+  const capId2 = t.mkCaptcha('CD34');
+  for (let i = 0; i < 3; i++) await t.orderCallWithCaptcha({ product_id: pM.id, quantity: 1 }, capId2, 'XXXX');
+  r = await t.orderCallWithCaptcha({ product_id: pM.id, quantity: 1 }, capId2, 'CD34');
+  check('B-P3-3: correct captcha after 3 failures rejected (max attempts)', r.json && !r.json.ok, JSON.stringify(r.json));
+  // B-P2-9：pay_rate 查询抛错 → /pay 429 fail-closed（不放行）。
+  let rr = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const ord = t.q('SELECT * FROM orders WHERE order_no=?', rr.json.order.order_no);
+  const origPrepare = t.env.DB.prepare.bind(t.env.DB);
+  t.env.DB.prepare = (sql) => {
+    const st = origPrepare(sql);
+    if (String(sql).indexOf('pay_rate') !== -1) {
+      st.first = async () => { throw new Error('injected pay_rate failure (B-P2-9)'); };
+      st.all = async () => { throw new Error('injected pay_rate failure (B-P2-9)'); };
+      st.run = async () => { throw new Error('injected pay_rate failure (B-P2-9)'); };
+    }
+    return st;
+  };
+  const capId3 = t.mkCaptcha('AB12');
+  r = await t.call('POST', '/api/orders/' + ord.order_no + '/pay', { txid: 'ff'.repeat(32), captcha_id: capId3, captcha_code: 'AB12' });
+  t.env.DB.prepare = origPrepare;
+  check('B-P2-9: /pay rate-limit DB failure -> 429 fail-closed', r.status === 429, JSON.stringify(r.json));
+}
+{
+  // B-P0：建站令牌 gating——未配置 503、错令牌 401、正确令牌登录 + 强制改密、已有密码后密码登录不变；B-P3-5：登录成功清零全局窗口计数。
+  resetMock();
+  const t = setup(); t.initBase();
+  // 未配置令牌 → 503。
+  const savedToken = t.env.ZHIXUAN_SETUP_TOKEN;
+  delete t.env.ZHIXUAN_SETUP_TOKEN;
+  let r = await t.call('POST', '/api/admin/login', { setup_token: 'anything' });
+  check('B-P0: no setup token configured -> 503 fail-closed', r.status === 503, JSON.stringify(r.json));
+  t.env.ZHIXUAN_SETUP_TOKEN = savedToken;
+  r = await t.call('POST', '/api/admin/login', { setup_token: 'wrong-token' });
+  check('B-P0: wrong setup token -> 401', r.status === 401, JSON.stringify(r.json));
+  r = await t.call('POST', '/api/admin/login', { password: 'admin' });
+  check('B-P0: public default password no longer accepted', r.status === 401, JSON.stringify(r.json));
+  // 全局窗口计数预置 5，成功登录后清零。
+  t.db.prepare("INSERT OR REPLACE INTO admin_meta (key, value) VALUES ('login_global_fail_count', '5'), ('login_global_fail_window', ?)").run(String(Date.now()));
+  r = await t.call('POST', '/api/admin/login', { setup_token: 'test-setup-token' });
+  const c0 = r.headers.get('set-cookie') || '';
+  check('B-P0: correct setup token -> login + must change', r.json && r.json.ok === true && r.json.must_change_password === true, JSON.stringify(r.json));
+  check('B-P3-5: login success clears global window count', t.q("SELECT value FROM admin_meta WHERE key='login_global_fail_count'").value === '0');
+  // 建站令牌会话下改密：旧密码留空即可。
+  r = await t.call('POST', '/api/admin/change-password', { old_password: '', new_password: 'bpo-new-pass-123' }, c0);
+  check('B-P0: change-password with setup-token session (empty old pw) ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+  // 已有密码后：密码登录成功；建站令牌不再是登录凭证。
+  r = await t.call('POST', '/api/admin/login', { password: 'bpo-new-pass-123' });
+  check('B-P0: password login after hash set ok', r.json && r.json.ok === true, JSON.stringify(r.json));
+  r = await t.call('POST', '/api/admin/login', { setup_token: 'test-setup-token' });
+  check('B-P0: setup token ignored once password hash exists', r.json && !r.json.ok, JSON.stringify(r.json));
 }
 
 console.log('\n==== txid-race-deterministic: ' + pass + ' passed, ' + fail + ' failed ====');

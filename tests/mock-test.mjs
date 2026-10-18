@@ -16,11 +16,11 @@ function wrapStmt(sql) {
     bind(...a) { params = a; return api; },
     async first() { try { const st = db.prepare(sql); const r = st.get(...params); return r === undefined ? null : r; } catch (e) { throw e; } },
     async all() { const st = db.prepare(sql); const rows = st.all(...params); return { results: rows }; },
-    async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; },
+    async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes, last_row_id: info.lastInsertRowid } }; },
   };
   return api;
 }
-const env = { DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', RESEND_API_KEY: 'test-resend', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
+const env = { ZHIXUAN_SETUP_TOKEN: 'test-setup-token', DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', RESEND_API_KEY: 'test-resend', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
 const sentEmails = [];
 const upstreamCalls = [];
 let getCountPSORD1 = 0;
@@ -140,10 +140,10 @@ db.prepare("UPDATE settings SET value=? WHERE key='rpc_urls'").run(JSON.stringif
 // ProdSeller 门禁：测试环境用 Mock 上游，显式开启门禁（模拟“已提供上游验证证据”的环境；生产默认关闭）。
 db.prepare("UPDATE settings SET value='1' WHERE key='prodseller_enabled'").run();
 // admin login + 首次改密（新规则：未改密的会话不能调其他管理接口）
-let r = await call('POST', '/api/admin/login', { password: 'admin' });
+let r = await call('POST', '/api/admin/login', { setup_token: 'test-setup-token' });
 assert(r.json.ok, 'admin login');
 let cookie = (r.headers.get('set-cookie') || '').split(';')[0];
-r = await call('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'test-admin-password-123' }, cookie);
+r = await call('POST', '/api/admin/change-password', { old_password: '', new_password: 'test-admin-password-123' }, cookie);
 assert(r.json.ok, 'change-password from initial admin');
 cookie = (r.headers.get('set-cookie') || '').split(';')[0] || cookie;
 // 未改密会话应被拦截（用一个全新登录但不改密的会话验证）
@@ -206,7 +206,7 @@ assert(r.json.ok, 'G upstream BEP20 order created');
 let oG = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
 r = await call('POST', '/api/admin/orders/' + oG.id + '/confirm-payment', {}, cookie);
 assert(!r.json.ok && /原因/.test(r.json.error || ''), 'G confirm-payment without reason rejected: ' + JSON.stringify(r.json));
-r = await call('POST', '/api/admin/orders/' + oG.id + '/confirm-payment', { reason: 'G admin manual confirm (mock upstream)' }, cookie);
+r = await call('POST', '/api/admin/orders/' + oG.id + '/confirm-payment', { reason: 'G admin manual confirm (mock upstream)' , manual_confirm: true }, cookie);
 assert(r.json.ok, 'G admin confirm-payment ok: ' + JSON.stringify(r.json));
 oG = q('SELECT * FROM orders WHERE id=?', oG.id);
 assert(oG.status === 'completed' && oG.delivery_content === 'UP-KEY-ABC', 'G admin confirm -> ProdSeller delivered, got ' + oG.status);

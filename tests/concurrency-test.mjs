@@ -31,11 +31,11 @@ function wrapStmt(sql) {
     bind(...a) { params = a; return api; },
     async first() { try { const st = db.prepare(sql); const r = st.get(...params); return r === undefined ? null : r; } catch (e) { throw e; } },
     async all() { const st = db.prepare(sql); const rows = st.all(...params); return { results: rows }; },
-    async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; },
+    async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes, last_row_id: info.lastInsertRowid } }; },
   };
   return api;
 }
-const env = { DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
+const env = { ZHIXUAN_SETUP_TOKEN: 'test-setup-token', DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
 // Mock fetch：ProdSeller（计数 + 延迟屏障 + 首次失败）与 EVM RPC（BEP20 收据，供 §5b 的 TXID 认领测试）
 let evmReceiptFor = null; // 由测试设置：{ to, amount, hash } —— 模拟该 TXID 已在链上向 to 付款（认领机制单测，链上核验由 payment-whitelist 覆盖）
 let evmScanLogs = []; // 由测试设置：eth_getLogs 返回的日志（供 §3 cron 扫描）
@@ -119,9 +119,9 @@ function q(sql, ...a) { return db.prepare(sql).get(...a); }
 function qall(sql, ...a) { return db.prepare(sql).all(...a); }
 
 // ===== 登录 =====
-let r = await call('POST', '/api/admin/login', { password: 'admin' });
+let r = await call('POST', '/api/admin/login', { setup_token: 'test-setup-token' });
 let cookie = (r.headers.get('set-cookie') || '').split(';')[0];
-r = await call('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'conc-test-pass-123' }, cookie);
+r = await call('POST', '/api/admin/change-password', { old_password: '', new_password: 'conc-test-pass-123' }, cookie);
 check('login + change-password', r.json && r.json.ok === true, JSON.stringify(r.json));
 
 // ===== 建商品：卡密商品（1 张卡）与上游商品 =====
@@ -165,8 +165,8 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   check('upstream order created', r.json && r.json.ok === true, JSON.stringify(r.json));
   const ord = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   const [c1, c2] = await Promise.all([
-    call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '并发确认1' }, cookie),
-    call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '并发确认2' }, cookie),
+    call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '并发确认1' , manual_confirm: true }, cookie),
+    call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '并发确认2' , manual_confirm: true }, cookie),
   ]);
   const okC = [c1, c2].filter((x) => x.json && x.json.ok).length;
   check('concurrent confirm-payment: exactly one succeeds', okC === 1, JSON.stringify([c1.json, c2.json]));
@@ -203,7 +203,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const ctx = makeCtx();
   const [cronRes, adminRes] = await Promise.all([
     (async () => { try { await worker.scheduled({ cron: '*/1 * * * *' }, env, ctx); await ctx.drain(); return { ok: true }; } catch (e) { return { ok: false, error: String(e) }; } })(),
-    call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '管理员并发确认' }, cookie),
+    call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '管理员并发确认' , manual_confirm: true }, cookie),
   ]);
   void cronRes; void adminRes;
   const finalOrd = q('SELECT * FROM orders WHERE id=?', ord.id);
@@ -242,7 +242,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   await call('POST', '/api/admin/cards/import', { product_id: pCard.id, codes: 'CONC-CARD-FULFILL-1' }, cookie);
   r = await orderCall({ product_id: pCard.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'conc-ful@test.example', delivery_email: 'conc-ful@test.example' } });
   const ord = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  await call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '先确认到 pending_fulfill？卡密商品 confirm 直接完成，改用人工商品测试' }, cookie);
+  await call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '先确认到 pending_fulfill？卡密商品 confirm 直接完成，改用人工商品测试' , manual_confirm: true }, cookie);
   // 卡密商品 confirm-payment 直接完成，无法进入 pending_fulfill；改用“手动发货释放”场景的待发货订单（见第 7 节）。
   // 本节改测：两个 confirm-payment 并行处理同一卡密订单（与第 2 节同机制，不同商品路径）
   check('fulfill-test setup: card order completed by confirm', q('SELECT status FROM orders WHERE id=?', ord.id).status === 'completed');
@@ -251,7 +251,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const pManual = q("SELECT * FROM products WHERE title='并发人工商品'");
   r = await orderCall({ product_id: pManual.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'conc-ful2@test.example' } });
   const ordM = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  await call('POST', '/api/admin/orders/' + ordM.id + '/confirm-payment', { reason: '确认到待发货' }, cookie);
+  await call('POST', '/api/admin/orders/' + ordM.id + '/confirm-payment', { reason: '确认到待发货' , manual_confirm: true }, cookie);
   check('manual order pending_fulfill', q('SELECT status FROM orders WHERE id=?', ordM.id).status === 'pending_fulfill');
   const [f1, f2] = await Promise.all([
     call('POST', '/api/admin/orders/' + ordM.id + '/fulfill', { delivery_content: 'DELIVERY-A' }, cookie),
@@ -275,7 +275,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const ordA = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   // 直接设置 tx_hash（模拟客户已提交 TXID），再管理员确认 → 完成，写 manual_confirmed 行 + 共享 txid_claims 认领
   db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(txHash2, ordA.id);
-  r = await call('POST', '/api/admin/orders/' + ordA.id + '/confirm-payment', { reason: 'A 确认' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + ordA.id + '/confirm-payment', { reason: 'A 确认' , manual_confirm: true }, cookie);
   check('admin confirm fulfills order A', r.json && r.json.ok === true, JSON.stringify(r.json));
   check('admin confirm writes shared txid_claims (P1-2 v17, source=manual_confirmed)', (() => { const row = q('SELECT * FROM txid_claims WHERE tx_hash=?', txHash2); return row && Number(row.order_id) === Number(ordA.id) && row.source === 'manual_confirmed' && !!row.claim_token; })());
   check('admin confirm writes manual_confirmed ledger row (P1-2)', (() => { const p = q("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", txHash2); return p && Number(p.order_id) === Number(ordA.id); })());
@@ -283,7 +283,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   r = await orderCall({ product_id: pTx.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'tx-b@test.example' } });
   const ordB = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(txHash2, ordB.id);
-  r = await call('POST', '/api/admin/orders/' + ordB.id + '/confirm-payment', { reason: 'B 确认（同一 TXID 应被挡）' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + ordB.id + '/confirm-payment', { reason: 'B 确认（同一 TXID 应被挡）' , manual_confirm: true }, cookie);
   check('admin confirm with already-consumed txid rejected', r.json && !r.json.ok && /已用于其他订单/.test(r.json.error || ''), JSON.stringify(r.json));
   check('order B still pending_payment after rejected confirm', q('SELECT status FROM orders WHERE id=?', ordB.id).status === 'pending_payment');
   check('txid manual_confirmed row still belongs to A after B rejected', q("SELECT order_id FROM payments WHERE tx_hash=? AND status='manual_confirmed'", txHash2).order_id === ordA.id);
@@ -322,7 +322,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const ord = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   upstreamFailFirst = true; // 第一次创建抛错（模拟超时）
   const beforeCreates = upstreamCreates;
-  r = await call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '首次确认（上游超时）' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '首次确认（上游超时）' , manual_confirm: true }, cookie);
   check('first confirm -> pending_upstream on timeout', r.json && r.json.ok === true && /pending_upstream|上游/.test(r.json.message || ''), JSON.stringify(r.json));
   check('order pending_upstream after timeout', q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_upstream');
   check('timeout create counted', upstreamCreates - beforeCreates === 1);
@@ -342,7 +342,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   r = await orderCall({ product_id: pUp.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'conc-lease@test.example' } });
   const ord = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   upstreamFailFirst = true; // 首次确认上游超时 → pending_upstream，无上游单号
-  r = await call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '租约测试：先超时' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '租约测试：先超时' , manual_confirm: true }, cookie);
   check('lease setup: order pending_upstream', q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_upstream');
   upstreamFailFirst = false;
   const beforeCreates = upstreamCreates;
@@ -370,7 +370,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   // 模拟崩溃：卡已标记已用，但订单未完成；认领已过期
   db.prepare('UPDATE cards SET is_used=1, order_id=?, reserved_order_id=NULL, reserved_at=NULL WHERE id=?').run(ord.id, card.id);
   db.prepare("UPDATE orders SET claim_token='stale-claim-token', claimed_at='2000-01-01 00:00:00', paid_at='2026-01-01 00:00:00' WHERE id=?").run(ord.id);
-  r = await call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '崩溃后恢复' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '崩溃后恢复' , manual_confirm: true }, cookie);
   check('crash recovery: confirm succeeds', r.json && r.json.ok === true, JSON.stringify(r.json));
   const finalOrd = q('SELECT * FROM orders WHERE id=?', ord.id);
   check('crash recovery: order completed with the crashed card', finalOrd.status === 'completed' && finalOrd.delivery_content === card.code, JSON.stringify(finalOrd));
@@ -384,7 +384,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const ord = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   const [cancelRes, confirmRes] = await Promise.all([
     call('POST', '/api/admin/orders/' + ord.id + '/cancel', { reason: '并发取消' }, cookie),
-    call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '并发确认' }, cookie),
+    call('POST', '/api/admin/orders/' + ord.id + '/confirm-payment', { reason: '并发确认' , manual_confirm: true }, cookie),
   ]);
   const okN = [cancelRes, confirmRes].filter((x) => x.json && x.json.ok).length;
   check('cancel vs confirm: exactly one succeeds', okN === 1, JSON.stringify([cancelRes.json, confirmRes.json]));
@@ -416,7 +416,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   // 自动发卡后已用卡不释放：再建一笔卡密订单，confirm-payment 自动发卡，卡保持已用
   r = await orderCall({ product_id: pCard.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'conc-auto@test.example', delivery_email: 'conc-auto@test.example' } });
   const ordA2 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  r = await call('POST', '/api/admin/orders/' + ordA2.id + '/confirm-payment', { reason: '自动发卡' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + ordA2.id + '/confirm-payment', { reason: '自动发卡' , manual_confirm: true }, cookie);
   check('auto fulfill ok', r.json && r.json.ok === true, JSON.stringify(r.json));
   check('auto fulfill: delivered card stays used', (() => { const c = q('SELECT * FROM cards WHERE order_id=? AND is_used=1', ordA2.id); return !!c; })());
 }
@@ -488,7 +488,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   dbOld.prepare("INSERT INTO upstream_orders (order_id, prodseller_order_id, status) VALUES (?, 'PS-OLD-1', 'paid')").run(oldOid);
   dbOld.prepare("INSERT INTO upstream_orders (order_id, prodseller_order_id, status) VALUES (?, 'PS-OLD-2', 'delivered')").run(oldOid);
   // 用旧库跑 Worker（复用同一 worker 代码，换 env）
-  const envOld = { DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbOld.prepare(sql); const rr = st.get(...params); return rr === undefined ? null : rr; } catch (e) { throw e; } }, async all() { const st = dbOld.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbOld.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; } }; return api; }, async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
+  const envOld = { ZHIXUAN_SETUP_TOKEN: 'test-setup-token', DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbOld.prepare(sql); const rr = st.get(...params); return rr === undefined ? null : rr; } catch (e) { throw e; } }, async all() { const st = dbOld.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbOld.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes, last_row_id: info.lastInsertRowid } }; } }; return api; }, async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
   async function callOld(method, p, body, ck) {
     const ctx = makeCtx();
     const headers = { 'content-type': 'application/json', 'X-Admin-API': '1' };
@@ -500,14 +500,14 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
     let j = null; try { j = JSON.parse(txt); } catch {}
     return { status: res.status, json: j, headers: res.headers };
   }
-  const lr = await callOld('POST', '/api/admin/login', { password: 'admin' });
+  const lr = await callOld('POST', '/api/admin/login', { setup_token: 'test-setup-token' });
   check('old-db login ok', lr.json && lr.json.ok === true, JSON.stringify(lr.json));
   const ocookie = (lr.headers.get('set-cookie') || '').split(';')[0];
   // 旧库无密码哈希，首次登录强制改密后才能调管理接口
-  const cp = await callOld('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'old-db-pass-123' }, ocookie);
+  const cp = await callOld('POST', '/api/admin/change-password', { old_password: '', new_password: 'old-db-pass-123' }, ocookie);
   check('old-db change-password ok', cp.json && cp.json.ok === true, JSON.stringify(cp.json));
   const mg = await callOld('GET', '/api/admin/migrate', null, ocookie);
-  check('old-db migrated to v17', mg.json && mg.json.ok === true && mg.json.current_version === 17, JSON.stringify(mg.json));
+  check('old-db migrated to v18', mg.json && mg.json.ok === true && mg.json.current_version === 18, JSON.stringify(mg.json));
   check('old-db: old order preserved', !!dbOld.prepare("SELECT * FROM orders WHERE order_no='AISOLD001'").get());
   check('old-db: old card preserved', !!dbOld.prepare("SELECT * FROM cards WHERE code='OLD-CARD-1'").get());
   check('old-db: old product preserved', !!dbOld.prepare("SELECT * FROM products WHERE slug='old-prod'").get());
@@ -535,7 +535,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   dbBad.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
   dbBad.exec('DROP TABLE orders');
   dbBad.exec('DELETE FROM schema_migrations');
-  const envBad = { DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbBad.prepare(sql); const rr = st.get(...params); return rr === undefined ? null : rr; } catch (e) { throw e; } }, async all() { const st = dbBad.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbBad.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; } }; return api; }, async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key' };
+  const envBad = { DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbBad.prepare(sql); const rr = st.get(...params); return rr === undefined ? null : rr; } catch (e) { throw e; } }, async all() { const st = dbBad.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbBad.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes, last_row_id: info.lastInsertRowid } }; } }; return api; }, async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key' };
   const ctx = makeCtx();
   const req = new Request('http://test/api/config', { method: 'GET', headers: { 'content-type': 'application/json' } });
   const res = await worker.fetch(req, envBad, ctx);
@@ -558,7 +558,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   dbNoAudit.exec('DROP TABLE admin_audit');
   // 审计测试的订单走 OKX|X Layer，需有效收款地址（schema 种子为占位符，会拒单）
   dbNoAudit.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111' }));
-  const envNoAudit = { DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbNoAudit.prepare(sql); const rr = st.get(...params); return rr === undefined ? null : rr; } catch (e) { throw e; } }, async all() { const st = dbNoAudit.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbNoAudit.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; } }; return api; }, async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
+  const envNoAudit = { ZHIXUAN_SETUP_TOKEN: 'test-setup-token', DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbNoAudit.prepare(sql); const rr = st.get(...params); return rr === undefined ? null : rr; } catch (e) { throw e; } }, async all() { const st = dbNoAudit.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbNoAudit.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes, last_row_id: info.lastInsertRowid } }; } }; return api; }, async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
   async function callNoAudit(method, p, body, ck) {
     const ctx = makeCtx();
     const headers = { 'content-type': 'application/json', 'X-Admin-API': '1' };
@@ -570,9 +570,9 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
     let j = null; try { j = JSON.parse(txt); } catch {}
     return { status: res.status, json: j, headers: res.headers };
   }
-  const lr2 = await callNoAudit('POST', '/api/admin/login', { password: 'admin' });
+  const lr2 = await callNoAudit('POST', '/api/admin/login', { setup_token: 'test-setup-token' });
   const ck2 = (lr2.headers.get('set-cookie') || '').split(';')[0];
-  await callNoAudit('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'audit-fail-pass-1' }, ck2);
+  await callNoAudit('POST', '/api/admin/change-password', { old_password: '', new_password: 'audit-fail-pass-1' }, ck2);
   // 建商品 + 下单 + 取消：取消时审计写入失败（表不存在），应返回明确错误，而非 ok
   const pr = await callNoAudit('POST', '/api/admin/products', { title: '审计失败商品', category: 'recharge', stock_type: 'manual', sell_price: 2, source: 'self' }, ck2);
   const pA = dbNoAudit.prepare("SELECT id FROM products WHERE title='审计失败商品'").get().id;
@@ -610,9 +610,9 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   r = await orderCall({ product_id: pUp.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'c01-b@test.example' } });
   const ordC01B = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   upstreamFailFirst = true;
-  await call('POST', '/api/admin/orders/' + ordC01A.id + '/confirm-payment', { reason: 'C01-A 超时' }, cookie);
+  await call('POST', '/api/admin/orders/' + ordC01A.id + '/confirm-payment', { reason: 'C01-A 超时' , manual_confirm: true }, cookie);
   upstreamFailFirst = true;
-  await call('POST', '/api/admin/orders/' + ordC01B.id + '/confirm-payment', { reason: 'C01-B 超时' }, cookie);
+  await call('POST', '/api/admin/orders/' + ordC01B.id + '/confirm-payment', { reason: 'C01-B 超时' , manual_confirm: true }, cookie);
   check('C-01 setup: both pending_upstream', q('SELECT status FROM orders WHERE id=?', ordC01A.id).status === 'pending_upstream' && q('SELECT status FROM orders WHERE id=?', ordC01B.id).status === 'pending_upstream');
   upstreamFailFirst = false;
   r = await call('POST', '/api/admin/upstream/orders/' + ordC01A.id + '/retry', { reason: '只重试 A' }, cookie);
