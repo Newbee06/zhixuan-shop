@@ -138,6 +138,8 @@ async function payCall(orderNo, txid) {
 }
 
 // 历史 BEP20 订单（直接插库，不走 API）：账本测试（§1–§3）测的是 /pay 账本/去重/对账逻辑，与下单方式无关，故保留原断言。
+// 金额用 10.10xx：尾数 0.1011/0.1033/0.1055 超出 API 随机尾数范围（0.0001–0.0099），避免与前面 API 创建的 pending 订单撞
+// (pay_address, actual_amount) 唯一约束（API 订单 actual = 10 + 随机尾数，约 10% 概率撞 10.0011/10.0033/10.0055，属确定性 flake，非随机）。
 // 需预留一张卡（等价于下单时的 reserveCards），否则 /pay 履约时无卡可发。
 const BEP20_USDT_RR = '0x55d398326f99059fF775485246999027B3197955';
 const BEP20_PAY_ADDR_RR = '0x' + '22'.repeat(20);
@@ -158,7 +160,7 @@ function insertHistBEP20Order(orderNo, actualAmount, contact, cardCode) {
 
 // ===== 1. 付款账本：/pay 提交记 submitted，核验通过记 posted =====
 {
-  const ord = insertHistBEP20Order('AISRRPAY1', 10.0011, 'pay1@test.example', 'R4-KEY-1');
+  const ord = insertHistBEP20Order('AISRRPAY1', 10.1011, 'pay1@test.example', 'R4-KEY-1');
   check('1. order created', !!ord, JSON.stringify(ord));
   // 模拟 BEP20 到账（金额精确匹配，20 确认 > 15 要求）
   pushEvmPaymentLogRR(BEP20_PAY_ADDR_RR, ord.actual_amount, 'a'.repeat(64));
@@ -188,7 +190,7 @@ function insertHistBEP20Order(orderNo, actualAmount, contact, cardCode) {
 
 // ===== 3. 同一订单第二笔真实付款保留独立记录 =====
 {
-  const ord = insertHistBEP20Order('AISRRPAY3', 10.0033, 'pay3@test.example', 'R4-KEY-2');
+  const ord = insertHistBEP20Order('AISRRPAY3', 10.1033, 'pay3@test.example', 'R4-KEY-2');
   check('3. order2 created', !!ord, JSON.stringify(ord));
   // 第一笔付款（BEP20）
   pushEvmPaymentLogRR(BEP20_PAY_ADDR_RR, ord.actual_amount, 'b'.repeat(64));
@@ -377,7 +379,7 @@ db.prepare('DELETE FROM order_rate').run();
 // ===== 14. 故障：同一付款事件并发进入（两个 /pay 同时提交同一 TXID）=====
 db.prepare('DELETE FROM order_rate').run();
 {
-  const ord = insertHistBEP20Order('AISRRRACE1', 10.0055, 'race1@test.example', 'R4-KEY-3');
+  const ord = insertHistBEP20Order('AISRRRACE1', 10.1055, 'race1@test.example', 'R4-KEY-3');
   check('14. order created', !!ord, JSON.stringify(ord));
   pushEvmPaymentLogRR(BEP20_PAY_ADDR_RR, ord.actual_amount, 'f'.repeat(64));
   const [p1, p2] = await Promise.all([
