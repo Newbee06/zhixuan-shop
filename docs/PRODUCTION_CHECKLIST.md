@@ -16,7 +16,7 @@
   - `bash tests/d1-local-test.sh`（仅 `--local`，绝不 `--remote`）
 - [x] 浏览器验收（staging）：下单 → 查询密码取卡密 → 错密码拒绝 → 管理端操作全流程。（2026-10-17 最终验收通过，HEAD 62d8797，staging Version 375c8e5e；另有 API 直测覆盖白名单负向、/secret、/pay 假 TXID。）
 - [x] 无未提交变更；HEAD 与远端同步。（文档更新提交后复核。）
-- [ ] 本分支 `fix/txid-race-safety-2026-10-18`（代码冻结 HEAD `__CODE_FREEZE_HEAD__`，P1-1/P1-2 + 本轮收尾 v18 已实现；已推送，见 PR #4）：本地 txid-race-deterministic 234/234、review-p1-backend 139/139、review-fixes 273/273、review-config 53/53、mock ALL DONE、stock 17/17、security 104/104、concurrency 118/118、release-readiness 91/91、payment-whitelist ALL PASS、app-icons 111/111、本地浏览器 acceptance-ci 103/103、review-frontend 64/64、d1-local ALL OK（`current_version=18`）。**Staging 只读核验见 docs/RELEASE_READINESS.md 附录（2026-10-18 14:42:15–14:45:09 UTC，Version 34e3f190，v17）**；本轮未部署 Staging，部署须逐项授权。旧 pre-existing `#captchaCode` 超时本轮本地未复现；最终以 GitHub CI 为准。文档数字同步提交 (c) 不改代码/测试/CI，最终 HEAD `__FINAL_HEAD__`。
+- [ ] 本分支 `fix/txid-race-safety-2026-10-18`（代码冻结 HEAD `3fc5ab7de8e0d004116aef99eb61aafd9b0ce7c3`，P1-1/P1-2 + 本轮收尾 v18 已实现；已推送，见 PR #4）：本地 txid-race-deterministic 234/234、review-p1-backend 139/139、review-fixes 273/273、review-config 53/53、mock ALL DONE、stock 17/17、security 104/104、concurrency 118/118、release-readiness 91/91、payment-whitelist ALL PASS、app-icons 111/111、本地浏览器 acceptance-ci 103/103、review-frontend 64/64、d1-local ALL OK（`current_version=18`）。**Staging 只读核验见 docs/RELEASE_READINESS.md 附录（2026-10-18 14:42:15–14:45:09 UTC，Version 34e3f190，v17）**；本轮未部署 Staging，部署须逐项授权。旧 pre-existing `#captchaCode` 超时本轮本地未复现；最终以 GitHub CI 为准。文档数字同步提交 (c) 不改代码/测试/CI，最终 HEAD 即提交 (c) 本身（SHA 见 PR #4 本轮评论与 CI run）。
 
 ## B. 真正可收款运营（与 A 分开，不得混同）
 
