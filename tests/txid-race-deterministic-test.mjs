@@ -554,26 +554,433 @@ function expireLease(t, orderId) {
   check('E3: different-order chain reuse rejected', rOtherPay.status === 409 || (rOtherPay.json && !rOtherPay.json.ok), JSON.stringify(rOtherPay.json));
   check('E3: claim still first order', claimRow(t, tx).order_id === ord.id);
 }
-// E4：租约接管用新 TXID 覆盖旧 tx_hash 时，旧认领仅由当前租约持有者释放（A-03 的确定性等价：旧租约已过期）
+
+// ---------- E4（已修正）：已消费认领永不因换 TXID / 租约接管 / 失败恢复而被删除 ----------
+// 旧 E4 曾断言“租约接管用新 TXID 覆盖旧 tx_hash 时删除旧认领”——该语义已被本轮认定为资金安全缺陷并修复：
+// 旧认领一旦取得全局消费权，任何普通流程不得删除；新 TXID 只有通过完整链上核验并取得自身认领后，才成为新的付款事件。
+// 以下 E4a–E4e 逐项证明：未验证新 TXID 不释放旧认领；已验证新 TXID 与旧认领共存为两笔付款事件；
+// orders.tx_hash 保留第一笔已消费 TXID；他单重放旧 TXID 被拒绝；租约过期 + 已有认领时取消被拒绝；恢复中再次崩溃不破坏认领。
+// E4a：旧认领来源 chain_verified；新 TXID 未验证 → 不释放旧认领；新 TXID 已验证 → 两认领共存
 {
   resetMock();
   const t = setup(); t.initBase();
   const cookie = await t.adminLogin();
-  const pM = await manualProduct(t, cookie, '确定性-E4-手动商品');
-  let r = await t.orderCall({ product_id: pM.id, quantity: 1, pay_method: 'Binance', pay_chain: 'BEP20' });
+  const pM = await manualProduct(t, cookie, '确定性-E4a-手动商品');
+  let r = await t.orderCall({ product_id: pM.id, quantity: 1 });
   const ord = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   const txOld = 'e4'.repeat(32);
-  const txNew = 'e5'.repeat(32);
-  // 模拟：订单已认领旧 TXID 但处理崩溃、租约过期（旧认领行有令牌，订单租约已过期）
+  const txNewBad = 'e5'.repeat(32);
+  const txNew = 'e6'.repeat(32);
+  // 模拟：订单已认领旧 TXID（链上来源）后处理崩溃、租约过期；paid_at 已写（认领时写入），订单仍 pending_payment。
   t.db.prepare('INSERT INTO txid_claims (tx_hash, order_id, claimed_at, claim_token, source, order_lease_token) VALUES (?,?,?,?,?,?)').run(txOld, ord.id, new Date(Date.now() - 600000).toISOString().replace('T', ' ').slice(0, 19), 'OLD-CLAIM-TOKEN', 'chain_verified', 'STALE-LEASE');
-  t.db.prepare("UPDATE orders SET tx_hash=?, claim_token='STALE-LEASE', claimed_at=datetime('now','-10 minutes') WHERE id=?").run(txOld, ord.id);
-  M.latest = 10000;
+  t.db.prepare("UPDATE orders SET tx_hash=?, claim_token='STALE-LEASE', claimed_at=datetime('now','-10 minutes'), paid_at=datetime('now','-10 minutes') WHERE id=?").run(txOld, ord.id);
+  // ① 新 TXID 未通过链上核验（金额不匹配）→ auto:false，旧认领保留，tx_hash 不被候选覆盖
+  const wrongLog = t.evmLogFor(ord, txNewBad, 9000, '0x0', amountToRaw(Number(ord.actual_amount) + 1, 6));
+  M.receipt = { status: '0x1', blockNumber: '0x2328', transactionHash: txNewBad, logs: [wrongLog] };
+  r = await t.payCall(ord.order_no, txNewBad);
+  check('E4a: unverified new TXID -> auto:false, no new claim', r.json && r.json.auto === false && !claimRow(t, txNewBad), JSON.stringify(r.json));
+  check('E4a: old chain claim retained after unverified new TXID', (() => { const c = claimRow(t, txOld); return c && c.order_id === ord.id && c.claim_token === 'OLD-CLAIM-TOKEN' && c.source === 'chain_verified'; })());
+  check('E4a: orders.tx_hash still old consumed TXID (candidate did not overwrite)', t.q('SELECT tx_hash FROM orders WHERE id=?', ord.id).tx_hash === txOld);
+  check('E4a: order still pending after unverified new TXID', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_payment');
+  // ② 新 TXID 通过完整链上核验 → 履约成功；旧认领与新认领共存（两笔付款事件），tx_hash 仍为第一笔已消费 TXID
   M.receipt = t.evmReceiptFor(ord, txNew, 9000);
   r = await t.payCall(ord.order_no, txNew);
-  check('E4: takeover with new TXID ok', r.json && r.json.ok === true, JSON.stringify(r.json));
-  check('E4: order tx_hash updated to new', t.q('SELECT tx_hash FROM orders WHERE id=?', ord.id).tx_hash === txNew);
-  check('E4: new TXID claimed', claimRow(t, txNew) && claimRow(t, txNew).order_id === ord.id);
-  check('E4: old TXID claim superseded by current lease holder (no orphan)', !claimRow(t, txOld));
+  check('E4a: verified new TXID fulfills', r.json && r.json.ok === true && r.json.auto === true, JSON.stringify(r.json));
+  check('E4a: old claim STILL retained after verified new TXID (no auto-release)', (() => { const c = claimRow(t, txOld); return c && c.order_id === ord.id && c.claim_token === 'OLD-CLAIM-TOKEN'; })());
+  check('E4a: new claim created for same order (second payment event)', (() => { const c = claimRow(t, txNew); return c && c.order_id === ord.id && c.source === 'chain_verified'; })());
+  check('E4a: tx_hash still first consumed TXID after second payment', t.q('SELECT tx_hash FROM orders WHERE id=?', ord.id).tx_hash === txOld);
+  check('E4a: order pending_fulfill after second payment', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_fulfill');
+  check('E4a: two claims coexist for one order', t.qa('SELECT * FROM txid_claims WHERE order_id=?', ord.id).length === 2);
+  // ③ 他单重放旧 TXID（链上 + 人工）均被拒绝，旧认领归属不变
+  r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const ordOther = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  M.receipt = t.evmReceiptFor(ordOther, txOld, 9000);
+  const rOtherPay = await t.payCall(ordOther.order_no, txOld);
+  check('E4a: other order replay old TXID via /pay rejected 409', rOtherPay.status === 409 && rOtherPay.json && !rOtherPay.json.ok, JSON.stringify(rOtherPay.json));
+  t.db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(txOld, ordOther.id);
+  const rOtherManual = await confirm(t, ordOther.id, cookie, '他单重放旧 TXID 人工');
+  check('E4a: other order replay old TXID via manual rejected', rOtherManual.json && !rOtherManual.json.ok && /已用于其他订单/.test(rOtherManual.json.error || ''), JSON.stringify(rOtherManual.json));
+  check('E4a: old claim still first order after replays', claimRow(t, txOld).order_id === ord.id);
+  // ④ 同订单重复提交新 TXID：已非 pending_payment，拒绝，不产生重复副作用
+  const rDup = await t.payCall(ord.order_no, txNew);
+  check('E4a: same-order duplicate /pay after fulfill rejected', rDup.json && !rDup.json.ok, JSON.stringify(rDup.json));
+  check('E4a: still exactly two claims after duplicate', t.qa('SELECT * FROM txid_claims WHERE order_id=?', ord.id).length === 2);
+}
+// E4b：旧认领来源 manual_confirmed（账本写入失败后仅认领保留、订单仍 pending）；新 TXID 未验证/已验证分别处理
+{
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-E4b-手动商品');
+  let r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const ord = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const txOld = 'e7'.repeat(32);
+  const txNewBad = 'e8'.repeat(32);
+  const txNew = 'e9'.repeat(32);
+  t.db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(txOld, ord.id);
+  const origPrepare = t.env.DB.prepare.bind(t.env.DB);
+  let failOnce = true;
+  t.env.DB.prepare = (sql) => {
+    const st = origPrepare(sql);
+    if (failOnce && String(sql).indexOf('INSERT INTO payments') !== -1) {
+      st.run = async () => { failOnce = false; throw new Error('injected payments insert failure (E4b)'); };
+    }
+    return st;
+  };
+  const rFail = await confirm(t, ord.id, cookie, 'E4b 账本失败留认领');
+  t.env.DB.prepare = origPrepare;
+  check('E4b: manual claim retained after ledger failure (source manual_confirmed)', (() => { const c = claimRow(t, txOld); return c && c.order_id === ord.id && c.source === 'manual_confirmed'; })());
+  check('E4b: order pending + lease released after ledger failure', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_payment' && t.q('SELECT claim_token FROM orders WHERE id=?', ord.id).claim_token === '');
+  // 未验证新 TXID 不释放旧人工认领
+  const wrongLog = t.evmLogFor(ord, txNewBad, 9000, '0x0', amountToRaw(Number(ord.actual_amount) + 1, 6));
+  M.receipt = { status: '0x1', blockNumber: '0x2328', transactionHash: txNewBad, logs: [wrongLog] };
+  r = await t.payCall(ord.order_no, txNewBad);
+  check('E4b: unverified new TXID keeps manual claim', r.json && r.json.auto === false && !!claimRow(t, txOld) && !claimRow(t, txNewBad), JSON.stringify(r.json));
+  // 已验证新 TXID：两认领共存，tx_hash 仍为旧人工 TXID
+  M.receipt = t.evmReceiptFor(ord, txNew, 9000);
+  r = await t.payCall(ord.order_no, txNew);
+  check('E4b: verified new TXID fulfills with manual claim retained', r.json && r.json.ok === true && r.json.auto === true, JSON.stringify(r.json));
+  check('E4b: manual claim + chain claim coexist', (() => { const a = claimRow(t, txOld); const b = claimRow(t, txNew); return a && a.source === 'manual_confirmed' && a.order_id === ord.id && b && b.source === 'chain_verified' && b.order_id === ord.id; })());
+  check('E4b: tx_hash still old manual TXID', t.q('SELECT tx_hash FROM orders WHERE id=?', ord.id).tx_hash === txOld);
+  // 他单重放旧人工 TXID 被拒绝
+  r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const ordOther = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  t.db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(txOld, ordOther.id);
+  const rOther = await confirm(t, ordOther.id, cookie, '他单重放旧人工 TXID');
+  check('E4b: other order replay manual TXID rejected', rOther.json && !rOther.json.ok && /已用于其他订单/.test(rOther.json.error || ''), JSON.stringify(rOther.json));
+  check('E4b: manual claim still first order', claimRow(t, txOld).order_id === ord.id);
+}
+// E4c：多次切换候选 TXID（均未消费）：只有最终验证通过的 TXID 被认领；候选覆盖不产生认领行
+{
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-E4c-手动商品');
+  let r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const ord = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const txA = 'ea'.repeat(32);
+  const txB = 'eb'.repeat(32);
+  const txC = 'ec'.repeat(32);
+  for (const txBad of [txA, txB]) {
+    const wrongLog = t.evmLogFor(ord, txBad, 9000, '0x0', amountToRaw(Number(ord.actual_amount) + 1, 6));
+    M.receipt = { status: '0x1', blockNumber: '0x2328', transactionHash: txBad, logs: [wrongLog] };
+    r = await t.payCall(ord.order_no, txBad);
+    check('E4c: candidate ' + txBad.slice(0, 2) + ' unverified -> auto:false, no claim', r.json && r.json.auto === false && !claimRow(t, txBad), JSON.stringify(r.json));
+  }
+  M.receipt = t.evmReceiptFor(ord, txC, 9000);
+  r = await t.payCall(ord.order_no, txC);
+  check('E4c: final verified candidate claims + fulfills', r.json && r.json.ok === true && r.json.auto === true, JSON.stringify(r.json));
+  check('E4c: only final TXID claimed', !!claimRow(t, txC) && !claimRow(t, txA) && !claimRow(t, txB));
+  check('E4c: tx_hash = verified TXID (no prior consumed TXID to preserve)', t.q('SELECT tx_hash FROM orders WHERE id=?', ord.id).tx_hash === txC);
+  check('E4c: no posted payments for unverified candidates', t.qa("SELECT * FROM payments WHERE tx_hash IN (?,?) AND status='posted'", txA, txB).length === 0);
+}
+// E4d：恢复过程中 Worker 再次崩溃（接管请求在认领后暂停 → 租约过期 → 第三请求接管完成 → 旧请求恢复不破坏）
+{
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-E4d-手动商品');
+  let r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const ord = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const txOld = 'ed'.repeat(32);
+  const txNew = 'ef'.repeat(32);
+  t.db.prepare('INSERT INTO txid_claims (tx_hash, order_id, claimed_at, claim_token, source, order_lease_token) VALUES (?,?,?,?,?,?)').run(txOld, ord.id, new Date(Date.now() - 600000).toISOString().replace('T', ' ').slice(0, 19), 'OLD-CLAIM-TOKEN-D', 'chain_verified', 'STALE-LEASE-D');
+  t.db.prepare("UPDATE orders SET tx_hash=?, claim_token='STALE-LEASE-D', claimed_at=datetime('now','-10 minutes'), paid_at=datetime('now','-10 minutes') WHERE id=?").run(txOld, ord.id);
+  const entered = Deferred();
+  const releaseFirst = Deferred();
+  let hookCalls = 0;
+  t.env.__testHooks = {
+    afterTxidClaimAndLease: async () => { hookCalls++; if (hookCalls === 1) { entered.resolve(); await releaseFirst.promise; } },
+  };
+  M.receipt = t.evmReceiptFor(ord, txNew, 9000);
+  const pFirst = t.payCall(ord.order_no, txNew);
+  await entered.promise; // 第一个接管请求已持有新租约 + 新认领、副作用尚未开始
+  check('E4d: first takeover holds new claim', (() => { const c = claimRow(t, txNew); return c && c.order_id === ord.id; })());
+  expireLease(t, ord.id); // 模拟 Worker 再次崩溃：第一个接管请求的租约过期
+  M.receipt = t.evmReceiptFor(ord, txNew, 9000);
+  const rThird = await t.payCall(ord.order_no, txNew);
+  check('E4d: third request takes over + completes', rThird.json && rThird.json.ok === true && rThird.json.auto === true, JSON.stringify(rThird.json));
+  check('E4d: order pending_fulfill after third', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_fulfill');
+  releaseFirst.resolve(); // 第一个接管请求恢复：租约已失，不得破坏第三请求的结果
+  const rFirst = await pFirst;
+  check('E4d: stale first takeover does not re-complete (auto:false)', rFirst.json && rFirst.json.ok === true && rFirst.json.auto === false, JSON.stringify(rFirst.json));
+  check('E4d: old claim retained after double-crash recovery', !!claimRow(t, txOld) && claimRow(t, txOld).order_id === ord.id);
+  check('E4d: new claim retained exactly once after double-crash recovery', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', txNew).length === 1 && claimRow(t, txNew).order_id === ord.id);
+  check('E4d: exactly one posted payments row for new TXID (no duplicate side effect)', t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='posted'", txNew).length === 1);
+  check('E4d: tx_hash still first consumed TXID', t.q('SELECT tx_hash FROM orders WHERE id=?', ord.id).tx_hash === txOld);
+  t.env.__testHooks = {};
+}
+// E4e：租约过期 + 已有 TXID 认领 → 超时清理与管理员普通取消均不得取消订单、不得释放认领；之后正常恢复仍可履约
+{
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-E4e-手动商品');
+  let r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const ord = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const txOld = 'f4'.repeat(32);
+  const txNew = 'f5'.repeat(32);
+  t.db.prepare('INSERT INTO txid_claims (tx_hash, order_id, claimed_at, claim_token, source, order_lease_token) VALUES (?,?,?,?,?,?)').run(txOld, ord.id, new Date(Date.now() - 600000).toISOString().replace('T', ' ').slice(0, 19), 'OLD-CLAIM-TOKEN-E', 'chain_verified', 'STALE-LEASE-E');
+  t.db.prepare("UPDATE orders SET tx_hash=?, claim_token='STALE-LEASE-E', claimed_at=datetime('now','-10 minutes'), paid_at=datetime('now','-10 minutes'), expires_at=datetime('now','-1 minutes') WHERE id=?").run(txOld, ord.id);
+  const rCancel = await t.call('POST', '/api/admin/orders/' + ord.id + '/cancel', { reason: 'E4e 已有认领不应取消' }, cookie);
+  check('E4e: admin cancel with consumed claim rejected', rCancel.json && !rCancel.json.ok, JSON.stringify(rCancel.json));
+  check('E4e: order still pending after rejected cancel', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_payment');
+  M.logs = [];
+  await t.scheduled(); // 超时清理：已有认领 → 不取消
+  check('E4e: timeout cleanup does NOT cancel order with consumed claim', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_payment');
+  check('E4e: claim retained after cleanup attempt', (() => { const c = claimRow(t, txOld); return c && c.order_id === ord.id && c.claim_token === 'OLD-CLAIM-TOKEN-E'; })());
+  check('E4e: no auto_cancel_timeout audit for protected order', t.qa("SELECT * FROM admin_audit WHERE order_id=? AND action='auto_cancel_timeout'", ord.id).length === 0);
+  // 正常恢复：提交已验证的新 TXID 仍可履约，旧认领保留
+  M.receipt = t.evmReceiptFor(ord, txNew, 9000);
+  r = await t.payCall(ord.order_no, txNew);
+  check('E4e: recovery with new verified TXID still fulfills', r.json && r.json.ok === true && r.json.auto === true, JSON.stringify(r.json));
+  check('E4e: old claim retained after recovery', !!claimRow(t, txOld) && claimRow(t, txOld).order_id === ord.id);
+}
+
+// ---------- F. 真正同时执行的人工 / 链上竞争（Barrier 控制在 beforeTxidInsert 原子点） ----------
+// F1：人工确认 vs 链上核验同时争抢同一 TXID：两条路径均暂停在获得全局消费权之前，Barrier 汇合后同时放行 INSERT
+{
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-F1-手动商品');
+  const tx = 'f1'.repeat(32);
+  let r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const oManual = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  t.db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(tx, oManual.id);
+  r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const oChain = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  M.receipt = t.evmReceiptFor(oChain, tx, 9000);
+  let arrivals = 0;
+  const waiters = [];
+  t.env.__testHooks = {
+    beforeTxidInsert: async () => {
+      arrivals++;
+      if (arrivals < 2) { await new Promise((res) => waiters.push(res)); }
+      else { while (waiters.length) waiters.shift()(); }
+    },
+  };
+  const [rM, rC] = await Promise.all([confirm(t, oManual.id, cookie, 'F1 人工确认'), t.payCall(oChain.order_no, tx)]);
+  check('F1: barrier saw both manual + chain at INSERT point', arrivals === 2, 'arrivals=' + arrivals);
+  const wins = [rM, rC].filter((x) => x.json && x.json.ok === true && (x.json.auto === true || x.json.message));
+  // 人工胜：confirm ok；链上胜：/pay ok + auto:true。失败方：人工 confirm !ok；链上 /pay 409。
+  const okCount = [rM, rC].filter((x) => x.json && x.json.ok === true).length;
+  check('F1: exactly one of manual/chain wins', okCount === 1, JSON.stringify([rM.json, rC.json]));
+  check('F1: exactly one claim row', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1);
+  const winnerId = claimRow(t, tx).order_id;
+  const loserId = winnerId === oManual.id ? oChain.id : oManual.id;
+  const winnerIsManual = winnerId === oManual.id;
+  check('F1: claim source matches winner path', claimRow(t, tx).source === (winnerIsManual ? 'manual_confirmed' : 'chain_verified'), JSON.stringify(claimRow(t, tx)));
+  check('F1: winner pending_fulfill', t.q('SELECT status FROM orders WHERE id=?', winnerId).status === 'pending_fulfill');
+  check('F1: loser still pending_payment + lease released', t.q('SELECT status FROM orders WHERE id=?', loserId).status === 'pending_payment' && t.q('SELECT claim_token FROM orders WHERE id=?', loserId).claim_token === '');
+  check('F1: loser has no posted payments', t.qa("SELECT * FROM payments WHERE order_id=? AND status='posted'", loserId).length === 0);
+  if (winnerIsManual) {
+    check('F1: manual winner has manual ledger row', ledgerRows(t, tx).length === 1 && ledgerRows(t, tx)[0].order_id === oManual.id);
+    check('F1: chain loser got 409', rC.status === 409 && rC.json && !rC.json.ok, JSON.stringify(rC.json));
+  } else {
+    check('F1: chain winner has no manual ledger row (manual did not forge)', ledgerRows(t, tx).length === 0);
+    check('F1: manual loser rejected', rM.json && !rM.json.ok, JSON.stringify(rM.json));
+  }
+  check('F1: no upstream orders created by loser race', t.qa('SELECT * FROM upstream_orders WHERE order_id IN (?,?) AND prodseller_order_id != ?', oManual.id, oChain.id, '').length === 0);
+  // 获胜后重复请求不能重复产生副作用
+  const rRetry = winnerIsManual ? await confirm(t, winnerId, cookie, 'F1 重复确认') : await t.payCall(t.q('SELECT order_no FROM orders WHERE id=?', winnerId).order_no, tx);
+  check('F1: winner retry rejected', rRetry.json && !rRetry.json.ok, JSON.stringify(rRetry.json));
+  check('F1: retry adds no claim', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1);
+  t.env.__testHooks = {};
+}
+// F2：两条链上核验请求同时争抢同一 TXID（Barrier 在 beforeTxidInsert）
+{
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-F2-手动商品');
+  const tx = 'f2'.repeat(32);
+  const mkOrd = async () => {
+    const r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+    return t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  };
+  const o1 = await mkOrd();
+  const o2 = await mkOrd();
+  // 两单 actual_amount 必须相同、pay_address 必须不同：mock 收据是共享可变全局（M.receipt），两条并发链上路径读同一份收据；
+  // 收据带两条日志（各匹配一单的地址+金额），两路验证均可通过；(pay_address, actual_amount) 唯一索引要求两单的地址/金额二元组不同。
+  // 生产中每单独立查链上收据，不存在此共享问题。
+  t.db.prepare('UPDATE orders SET pay_address=? WHERE id=?').run('0x3333333333333333333333333333333333333333', o2.id);
+  t.db.prepare('UPDATE orders SET actual_amount=? WHERE id IN (?,?)').run(5.0057, o1.id, o2.id);
+  const o1f = t.q('SELECT * FROM orders WHERE id=?', o1.id);
+  const o2f = t.q('SELECT * FROM orders WHERE id=?', o2.id);
+  M.receipt = { status: '0x1', blockNumber: '0x2328', transactionHash: tx, logs: [t.evmLogFor(o1f, tx, 9000, '0x0'), t.evmLogFor(o2f, tx, 9000, '0x1')] };
+  let arrivals = 0;
+  const waiters = [];
+  t.env.__testHooks = {
+    beforeTxidInsert: async () => {
+      arrivals++;
+      if (arrivals < 2) { await new Promise((res) => waiters.push(res)); }
+      else { while (waiters.length) waiters.shift()(); }
+    },
+  };
+  // 两条链上路径的收据分别对应各自订单（同 TXID、同金额、同收款地址口径），验证均会通过，胜负只由原子 INSERT 决定。
+  const [r1, r2] = await Promise.all([
+    (async () => { const rr = await t.payCall(o1.order_no, tx); return rr; })(),
+    (async () => { const rr = await t.payCall(o2.order_no, tx); return rr; })(),
+  ]);
+  check('F2: barrier saw both chain requests at INSERT point', arrivals === 2, 'arrivals=' + arrivals);
+  const wins = [r1, r2].filter((x) => x.json && x.json.ok === true && x.json.auto === true).length;
+  check('F2: exactly one chain /pay wins', wins === 1, JSON.stringify([r1.json, r2.json]));
+  check('F2: exactly one claim, source chain_verified', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1 && claimRow(t, tx).source === 'chain_verified');
+  const winnerId = claimRow(t, tx).order_id;
+  const loserId = winnerId === o1.id ? o2.id : o1.id;
+  check('F2: winner pending_fulfill, loser pending + lease released', t.q('SELECT status FROM orders WHERE id=?', winnerId).status === 'pending_fulfill' && t.q('SELECT status FROM orders WHERE id=?', loserId).status === 'pending_payment' && t.q('SELECT claim_token FROM orders WHERE id=?', loserId).claim_token === '');
+  check('F2: loser /pay got 409', (winnerId === o1.id ? r2 : r1).status === 409, JSON.stringify([r1.json, r2.json]));
+  check('F2: loser has no posted payments', t.qa("SELECT * FROM payments WHERE order_id=? AND status='posted'", loserId).length === 0);
+  t.env.__testHooks = {};
+}
+// F3：一个请求的认领数据库操作失败 → 另一个请求随后竞争同一 TXID 并获胜；失败方重试仍被拒绝
+{
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-F3-手动商品');
+  const tx = 'f3'.repeat(32);
+  let r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const oA = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  t.db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(tx, oA.id);
+  r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const oB = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  t.db.exec('CREATE TRIGGER trg_ignore_claim_f3 BEFORE INSERT ON txid_claims BEGIN SELECT RAISE(IGNORE); END;');
+  const rA = await confirm(t, oA.id, cookie, 'F3 A 人工确认（认领写入失败）');
+  check('F3: A claim DB failure -> confirm fails, not falsely 已用于其他订单', rA.json && !rA.json.ok && !/已用于其他订单/.test(JSON.stringify(rA.json)), JSON.stringify(rA.json));
+  check('F3: no orphan claim after A failure', !claimRow(t, tx));
+  check('F3: A pending + lease released after failure', t.q('SELECT status FROM orders WHERE id=?', oA.id).status === 'pending_payment' && t.q('SELECT claim_token FROM orders WHERE id=?', oA.id).claim_token === '');
+  t.db.exec('DROP TRIGGER trg_ignore_claim_f3');
+  M.receipt = t.evmReceiptFor(oB, tx, 9000);
+  const rB = await t.payCall(oB.order_no, tx);
+  check('F3: B competes after A failure and wins', rB.json && rB.json.ok === true && rB.json.auto === true && claimRow(t, tx).order_id === oB.id, JSON.stringify(rB.json));
+  const rARetry = await confirm(t, oA.id, cookie, 'F3 A 重试同 TXID');
+  check('F3: A retry after B win rejected (other-order claim)', rARetry.json && !rARetry.json.ok && /已用于其他订单/.test(rARetry.json.error || ''), JSON.stringify(rARetry.json));
+  check('F3: claim still B after A retry', claimRow(t, tx).order_id === oB.id);
+}
+
+// ---------- G. poll_enabled 解耦：过期清理独立于链上扫描 ----------
+{
+  // G1：poll_enabled=0 时过期未付款订单仍被安全清理，预留释放 + 审计；G2：零 RPC
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-G-手动商品');
+  t.setSetting('poll_enabled', '0');
+  M.rpcCalls = 0;
+  const oExp = t.insertOrder({ product_id: pM.id, status: 'pending_payment', expires_at: "datetime('now','-1 minutes')" });
+  const oLive = t.insertOrder({ product_id: pM.id, status: 'pending_payment', expires_at: "datetime('now','+30 minutes')" });
+  await t.scheduled();
+  check('G1: poll_enabled=0 expired unpaid order cleaned', t.q('SELECT status FROM orders WHERE id=?', oExp.id).status === 'cancelled');
+  check('G1: poll_enabled=0 cleanup writes audit', !!t.q("SELECT * FROM admin_audit WHERE order_id=? AND action='auto_cancel_timeout'", oExp.id));
+  check('G1: poll_enabled=0 live order untouched', t.q('SELECT status FROM orders WHERE id=?', oLive.id).status === 'pending_payment');
+  check('G2: poll_enabled=0 zero RPC during scheduled', M.rpcCalls === 0, 'rpcCalls=' + M.rpcCalls);
+  // G8：清理重复运行幂等（不重复写审计/副作用）
+  await t.scheduled();
+  check('G8: cleanup rerun idempotent (single audit)', t.qa("SELECT * FROM admin_audit WHERE order_id=? AND action='auto_cancel_timeout'", oExp.id).length === 1);
+  check('G8: cleanup rerun keeps cancelled', t.q('SELECT status FROM orders WHERE id=?', oExp.id).status === 'cancelled');
+}
+{
+  // G3：poll_enabled=1 时原有扫描 + 超时清理正常；G9：RPC 失败时过期清理仍独立完成，扫描游标不推进
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-G3-手动商品');
+  t.setSetting('poll_enabled', '1');
+  const addr = '0x' + 'ab'.repeat(20);
+  const oScan = t.insertOrder({ product_id: pM.id, pay_method: 'OKX', pay_chain: 'X Layer', pay_address: addr, actual_amount: 5.0057, status: 'pending_payment', expires_at: "datetime('now','+30 minutes')" });
+  const txS = '67'.repeat(32);
+  t.db.prepare('INSERT INTO scan_cursors (chain, last_block, updated_at) VALUES (?, ?, ?)').run('X Layer|' + addr, 8900, nowStr());
+  M.logs = [t.evmLogFor(oScan, txS, 9000, '0x3')];
+  await t.scheduled();
+  check('G3: poll_enabled=1 scan fulfills verified order', t.q('SELECT status FROM orders WHERE id=?', oScan.id).status === 'pending_fulfill' && !!claimRow(t, txS), JSON.stringify(t.q('SELECT status FROM orders WHERE id=?', oScan.id)));
+  // RPC 失败场景
+  resetMock();
+  const t2 = setup(); t2.initBase();
+  const cookie2 = await t2.adminLogin();
+  const pM2 = await manualProduct(t2, cookie2, '确定性-G9-手动商品');
+  t2.setSetting('poll_enabled', '1');
+  const oExp2 = t2.insertOrder({ product_id: pM2.id, status: 'pending_payment', expires_at: "datetime('now','-1 minutes')" });
+  const oLive2 = t2.insertOrder({ product_id: pM2.id, status: 'pending_payment', expires_at: "datetime('now','+30 minutes')" });
+  t2.db.prepare('INSERT INTO scan_cursors (chain, last_block, updated_at) VALUES (?, ?, ?)').run('X Layer|0x' + 'cd'.repeat(20), 8900, nowStr());
+  M.rpcFail = true;
+  await t2.scheduled();
+  M.rpcFail = false;
+  check('G9: RPC failure does not block expiry cleanup', t2.q('SELECT status FROM orders WHERE id=?', oExp2.id).status === 'cancelled');
+  check('G9: RPC failure keeps live order pending', t2.q('SELECT status FROM orders WHERE id=?', oLive2.id).status === 'pending_payment');
+  check('G9: RPC failure does not advance last_checked_at', !t2.q('SELECT last_checked_at FROM orders WHERE id=?', oLive2.id).last_checked_at);
+  check('G9: scan cursor not advanced on RPC failure', t2.q('SELECT last_block FROM scan_cursors WHERE chain=?', 'X Layer|0x' + 'cd'.repeat(20)).last_block === 8900);
+}
+{
+  // G4：poll_enabled=0 + 订单刚被真实链上核验并取得有效租约（认领 + 未过期租约）→ 清理不得取消
+  // G5：已存在的有效付款事实（posted 账本）不能被超时清理覆盖
+  // G6：租约过期后已有 TXID 全局认领 → 取消不得释放其消费权（与 E4e 同守卫，覆盖 poll_enabled=0 路径）
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-G456-手动商品');
+  t.setSetting('poll_enabled', '0');
+  const txLive = '6a'.repeat(32);
+  const oLiveLease = t.insertOrder({ product_id: pM.id, status: 'pending_payment', claim_token: 'LIVE-LEASE', claimed_at: nowStr(), paid_at: nowStr(), tx_hash: txLive, expires_at: "datetime('now','-1 minutes')" });
+  t.db.prepare('INSERT INTO txid_claims (tx_hash, order_id, claimed_at, claim_token, source, order_lease_token) VALUES (?,?,?,?,?,?)').run(txLive, oLiveLease.id, nowStr(), 'LIVE-CLAIM', 'chain_verified', 'LIVE-LEASE');
+  const txPosted = '6b'.repeat(32);
+  const oPosted = t.insertOrder({ product_id: pM.id, status: 'pending_payment', paid_at: nowStr(), expires_at: "datetime('now','-1 minutes')" });
+  t.db.prepare("INSERT INTO payments (order_id, chain, asset, pay_address, tx_hash, event_key, amount, amount_unit, block_number, confirmations, first_seen_at, status, reconcile_status, reconcile_note, created_at, updated_at) VALUES (?, 'X Layer', 'USDT', '0x1111111111111111111111111111111111111111', ?, '', 5, 'USDT', 9000, 100, ?, 'posted', '', '', ?, ?)").run(oPosted.id, txPosted, nowStr(), nowStr(), nowStr());
+  const txStale = '6c'.repeat(32);
+  const oStaleClaim = t.insertOrder({ product_id: pM.id, status: 'pending_payment', claim_token: 'STALE-LEASE-G', claimed_at: "datetime('now','-10 minutes')", paid_at: "datetime('now','-10 minutes')", tx_hash: txStale, expires_at: "datetime('now','-1 minutes')" });
+  t.db.prepare('INSERT INTO txid_claims (tx_hash, order_id, claimed_at, claim_token, source, order_lease_token) VALUES (?,?,?,?,?,?)').run(txStale, oStaleClaim.id, new Date(Date.now() - 600000).toISOString().replace('T', ' ').slice(0, 19), 'STALE-CLAIM-G', 'chain_verified', 'STALE-LEASE-G');
+  M.logs = [];
+  await t.scheduled();
+  check('G4: valid lease + claim + expired -> NOT cancelled under poll_enabled=0', t.q('SELECT status FROM orders WHERE id=?', oLiveLease.id).status === 'pending_payment');
+  check('G4: live claim retained', !!claimRow(t, txLive) && claimRow(t, txLive).order_id === oLiveLease.id);
+  check('G5: posted ledger order NOT cancelled by cleanup', t.q('SELECT status FROM orders WHERE id=?', oPosted.id).status === 'pending_payment');
+  check('G6: stale lease + claim -> NOT cancelled, claim retained', t.q('SELECT status FROM orders WHERE id=?', oStaleClaim.id).status === 'pending_payment' && !!claimRow(t, txStale) && claimRow(t, txStale).order_id === oStaleClaim.id);
+}
+{
+  // G7：取消后预留库存按实际记录恢复（poll_enabled=0 清理路径）
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  await t.call('POST', '/api/admin/products', { title: '确定性-G7-卡密商品', category: 'account', stock_type: 'card', sell_price: 4, source: 'self' }, cookie);
+  const pC = t.q("SELECT * FROM products WHERE title='确定性-G7-卡密商品'");
+  t.db.prepare('INSERT INTO cards (product_id, code, is_used, is_disabled, order_id, reserved_order_id, reserved_at, created_at) VALUES (?, ?, 0, 0, NULL, NULL, NULL, ?)').run(pC.id, 'G7-CARD-1', nowStr());
+  const cardId = t.q('SELECT id FROM cards WHERE code=?', 'G7-CARD-1').id;
+  const oExp = t.insertOrder({ product_id: pC.id, status: 'pending_payment', expires_at: "datetime('now','-1 minutes')" });
+  t.db.prepare('UPDATE cards SET reserved_order_id=?, reserved_at=? WHERE id=?').run(oExp.id, nowStr(), cardId);
+  t.setSetting('poll_enabled', '0');
+  M.logs = [];
+  await t.scheduled();
+  check('G7: expired order cancelled under poll_enabled=0', t.q('SELECT status FROM orders WHERE id=?', oExp.id).status === 'cancelled');
+  check('G7: reserved card released by cleanup', t.q('SELECT reserved_order_id FROM cards WHERE id=?', cardId).reserved_order_id === null && t.q('SELECT is_used FROM cards WHERE id=?', cardId).is_used === 0);
+}
+{
+  // G10：符合租约保护要求的正常恢复流程继续有效（认领保留 + 租约过期后同 TXID 可收养履约）
+  resetMock();
+  const t = setup(); t.initBase();
+  const cookie = await t.adminLogin();
+  const pM = await manualProduct(t, cookie, '确定性-G10-手动商品');
+  let r = await t.orderCall({ product_id: pM.id, quantity: 1 });
+  const ord = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const tx = '6d'.repeat(32);
+  t.db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(tx, ord.id);
+  const origPrepare = t.env.DB.prepare.bind(t.env.DB);
+  let failOnce = true;
+  t.env.DB.prepare = (sql) => {
+    const st = origPrepare(sql);
+    if (failOnce && String(sql).indexOf('INSERT INTO payments') !== -1) {
+      st.run = async () => { failOnce = false; throw new Error('injected payments insert failure (G10)'); };
+    }
+    return st;
+  };
+  const rFail = await confirm(t, ord.id, cookie, 'G10 账本失败留认领');
+  t.env.DB.prepare = origPrepare;
+  check('G10: claim retained after ledger failure, order pending', rFail.json && !rFail.json.ok && !!claimRow(t, tx) && t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_payment', JSON.stringify(rFail.json));
+  M.receipt = t.evmReceiptFor(ord, tx, 9000);
+  r = await t.payCall(ord.order_no, tx);
+  check('G10: same-TXID recovery adopts retained claim + fulfills', r.json && r.json.ok === true && r.json.auto === true, JSON.stringify(r.json));
+  check('G10: exactly one claim after recovery', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1);
+  check('G10: order pending_fulfill after recovery', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_fulfill');
 }
 
 console.log('\n==== txid-race-deterministic: ' + pass + ' passed, ' + fail + ' failed ====');

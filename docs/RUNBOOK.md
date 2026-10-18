@@ -62,12 +62,12 @@ PYTHONPATH=/opt/muse/skills/custom-connector-setup/bin python3 ~/workspace/custo
 
 旧顺序（先认领 TXID、后抢订单租约）的竞态：请求 A 插认领成功，请求 B 看到同订单已有认领，B 抢到订单租约开始履约，A 订单认领失败触发回滚删掉 B 依赖的认领，第三订单可重认领同一 TXID。新顺序为**租约-first**：
 
-1. `fulfillAfterPayment` 先原子获取订单租约（`claimOrderForPayment`：单条条件 UPDATE，`status='pending_payment'` 且未认领或租约已超 5 分钟；成功时写 `paid_at` 与 `tx_hash`）。
+1. `fulfillAfterPayment` 先原子获取订单租约（`claimOrderForPayment`：单条条件 UPDATE，`status='pending_payment'` 且未认领或租约已超 5 分钟；成功时写 `paid_at`；`tx_hash` 仅在旧 TXID 无认领时才被新 TXID 覆盖，已消费 TXID 保留为第一笔付款证据）。
 2. 获租约后才碰 `txid_claims`（`claimTxid`）；无租约的请求不触碰认领。
-3. 认领失败只释放本请求租约（清 `paid_at`），不触碰认领行。
-4. 回滚删除（`releaseTxidClaim`）是单条条件删除，同时匹配 `(tx_hash, order_id, claim_token)` + `EXISTS(orders.claim_token = 本请求租约)`：租约被接管后旧请求的 `EXISTS` 不成立，无法删除新持有者的认领。
+3. 认领失败只释放本请求租约（本订单无认领时清 `paid_at`；已有认领时保留 `paid_at`），不触碰认领行。
+4. 无自动回滚删除：`releaseTxidClaim` 已删除。已消费认领永久保留，任何失败/接管/取消路径不得删除；归属争议只允许管理员在 D1 中人工对账处理。
 5. 失败路径不再删除认领行：认领保留，同订单重试时收养同一行，不重复建行，不向他单开放 TXID。
-6. 同订单接管：新租约持有者收养认领，只重绑 `order_lease_token`；`source` 首次写入获胜，永不改写。
+6. 同订单接管：新租约持有者收养认领，只重绑 `order_lease_token`；`source` 首次写入获胜，永不改写。新 TXID 通过核验后成为第二笔付款事件（独立认领行），旧认领保留。
 
 ### 人工与链上共用全局 TXID 防重，两种来源语义区别
 

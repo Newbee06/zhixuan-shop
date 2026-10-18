@@ -44,7 +44,8 @@
 
 - [ ] 迁移 v17 已应用：`GET /api/admin/migrate` → `current_version = 17`；`schema-check` → `ok=true`（含 `txid_claims` 六列：`tx_hash` / `order_id` / `claimed_at` / `claim_token` / `source` / `order_lease_token`）。v16（6 个查询索引）已应用，不是“尚未应用”。
 - [ ] 租约-first：`fulfillAfterPayment` 先原子获取订单租约再碰认领表；无租约不触碰认领；认领失败只释放本请求租约、不触碰认领行。
-- [ ] 令牌回滚：`releaseTxidClaim` 单条条件删除，同时匹配 `(tx_hash, order_id, claim_token)` + 当前订单租约；`claim_token` 为空的遗留行永不被令牌回滚删除；失败路径不删认领行。
+- [ ] 永久保留：已消费 TXID 认领永不被普通 API、租约接管、失败恢复或订单取消自动删除（`releaseTxidClaim` 已删除，无自动释放入口）；`orders.tx_hash` 保留第一笔已消费 TXID，不被未验证候选覆盖；新 TXID 通过核验后成为第二笔付款事件（独立认领行 + 账本行）。
+- [ ] 过期清理与链上扫描解耦：`poll_enabled=0` 时零 RPC，但过期清理仍运行；取消守卫为已过期 + 无已消费付款事实 +（未认领或租约已过期），取消绝不删除认领/账本，重复运行幂等。
 - [ ] 人工与链上共享全局认领：同一 `txid_claims`，`tx_hash` 主键决定胜负；`source` 首次写入获胜不改写；`manual_confirmed` 仅表示人工确认，不构成链上证据，不伪造回执/区块高度/确认数。
 - [ ] 人工账本 fail-closed：账本写入失败时不推订单为已付款/已交付；仅重读确认已有同订单 + 同 TXID + 同状态 `manual_confirmed` 行才可幂等继续，否则释放租约、认领保留、同订单重试。
 - [ ] 确定性测试证据：`tests/txid-race-deterministic-test.mjs` 71/71（Barrier/Deferred 确定性交错，不依赖调度/时间窗口；覆盖同订单认领回滚竞态、租约接管 + 过期回滚、双管理员并发人工确认、人工/链上双向竞态、账本失败恢复）。

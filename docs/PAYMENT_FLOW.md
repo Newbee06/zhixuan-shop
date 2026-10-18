@@ -18,7 +18,7 @@
 
 ## 收款确认三条路径（复用同一 `fulfillAfterPayment`）
 
-1. **轮询**（`runPolling`，cron 每 1 分钟）：先逐单 `checkChainPayment`，再全局 `scanEvmChain`（游标按 `链|地址` 独立存储，RPC 失败不推进）。仅白名单链可扫描。
+1. **轮询**（`runPolling`，cron 每 1 分钟）：先过期清理（`expireUnpaidOrders`，独立职责），再逐单 `checkChainPayment`，再全局 `scanEvmChain`（游标按 `链|地址` 独立存储，RPC 失败不推进）。仅白名单链可扫描。`poll_enabled=0` 时跳过全部链上扫描/RPC（零链上调用），但过期清理仍运行，避免过期未付款订单永久冻结卡密预留。过期取消守卫：仅已过期 + 无已消费付款事实（无 `txid_claims` 认领、无 `verified/confirmed/posted/manual_confirmed` 账本行）+（未认领或租约已过期）才可取消；取消绝不删除认领或账本，重复运行幂等。
 2. **TXID 核验**（`/pay`）：`checkTxidPayment` 查 receipt 日志，按该链确认数核验；通过即自动发货并认领 TXID。
 3. **管理员确认**（`confirm-payment`）：管理员在系统外核对到账后点确认，须填人工原因（记入审计）并显式确认 `manual_confirm=true`。**人工确认不是“不写认领表”**：只要订单带有 64 位十六进制 TXID，人工确认与链上确认共享同一 `txid_claims` 全局原子认领，写 `source='manual_confirmed'` 的认领行 + `payments` 的 `manual_confirmed` 账本行 + 审计 + 订单 `【人工确认收款】` 备注标记。`manual_confirmed` 仅表示管理员系统外核对后人工确认，**不构成链上证据**，不伪造回执/区块高度/确认数。无 TXID（或非 64 位十六进制）的订单走人工确认时不写认领行/账本行，只走订单租约与发货，不伪造认领。
 
@@ -33,9 +33,9 @@
 ## TXID 认领安全（v17，P1-1/P1-2）
 
 - **租约-first**：`fulfillAfterPayment` 先原子获取订单租约（`claimOrderForPayment`，`orders.claim_token` + `claimed_at`，租约 5 分钟），再碰 `txid_claims`。无租约的请求不触碰认领；认领失败只释放本请求租约（清 `paid_at`，本次未建立付款事实），不触碰认领行。
-- **认领令牌化**：每次新认领生成密码学安全随机令牌 `randomHex(32)` 存入 `txid_claims.claim_token`，为该认领行的唯一持有凭证。`claim_token` 为空 = v17 前遗留行，永不被令牌回滚删除（宁可保留，不冒险释放他人依赖的认领）。
-- **受控回滚**：`releaseTxidClaim` 为单条条件删除，同时匹配 `(tx_hash, order_id, claim_token)` + `EXISTS(orders.claim_token = 本请求租约)`。租约被接管后旧请求的 `EXISTS` 不成立，删不掉新持有者的认领。失败路径不再删除认领行，认领保留供同订单安全重试。
-- **同订单接管收养**：同订单已有认领时不新建行，只把 `order_lease_token` 重绑为新租约持有者的订单租约令牌；`source` 首次写入获胜，永不改写（不伪造来源）。新 TXID 取代旧 TXID 时，仅当本请求持有当前订单租约且旧认领属于本订单，才可释放旧 TXID 的认领（不留孤儿认领）。
+- **认领令牌化**：每次新认领生成密码学安全随机令牌 `randomHex(32)` 存入 `txid_claims.claim_token`，为该认领行的唯一持有凭证。已消费认领永久保留：`releaseTxidClaim` 回滚原语已在本轮删除，不存在自动删除认领的入口（见下）。
+- **永久保留，无自动回滚**：已成功写入 `txid_claims` 的认领永不被任何普通 API、租约接管或失败恢复流程自动删除。历史上存在过的 `releaseTxidClaim`（单条条件删除）已删除：没有任何调用方可以证明“该认领从未成为付款事实”，任何删除都会把已消费 TXID 放回全局可用池。归属争议只允许管理员在 D1 中人工对账处理（独立授权、可审计证据、严格流程），不在代码中提供自动删除入口。
+- **同订单接管收养**：同订单已有认领时不新建行，只把 `order_lease_token` 重绑为新租约持有者的订单租约令牌；`source` 首次写入获胜，永不改写（不伪造来源）。同一订单提交新 TXID 时：旧 TXID 已有认领则保留旧认领，`orders.tx_hash` 保持为第一笔已消费 TXID（不被未验证候选覆盖）；新 TXID 只有通过完整链上核验并取得自身认领后，才作为该订单的第二笔付款事件（独立认领行 + 账本行），绝不通过覆盖 `tx_hash` 或删除历史认领来伪造只有一笔付款。
 - **人工与链上共享全局认领**：人工确认与链上确认共用同一 `txid_claims`（`tx_hash PRIMARY KEY`），不再另建防重表、不再靠先 SELECT 后 INSERT。`source` 区分 `'chain_verified'`（链上验证通过后认领）与 `'manual_confirmed'`（管理员系统外核对后人工确认认领）。人工确认写认领时若 TXID 已归属他单则拒绝；v17 前遗留的人工 `payments manual_confirmed` 行仍做兼容检查（归属他单则拒绝），之后以认领表为准。
 - **人工账本 fail-closed**：人工确认的 `payments manual_confirmed` 行写入失败时绝不静默把订单推为已付款/已交付；仅当重读确认已有同订单 + 同 TXID + 同状态 `manual_confirmed` 行时才可按幂等重试继续，否则释放本请求租约、认领保留、返回失败，同订单可安全重试，不向他单开放 TXID。审计写入失败语义仍为 P1-7（`ok:true` + `audit_failed:true`，不得重复业务副作用）。
 - **迁移**：v17 为 `txid_claims` 加 `claim_token` / `source` / `order_lease_token` 三列，均为 `ADD COLUMN` 幂等；`schema.sql` 新库已含三列；预置版本保持 10（v11–v17 由 Worker 按序执行，旧库真正加列、新库为 no-op）。现有认领行保留，旧行 `source` 默认 `'chain_verified'`（v17 前只有链上路径写认领表）。

@@ -622,12 +622,14 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   check('C-01: B upstream row untouched (still empty psId + upstream_error)', (() => { const ub = q('SELECT * FROM upstream_orders WHERE order_id=?', ordC01B.id); return ub && ub.prodseller_order_id === '' && ub.status === 'upstream_error'; })(), JSON.stringify(q('SELECT * FROM upstream_orders WHERE order_id=?', ordC01B.id)));
 }
 
-// A-03：租约接管用新 TXID 覆盖旧 tx_hash 时，旧 TXID 认领被释放（不留孤儿）
+// A-03（本轮修正，PR #4 后续）：租约接管用新 TXID 提交时，旧 TXID 已消费认领永久保留，不得删除；
+// 新 TXID 通过核验后成为该订单的第二笔付款事件（独立认领行）；orders.tx_hash 保留第一笔已消费 TXID。
+// 旧语义“旧认领被释放（不留孤儿）”已被认定为资金安全缺陷并删除（见 txid-race-deterministic E4a）。
 {
   const pTx3 = q("SELECT * FROM products WHERE title='TXID测试商品'");
   const txOld = 'd'.repeat(64);
   const txNew = 'e'.repeat(64);
-  // BEP20 订单（直接插库）；测的是租约接管/旧 TXID 释放逻辑
+  // BEP20 订单（直接插库）；测的是租约接管/旧 TXID 保留逻辑
   const a03No = 'AISCONCA03';
   const A03_ADDR = '0x' + '88'.repeat(20);
   db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0033, '" + A03_ADDR + "', datetime('now','+30 minutes'), ?, 'a03@test.example', 'Binance', 'BEP20', '" + A03_ADDR + "', 'pending_payment', datetime('now'))").run(a03No, pTx3.id, JSON.stringify({ contact_email: 'a03@test.example' }));
@@ -639,10 +641,17 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   evmReceiptFor = { to: ordA03.pay_address, amount: ordA03.actual_amount, hash: txNew };
   r = await payCall(ordA03.order_no, txNew);
   check('A-03 takeover via /pay ok', r.json && r.json.ok === true, JSON.stringify(r.json));
-  check('A-03: order tx_hash updated to new', q('SELECT tx_hash FROM orders WHERE id=?', ordA03.id).tx_hash === txNew);
+  check('A-03: order tx_hash still first consumed TXID (not overwritten by candidate)', q('SELECT tx_hash FROM orders WHERE id=?', ordA03.id).tx_hash === txOld);
   check('A-03: new txid claimed', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txNew).order_id === ordA03.id);
-  check('A-03: old txid claim released (no orphan)', !q('SELECT * FROM txid_claims WHERE tx_hash=?', txOld));
+  check('A-03: old txid claim RETAINED (never auto-released)', (() => { const c = q('SELECT * FROM txid_claims WHERE tx_hash=?', txOld); return c && c.order_id === ordA03.id; })());
+  check('A-03: two claims coexist for one order (two payment events)', qall('SELECT * FROM txid_claims WHERE order_id=?', ordA03.id).length === 2);
   evmReceiptFor = null;
+  // 他单重放旧 TXID 必须被拒绝，旧认领归属不变
+  r = await orderCall({ product_id: pTx3.id, quantity: 1, pay_method: 'Binance', pay_chain: 'BEP20', customer_fields: { contact_email: 'a03-other@test.example' } });
+  const ordA03Other = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const rReplay = await payCall(ordA03Other.order_no, txOld);
+  check('A-03: other order replay old TXID rejected', rReplay.status === 409 || (rReplay.json && !rReplay.json.ok), JSON.stringify(rReplay.json));
+  check('A-03: old claim still first order after replay', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txOld).order_id === ordA03.id);
 }
 
 // A-04（第四轮更新）：EVM /pay 按各链确认策略（BEP20 需 15 确认，不再全链 1 确认）。

@@ -269,7 +269,7 @@ npx wrangler d1 execute aisou-lite-db --local --file=backup-<日期>.sql
 - 无隐含生产绑定：`worker.js` / `frontend.html` 无硬编码生产 D1 ID 或生产域名；D1 绑定只来自 `wrangler.toml` 的 `env.DB`。
 - Cron/履约：`*/1 * * * *` 跑 `runPolling` + `pollUpstreamActivations`；`0 2 * * *` 跑清理 + 上游激活轮询。
   上游履约门禁：`prodseller_enabled != '1'` 时订单转 `pending_upstream`（`gateway_closed`），不发起真实采购；
-  下单时上游商品亦被 403 拦截。`poll_enabled=0` 时轮询直接跳过（`skipped: poll_disabled`），零 RPC。
+  下单时上游商品亦被 403 拦截。`poll_enabled=0` 时跳过全部链上扫描/RPC（零 RPC，`skipped: poll_scan_disabled`），但过期清理仍独立运行（已过期 + 无已消费付款事实的未付款订单仍被取消并释放预留）。
 - 路由：`wrangler.toml` 无 `routes` / 自定义域名，默认 `workers.dev` 子域，staging 不会接管生产域名。
 
 #### 第三阶段部署前测试（本轮真实重跑，提交 `9a79984`）
@@ -792,12 +792,21 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 | `docs/PR_REVIEW.md` A-01（历史记录）“管理员人工确认不再认领未核验 TXID” | 历史快照，不改写。当前行为：未链上核验的 TXID 在链上通道仍拒绝发货；人工通道走独立 `manualConfirm` 分支写 `manual_confirmed` 认领，不伪装成链上已付 |
 | `docs/CODE_REVIEW_2026-10-17.md` P1-2（历史记录）“管理员确认收款不认领 TXID → 同一笔链上付款可重复用于第二笔订单” | 历史快照，不改写。该漏洞已由 P1-2 共享全局认领修复：人工确认的 TXID 同样占用全局认领，他单无法重用 |
 | 流传过的“同秒删除后重建仅为极低概率边际风险” | 未经证明，不采用。本附录以租约-first + 令牌回滚消除该交错，而非以概率为其辩护 |
+| 本附录旧句“P1-1 令牌回滚：`releaseTxidClaim` 单条条件删除……” | **已由本轮（PR #4 后续）取代**：`releaseTxidClaim` 已彻底删除，已消费认领永不自动删除；新 TXID 不得覆盖已消费旧 TXID 的认领与 `orders.tx_hash` 证据（见下“本轮后续修正”） |
+
+### 本轮后续修正（PR #4 后续，2026-10-18，与本附录同分支追加提交）
+
+- **已消费认领永久保留**：删除 `releaseTxidClaim` 与 `claimOrderForPayment` 中的旧认领自动删除（旧语义“新 TXID 取代旧 TXID 时释放旧认领”、`concurrency-test` A-03 旧断言“旧认领被释放”均已修正为保留）。`orders.tx_hash` 保留第一笔已消费 TXID；新 TXID 通过完整核验后成为第二笔付款事件（独立认领行 + 账本行）。`releaseOrderLease` 清 `paid_at` 时若本订单已有认领则保留 `paid_at`。
+- **真正同时竞争测试**：新增 F1（人工 vs 链上 Barrier 汇合到 `beforeTxidInsert` 原子点）、F2（双链上并发）、F3（认领写失败后另一请求竞争获胜）；E4 重写为 E4a–E4e（旧认领来源 chain/manual、未验证/已验证新 TXID、多次候选切换、恢复中再次崩溃、租约过期 + 已有认领时取消被拒）。
+- **`/pay` 账本归属修正**：并发 `/pay` 争抢同一 TXID 时共享同一事件行，入账时把 `order_id` 修正为认领胜者，避免账本显示“失败订单已入账”。
+- **过期清理与链上扫描解耦**：`poll_enabled=0` 时零 RPC 但过期清理仍运行；取消守卫统一为 `tryExpireOrder`（已过期 + 无已消费付款事实 + 未认领/租约过期，UPDATE 内含 `NOT EXISTS` 双重守卫）；管理员普通取消同样受已消费付款事实保护。
+- **确定性测试**：`tests/txid-race-deterministic-test.mjs` **156 passed**（原 71）；`concurrency-test` A-03 已按新语义更新；全回归 `npm run test:regression` 通过。
 
 `docs/PR_REVIEW.md`、`docs/CODE_REVIEW_2026-10-17.md` 为历史记录，本次未改写；其中与本附录冲突的旧表述以本附录为准。
 
 ### 确定性测试证据（本地真实执行，非真实链上）
 
-- `tests/txid-race-deterministic-test.mjs`：**71 passed**。Barrier/Deferred 确定性交错（`env.__testHooks` + DB 失败注入），不依赖调度/时间窗口。覆盖：A 同订单认领回滚竞态（人工）、B 租约接管 + 过期回滚（链上 `/pay`）、C 双管理员并发人工确认（Barrier 汇合到原子 INSERT 点，恰好一个获胜、一认领 + 一账本、败者保持待付款 + 释放租约、重试无新增副作用）、D 人工/链上双向竞态（伪造回执 / 错金额 / 确认数不足永不占用 TXID）、E 账本/失败恢复（认领表写失败不谎称“已用于其他订单”、无孤儿、租约释放、重试成功；账本写失败 fail-closed、认领保留、重试幂等；已写账本后可恢复履约、重复 `/pay`、人工重确认、跨订单重用；新 TXID 接管仅当前租约持有者可取代旧认领）。
+- `tests/txid-race-deterministic-test.mjs`：**156 passed**（本轮后续修正后；原 71）。Barrier/Deferred 确定性交错（`env.__testHooks` + DB 失败注入），不依赖调度/时间窗口。覆盖：A 同订单认领回滚竞态（人工）、B 租约接管 + 过期回滚（链上 `/pay`）、C 双管理员并发人工确认（Barrier 汇合到原子 INSERT 点，恰好一个获胜、一认领 + 一账本、败者保持待付款 + 释放租约、重试无新增副作用）、D 人工/链上双向竞态（伪造回执 / 错金额 / 确认数不足永不占用 TXID）、E 账本/失败恢复（认领表写失败不谎称“已用于其他订单”、无孤儿、租约释放、重试成功；账本写失败 fail-closed、认领保留、重试幂等；已写账本后可恢复履约、重复 `/pay`、人工重确认、跨订单重用）、E4a–E4e 已消费认领永久保留（换 TXID / 租约接管 / 失败恢复均不删除；新 TXID 通过核验后为第二笔付款事件）、F 真正同时竞争（人工 vs 链上、双链上、写失败后竞争）、G 过期清理与链上扫描解耦（`poll_enabled=0` 仍清理、零 RPC、已消费付款事实受保护、预留释放、幂等、RPC 失败不挡清理、游标不推进、正常恢复有效）。
 - 其余本地套件：`review-p1-backend` **139**、**`review-fixes` 272**；其余本地套件全绿；`d1-local` ALL OK（`current_version=17`）。
 - 本地测试均为 Mock / 本地 D1 / 确定性交错，**不是真实链上支付验证，不是真实上游采购验证**。`prodseller_enabled` 门禁保持关闭。
 

@@ -1531,6 +1531,12 @@ async function testHook(env, name, arg) {
 async function releaseOrderLease(env, orderId, leaseToken, clearPaidAt) {
   if (!leaseToken) return;
   try {
+    if (clearPaidAt) {
+      // paid_at 不是付款证据本身，但已有 TXID 认领时它与消费事实绑定：绝不因本次失败而清掉，
+      // 否则订单会看起来像“从未付款”，后续取消路径可能误判。仅当本订单无任何 TXID 认领时才可清 paid_at。
+      var consumed = await env.DB.prepare('SELECT 1 AS x FROM txid_claims WHERE order_id = ? LIMIT 1').bind(orderId).first().catch(function () { return null; });
+      if (consumed) clearPaidAt = false;
+    }
     var sql = clearPaidAt
       ? 'UPDATE orders SET claim_token = ' + "''" + ', claimed_at = NULL, paid_at = NULL WHERE id = ? AND claim_token = ?'
       : 'UPDATE orders SET claim_token = ' + "''" + ', claimed_at = NULL WHERE id = ? AND claim_token = ?';
@@ -1546,7 +1552,11 @@ async function claimTxid(env, txHash, orderId, opts) {
   // 人工确认与链上确认共享同一 txid_claims 全局原子认领，source 区分 'chain_verified' / 'manual_confirmed'，
   // 不再另建防重表、不再靠先 SELECT 后 INSERT；胜负由 tx_hash 主键唯一约束决定。
   // 收养：同订单已有认领时不新建，只把 order_lease_token 更新为本请求租约（接管者收养），不覆盖 source
-  // （人工/链上来源以首次认领为准，不伪造）；回滚见 releaseTxidClaim（令牌 + 当前租约双重条件）。
+  // （人工/链上来源以首次认领为准，不伪造）。
+  // 永久保留：已成功写入 txid_claims 的认领永不被任何普通 API、租约接管或失败恢复流程自动删除。
+  // 历史上存在过的 releaseTxidClaim 回滚原语已删除——没有任何调用方可以证明“该认领从未成为付款事实”，
+  // 任何删除都会把已消费 TXID 放回全局可用池。归属争议只允许管理员在 D1 中人工对账处理（独立授权 + 审计），
+  // 不由接口自动改写。
   opts = opts || {};
   var source = opts.source === 'manual_confirmed' ? 'manual_confirmed' : 'chain_verified';
   var leaseToken = opts.leaseToken || '';
@@ -1589,16 +1599,9 @@ async function claimTxid(env, txHash, orderId, opts) {
   if (!again) return { ok: false, reason: '认领失败，请重试', transient: true };
   return { ok: false, reason: '该交易哈希已用于其他订单（请勿重复提交；归属争议请在 D1 中核查 txid_claims 后手动处理）' };
 }
-// P1-1：严格限制回滚。单条条件删除同时匹配 (tx_hash, order_id, 本次认领令牌) + 当前订单租约仍属本请求
-// （EXISTS orders.claim_token = 本请求租约）。租约被接管后 EXISTS 失败，旧请求删不掉新请求在用的认领。
-// claimToken 为空（遗留行 / 未新建）时直接跳过，绝不先查后无条件删。无法证明安全时宁可保留认领（同订单可安全重试），不冒险释放。
-async function releaseTxidClaim(env, txHash, orderId, claimToken, leaseToken) {
-  if (!claimToken) return { ok: true, skipped: true };
-  try {
-    var del = await env.DB.prepare('DELETE FROM txid_claims WHERE tx_hash = ? AND order_id = ? AND claim_token = ? AND EXISTS (SELECT 1 FROM orders WHERE id = ? AND claim_token = ?)').bind(txHash, orderId, claimToken, orderId, leaseToken || '').run();
-    return { ok: true, deleted: (del && del.meta) ? Number(del.meta.changes || 0) : 0 };
-  } catch (e) { return { ok: false, reason: '认领回滚失败' }; }
-}
+// P1-1：releaseTxidClaim 已彻底删除（本轮资金安全修复）。已成功取得全局消费权的认领不自动删除：
+// 普通支付失败、订单租约释放、付款账本失败、订单取消路径都不能移除已消费 TXID 的全局防重证据。
+// 唯一允许的纠正途径是管理员在 D1 中的独立人工对账操作（独立授权、可审计证据、严格流程），不在本代码中提供自动删除入口。
 // P1-2：TXID 是否已被他单消耗（txid_claims 认领，或 v17 前遗留的人工 manual_confirmed 账本行）。
 // 仅作 /pay 前置快筛（409 前置提示、省验证码），不是权威判定：权威判定是 claimTxid 的原子 INSERT + 主键约束。
 // 新消耗一律以 txid_claims 为准（人工与链上共享同一全局认领表）。
@@ -1611,29 +1614,34 @@ async function txHashConsumedByOther(env, txHash, orderId) {
   return null;
 }
 async function claimOrderForPayment(env, orderId, txHash) {
-  // 原子认领：status=pending_payment 且（未认领 或 认领已超租约）。成功时同时写入 paid_at（付款事实）与 tx_hash。
-  // txHash 为空时不覆盖已有 tx_hash（保留 /pay 提交的 TXID）。
-  // 接管时若用新 TXID 覆盖旧 tx_hash，释放旧 TXID 的认领：仅当旧认领属于本订单且本请求持有当前订单租约
-  // （EXISTS orders.claim_token=本请求新租约）时才删。陈旧请求持旧租约无法通过 EXISTS 条件，删不掉新请求在用的认领；
-  // 接管请求持新租约，可释放本订单被新 TXID 取代的旧认领（不留孤儿）。
+  // 原子认领：status=pending_payment 且（未认领 或 认领已超租约）。成功时同时写入 paid_at（付款处理标记，非付款证据）与 tx_hash。
+  // txHash 为空时不覆盖已有 tx_hash。
+  // 永久保留（本轮修复）：旧 TXID 一旦已在 txid_claims 中取得全局消费权，绝不因新租约、新 TXID 提交或旧请求失败而被删除。
+  // 候选 TXID 与已消费 TXID 严格区分：若旧 tx_hash 已有本订单的认领行，orders.tx_hash 保持为第一笔已消费 TXID（付款证据），
+  // 不被尚未验证的新候选 TXID 覆盖；新 TXID 若通过完整链上核验并取得自身认领，将作为该订单的第二笔付款事件
+  // （独立的 txid_claims 行 + payments 行），绝不通过覆盖 tx_hash 或删除历史认领来伪造只有一笔付款。
+  // 旧 tx_hash 无认领行时（仅是上次租约留下的候选、从未成为付款事实），新 TXID 可正常覆盖。
   var oldTx = null;
+  var oldConsumed = false;
   if (txHash) {
     var oldRow = await env.DB.prepare('SELECT tx_hash FROM orders WHERE id = ?').bind(orderId).first();
     oldTx = oldRow ? oldRow.tx_hash : null;
+    if (oldTx && oldTx !== txHash) {
+      var oc = await env.DB.prepare('SELECT 1 AS x FROM txid_claims WHERE tx_hash = ? AND order_id = ? LIMIT 1').bind(oldTx, orderId).first().catch(function () { return null; });
+      oldConsumed = !!oc;
+    }
   }
   var token = randomHex(16);
   var now = nowISO();
-  var sql = "UPDATE orders SET claim_token=?, claimed_at=?, paid_at=?" + (txHash ? ", tx_hash=?" : "") + " WHERE id=? AND status='pending_payment' AND (claim_token IS NULL OR claim_token='' OR claimed_at IS NULL OR claimed_at < datetime('now', '-" + CLAIM_LEASE_MINUTES + " minutes'))";
+  // oldConsumed 时不写 tx_hash：保留第一笔已消费 TXID 作为付款证据；新候选 TXID 不得覆盖它。
+  var sql = "UPDATE orders SET claim_token=?, claimed_at=?, paid_at=?" + ((txHash && !oldConsumed) ? ", tx_hash=?" : "") + " WHERE id=? AND status='pending_payment' AND (claim_token IS NULL OR claim_token='' OR claimed_at IS NULL OR claimed_at < datetime('now', '-" + CLAIM_LEASE_MINUTES + " minutes'))";
   var stmt = env.DB.prepare(sql);
   var binds = [token, now, now];
-  if (txHash) binds.push(txHash);
+  if (txHash && !oldConsumed) binds.push(txHash);
   binds.push(orderId);
   var upd = await stmt.bind.apply(stmt, binds).run();
   if (!upd.meta || upd.meta.changes !== 1) return { ok: false, reason: '订单已被其他请求认领或处理', claimToken: null };
-  if (oldTx && oldTx !== txHash) {
-    try { await env.DB.prepare('DELETE FROM txid_claims WHERE tx_hash = ? AND order_id = ? AND EXISTS (SELECT 1 FROM orders WHERE id = ? AND claim_token = ?)').bind(oldTx, orderId, orderId, token).run(); } catch (e) {}
-  }
-  return { ok: true, claimToken: token };
+  return { ok: true, claimToken: token, preservedOldTxHash: oldConsumed ? oldTx : null };
 }
 // ---- 卡密领取与订单完成的一致性（两阶段 + 补偿 + 恢复）----
 // 阶段 1 claimCardsForOrder：标记卡密已用（预留卡 → 已用；兜底补抢可用卡）。崩溃后重试时，已由本订单标记的卡（is_used=1, order_id=本订单）直接复用，不重复领取。
@@ -1787,8 +1795,7 @@ async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
       return { ok: false, reason: tc.reason };
     }
     txClaim = tc;
-    // 注意：本函数失败路径不再删除认领行（保留可恢复，同订单重试收养；见上文第 3 节）。
-    // releaseTxidClaim 保留为带令牌 + 当前租约双重条件的受控回滚原语，仅在调用方能证明仍持有当前租约时使用。
+    // 注意：本函数失败路径永不删除认领行（已消费认领永久保留，同订单重试收养；releaseTxidClaim 已删除，无自动释放入口）。
     // 确定性测试点：租约 + TXID 认领均已持有、副作用尚未开始。测试可在此暂停本请求、让接管请求完成，
     // 再恢复本请求，验证本请求不再破坏接管者的认领/租约（见 tests/txid-race-deterministic-test.mjs）。
     await testHook(env, 'afterTxidClaimAndLease', { orderId: o.id, claimToken: claimToken, txClaimToken: tc.claimToken || null, source: tc.source || null, manualConfirm: manualConfirm });
@@ -1966,32 +1973,62 @@ async function fulfillOrderByPayment(env, order, txHash, ctx, opts) {
   // 兼容旧名：直接复用 fulfillAfterPayment，不保留第二份发货逻辑
   return await fulfillAfterPayment(env, order, txHash, ctx, opts);
 }
+// 本轮（PR #4 后续）资金安全：订单是否已拥有“已消费付款事实”。
+// 付款事实 = txid_claims 中的全局 TXID 认领（已取得全局消费权），或 payments 中 verified/confirmed/posted/manual_confirmed
+// 账本行（链上已验证 / 已入账 / 人工确认）。submitted/discovered/duplicate/mismatch/unmatched 不是本订单的付款事实，
+// 不触发保护。paid_at 只是租约获取时的时间戳，不是付款证据：无认领、无账本、租约已过期时仍可取消（P1-3 陈旧认领恢复）。
+// 查询失败时 fail-closed（视为已有付款事实），绝不因一次读失败就取消可能已付款的订单。
+async function orderHasConsumedPayment(env, orderId) {
+  try {
+    var c = await env.DB.prepare('SELECT 1 AS x FROM txid_claims WHERE order_id = ? LIMIT 1').bind(orderId).first();
+    if (c) return true;
+    var p = await env.DB.prepare("SELECT 1 AS x FROM payments WHERE order_id = ? AND status IN ('verified', 'confirmed', 'posted', 'manual_confirmed') LIMIT 1").bind(orderId).first();
+    return !!p;
+  } catch (e) { return true; }
+}
+// 单笔过期取消（超时取消与管理员取消的共享守卫，单条条件 UPDATE 原子执行）。
+// 允许取消当且仅当：状态 pending_payment + 已过期 + 无已消费付款事实 +（未认领 或 租约已过期）。
+// UPDATE 内含 NOT EXISTS 双重守卫：预检与 UPDATE 之间的竞态（付款认领恰好在此间写入）也会被单条语句挡住，
+// 付款处理与取消只允许一个成功。取消绝不删除 txid_claims / payments（认领永久保留，账本不回滚）。
+// 审计失败不回滚取消（取消本身已提交），仅记日志；重复运行幂等（第二次 UPDATE 因状态已变命中 0 行，不重复写审计/释放）。
+async function tryExpireOrder(env, orderId) {
+  try {
+    var o = await env.DB.prepare('SELECT id, expires_at, created_at, paid_at, claim_token, claimed_at, status FROM orders WHERE id = ?').bind(orderId).first();
+    if (!o || o.status !== 'pending_payment') return { expired: false };
+    var expMs = effectiveExpiryMs(o);
+    if (expMs == null || expMs >= Date.now()) return { expired: false };
+    if (await orderHasConsumedPayment(env, orderId)) return { expired: false, reason: 'consumed_payment' };
+    var fallbackNote = isLegacyExpiryFallback(o) ? '（历史回退：expires_at 缺失/无效，按 created_at + 20 分钟判定）' : '';
+    var upd = await env.DB.prepare("UPDATE orders SET status='cancelled', admin_note=?, claim_token='', upstream_lock='', upstream_lock_expires_at=NULL WHERE id=? AND status='pending_payment' AND NOT EXISTS (SELECT 1 FROM txid_claims WHERE order_id = orders.id) AND NOT EXISTS (SELECT 1 FROM payments WHERE order_id = orders.id AND status IN ('verified', 'confirmed', 'posted', 'manual_confirmed')) AND ((paid_at IS NULL AND (claim_token IS NULL OR claim_token='')) OR (claimed_at IS NOT NULL AND claimed_at < datetime('now', '-" + CLAIM_LEASE_MINUTES + " minutes')))").bind('支付超时自动取消（20分钟未到账）' + fallbackNote, orderId).run();
+    if (upd.meta && upd.meta.changes > 0) {
+      await releaseReservation(env, orderId);
+      await releaseClaimedButUndeliveredCards(env, orderId);
+      var auditOk = await logAudit(env, orderId, 'auto_cancel_timeout', 'pending_payment', 'cancelled', '支付超时自动取消，释放卡密预留' + fallbackNote);
+      if (!auditOk) console.error('audit failed: auto_cancel_timeout order=' + orderId);
+      return { expired: true };
+    }
+    return { expired: false };
+  } catch (e) { return { expired: false, reason: 'error' }; }
+}
+// 过期清理（独立职责，与链上扫描解耦）：遍历待付款订单，逐笔 tryExpireOrder。无 RPC 调用。
+async function expireUnpaidOrders(env) {
+  var expired = 0;
+  var expCandidates = await env.DB.prepare("SELECT id FROM orders WHERE status='pending_payment' ORDER BY id ASC LIMIT 500").all().catch(function () { return { results: [] }; });
+  var expList = (expCandidates.results || []);
+  for (var ei = 0; ei < expList.length; ei++) {
+    var r = await tryExpireOrder(env, expList[ei].id);
+    if (r.expired) expired++;
+  }
+  return expired;
+}
 async function runPolling(env, fetchFn, ctx) {
   fetchFn = fetchFn || fetch;
   var settings = await getAllSettings(env);
-  if (String(settings.poll_enabled || '1') === '0') return { ok: true, skipped: 'poll_disabled', checked: 0, fulfilled: 0, expired: 0 };
-  // P2-2/P3-6 Phase A：超时取消（不进公平轮转队列，保证过期订单及时取消）。
-  // 取待付款订单轻量列，用有效过期时间判定：expires_at 有效时用它；缺失/空串/无效时按历史回退
-  //（created_at + 20 分钟）。已付款（paid_at）或有效认领（claim_token + 未过期租约）绝不误取消。
-  var expired = 0;
-  var expCandidates = await env.DB.prepare("SELECT id, expires_at, created_at, paid_at, claim_token, claimed_at, status FROM orders WHERE status='pending_payment' ORDER BY id ASC LIMIT 500").all();
-  var expList = (expCandidates.results || []);
-  for (var ei = 0; ei < expList.length; ei++) {
-    var eo = expList[ei];
-    try {
-      var expMs = effectiveExpiryMs(eo);
-      if (expMs == null || expMs >= Date.now()) continue;
-      var fallbackNote = isLegacyExpiryFallback(eo) ? '（历史回退：expires_at 缺失/无效，按 created_at + 20 分钟判定）' : '';
-      var exA = await env.DB.prepare("UPDATE orders SET status='cancelled', admin_note=?, claim_token='', upstream_lock='', upstream_lock_expires_at=NULL WHERE id=? AND status='pending_payment' AND ((paid_at IS NULL AND (claim_token IS NULL OR claim_token='')) OR (claimed_at IS NOT NULL AND claimed_at < datetime('now', '-" + CLAIM_LEASE_MINUTES + " minutes')))").bind('支付超时自动取消（20分钟未到账）' + fallbackNote, eo.id).run();
-      if (exA.meta && exA.meta.changes > 0) {
-        expired++;
-        await releaseReservation(env, eo.id);
-        await releaseClaimedButUndeliveredCards(env, eo.id);
-        var auditOkA = await logAudit(env, eo.id, 'auto_cancel_timeout', 'pending_payment', 'cancelled', '支付超时自动取消，释放卡密预留' + fallbackNote);
-        if (!auditOkA) console.error('audit failed: auto_cancel_timeout order=' + eo.id);
-      }
-    } catch (e) { continue; }
-  }
+  // 职责解耦（本轮修复）：poll_enabled 只控制“链上支付扫描 + 需要 RPC 的核验逻辑”，不再控制过期清理。
+  // poll_enabled=0 时：跳过全部 RPC（零链上调用），但仍运行过期清理，避免过期未付款订单永久冻结卡密预留。
+  // poll_enabled=1 时：先过期清理，再链上扫描。过期清理本身不启用真实收款、不调上游、不改 poll 语义。
+  var expired = await expireUnpaidOrders(env);
+  if (String(settings.poll_enabled || '1') === '0') return { ok: true, skipped: 'poll_scan_disabled', checked: 0, fulfilled: 0, expired: expired, expiry_cleanup: 1 };
   // P2-2 Phase B：公平轮转。orders 表已有 last_checked_at 列，用它排序并处理 NULL/空串：
   // 从未检查（NULL/''）优先，其次最久未检查，避免前 100 笔钉死导致第 101 笔后新订单饿死。
   var pending = await env.DB.prepare("SELECT * FROM orders WHERE status='pending_payment' ORDER BY CASE WHEN last_checked_at IS NULL OR last_checked_at='' THEN 0 ELSE 1 END, last_checked_at ASC, id ASC LIMIT 100").all();
@@ -2001,21 +2038,12 @@ async function runPolling(env, fetchFn, ctx) {
   for (var i = 0; i < list.length; i++) {
     var o = list[i];
     try {
-      // 超时：未付款且未被认领的订单可自动取消；已确认付款（paid_at）或正在处理（claim_token）的订单绝不自动取消，走异常/恢复流程。
-      // P1-3：租约过期（claimed_at 超过 5 分钟，与 CLAIM_LEASE_MINUTES 口径一致）的陈旧认领也可取消，
-      // 避免处理者崩溃后订单永久钉死；claimed_at 为 NULL 时按原逻辑（视为未过期，仅未认领可取消）。
-      // P3-6：用有效过期时间判定（expires_at 缺失/无效时按 created_at + 20 分钟历史回退）。
+      // 超时：未付款且未被认领的订单可自动取消（与 Phase A 同一 tryExpireOrder 守卫，含已消费付款事实保护）；
+      // 已消费付款事实 / 有效租约的订单绝不自动取消，走异常/恢复流程。P3-6：用有效过期时间判定。
       var oExpMs = effectiveExpiryMs(o);
       if (oExpMs != null && oExpMs < Date.now()) {
-        var oFallback = isLegacyExpiryFallback(o) ? '（历史回退：expires_at 缺失/无效，按 created_at + 20 分钟判定）' : '';
-        var ex = await env.DB.prepare("UPDATE orders SET status='cancelled', admin_note=?, claim_token='', upstream_lock='', upstream_lock_expires_at=NULL WHERE id=? AND status='pending_payment' AND ((paid_at IS NULL AND (claim_token IS NULL OR claim_token='')) OR (claimed_at IS NOT NULL AND claimed_at < datetime('now', '-" + CLAIM_LEASE_MINUTES + " minutes')))").bind('支付超时自动取消（20分钟未到账）' + oFallback, o.id).run();
-        if (ex.meta && ex.meta.changes > 0) {
-          expired++;
-          await releaseReservation(env, o.id);
-          await releaseClaimedButUndeliveredCards(env, o.id);
-          var auditOk = await logAudit(env, o.id, 'auto_cancel_timeout', 'pending_payment', 'cancelled', '支付超时自动取消，释放卡密预留' + oFallback);
-          if (!auditOk) console.error('audit failed: auto_cancel_timeout order=' + o.id);
-        }
+        var exR = await tryExpireOrder(env, o.id);
+        if (exR.expired) expired++;
         continue;
       }
       // P2-12：BinanceUID 订单只做超时取消（上方），不链上核验。
@@ -2668,7 +2696,10 @@ async function handleApi(req, env, url, ctx) {
       try { var pr = await recordPayment(env, { order_id: o2.id, chain: o2.pay_chain, pay_address: o2.pay_address || o2.wallet_address, tx_hash: hit.txHash, event_key: '', amount: o2.actual_amount || o2.total_usdt, status: 'verified', reconcile_note: '用户经 /pay 提交并核验通过' }); payRec = pr.payment || null; } catch (e) { payRec = null; }
       var fr = await fulfillOrderByPayment(env, o2, hit.txHash, ctx, { txVerified: true });
       if (fr.ok && (fr.mode === 'completed' || fr.mode === 'pending_fulfill' || fr.mode === 'out_of_stock')) {
-        if (payRec) { try { await updatePayment(env, payRec.id, { status: 'posted' }); } catch (e) {} }
+        // 认领胜者归属修正：recordPayment 在认领前写入，两个并发 /pay 争抢同一 TXID 时共享同一事件行
+        // （先记录者是失败方时行归属失败方）。入账时把 order_id 修正为认领胜者（本订单），否则账本会显示
+        // “失败订单已入账、胜者订单无入账”的错误对账状态。pay_address 保持首次记录值（既有行为，本轮不改）。
+        if (payRec) { try { await updatePayment(env, payRec.id, { status: 'posted', order_id: o2.id }); } catch (e) {} }
       }
       if (fr.ok && fr.mode === 'completed') return json({ ok: true, message: '核验通过，已自动发货', auto: true });
       if (fr.ok && fr.mode === 'pending_fulfill') return json({ ok: true, message: '核验通过，已自动派单，等待人工代充', auto: true });
@@ -2920,8 +2951,8 @@ async function handleApi(req, env, url, ctx) {
     if (!co) return err('订单不存在', 404);
     if (co.status === 'completed' || co.status === 'cancelled') return err('当前状态不可取消');
     // 已付款订单保护：pending_fulfill / pending_activation / pending_upstream / refund_pending 均为已付款状态，不得普通取消。
-    // pending_payment 但 paid_at 已设置（已确认付款、处理中或处理崩溃待恢复）同样不得普通取消。
-    // P1-3：租约过期（claimed_at 超过 5 分钟）的陈旧认领可取消；claimed_at 为 NULL 时按原逻辑（视为未过期）。
+    // pending_payment 的保护以“已消费付款事实”（txid_claims 认领 / payments 已入账行）为准，见下方 orderHasConsumedPayment 预检：
+    // paid_at 只是租约时间戳，无认领、无账本且租约已过期时（P1-3 陈旧认领）仍可取消，避免崩溃订单永久钉死。
     if (co.status !== 'pending_payment') {
       return err('已付款订单不能通过普通取消接口取消（当前状态：' + co.status + '）。如无法交付请走异常处理（标记退款待处理），本系统不执行真实退款，须在系统外退款后点“确认已退款”。', 409);
     }
@@ -2929,9 +2960,14 @@ async function handleApi(req, env, url, ctx) {
     if (co.paid_at && !leaseExpired) {
       return err('该订单已确认付款（处理中），不能普通取消。如无法交付请走异常处理流程。', 409);
     }
+    // 本轮资金安全：已有已消费 TXID 认领或已入账付款记录的订单，普通取消一律拒绝（即使租约已过期），
+    // 必须走异常/退款流程；取消绝不删除认领或账本。预检 + 下方 UPDATE 内 NOT EXISTS 双重守卫，防预检与取消之间的认领竞态。
+    if (await orderHasConsumedPayment(env, cid)) {
+      return err('该订单已有已消费 TXID 认领或已入账付款记录，不能普通取消；请走异常处理（标记退款待处理），本系统不执行真实退款，须在系统外退款后点“确认已退款”。', 409);
+    }
     var cancelReason = String(cb2.reason || cb2.admin_note || '').trim();
     // 条件取消：未付款未认领的待付款订单，或租约过期的陈旧认领。并发下付款认领与取消只允许一个成功。
-    var upC = await env.DB.prepare("UPDATE orders SET status='cancelled', admin_note=? WHERE id=? AND status='pending_payment' AND (((paid_at IS NULL) AND (claim_token IS NULL OR claim_token='')) OR (claimed_at IS NOT NULL AND claimed_at < datetime('now', '-" + CLAIM_LEASE_MINUTES + " minutes')))").bind(cancelReason, cid).run();
+    var upC = await env.DB.prepare("UPDATE orders SET status='cancelled', admin_note=? WHERE id=? AND status='pending_payment' AND NOT EXISTS (SELECT 1 FROM txid_claims WHERE order_id = orders.id) AND NOT EXISTS (SELECT 1 FROM payments WHERE order_id = orders.id AND status IN ('verified', 'confirmed', 'posted', 'manual_confirmed')) AND (((paid_at IS NULL) AND (claim_token IS NULL OR claim_token='')) OR (claimed_at IS NOT NULL AND claimed_at < datetime('now', '-" + CLAIM_LEASE_MINUTES + " minutes')))").bind(cancelReason, cid).run();
     if (!upC.meta || upC.meta.changes === 0) return err('当前状态不可取消（可能已被其他操作处理或已确认付款）');
     // 取消时释放本订单的卡密预留（仅 is_used=0 的预留卡）与陈旧认领已标记未交付的卡。
     await releaseReservation(env, cid);
