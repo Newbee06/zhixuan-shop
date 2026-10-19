@@ -15,7 +15,8 @@
 - **响应最小化**：查单列表/概要永不返回 `delivery_content`、查询密码、密码哈希、盐、`claim_token`、`customer_fields`、完整 `tx_hash`/`txid`、管理备注（`admin_note` / `refund_ref` / `exception_reason` / `upstream_lock`）。**唯一例外**：待付款（`pending_payment`）订单在查单列表中附带 `pay_address`——它是商家公开收款地址（见 `docs/PAYMENT_FLOW.md`“查单列表 pay_address 例外”），非用户钱包/秘密；已付款/其他状态订单不附带。
 - 旧接口 `GET /api/orders` 返回 410，文案为“旧接口停用，请用订单号或下单邮箱+验证码走当前查单流程”（不得再称“邮箱查单已关闭”）。已落地：`src/worker.js` 中的 410 文案已改为上述目标文案（2026-10-18 整改集成）。
 - `/query` 返回 `credential_type` 是 deliberate 的低敏感 UI 提示：前端需它选择密码/token 输入（`password` / `token` / `legacy`），不含任何凭证本身；`/query` 错误文案已统一为通用文案，不区分订单类型细节。
-- 取卡密（`POST /api/orders/:no/secret`）：IP 限流 + 按单原子记数（单条 `INSERT...SELECT...WHERE count < 5`，D1 串行化防并发绕过，`changes=0` 即 429）。空密码 → 401；密码错误 → 通用 401；认证通过后才按状态返回卡密或“尚未付款”。
+- 取卡密（`POST /api/orders/:no/secret`）：IP 限流 + 按单原子记数（单条 `INSERT...SELECT...WHERE count < 5`，D1 串行化防并发绕过，`changes=0` 即 429）。认证前失败路径统一通用文案与状态码（401 + “查询密码错误”）：空密码、系统凭证订单、无 salt 密码订单一律同文案，不区分密码错/订单状态/凭证方案，不泄露订单是否有卡密；认证成功后清零该单的按单记数。404（订单不存在）与认证通过后的 410（交付已过期）/ 未付款提示保留（认证通过后才返回状态相关信息）。
+- 查单凭证（`POST /api/orders/:no/lookup`）：与 `/secret` 同口径——图形验证码 + 按单原子记数（`lookup_attempts`，5 次/10 分钟，成功后清零）；顺序为订单存在性 → IP 限流 → 验证码（失败不烧按单配额）→ 按单记数（覆盖全部凭证校验路径）→ 凭证校验；错误文案统一为“查单凭证错误”，不区分新旧订单。
 - 历史订单：
   - 系统凭证订单（`query_token_hash`）：走老 `/lookup` 验证凭证哈希，返回完整详情。
   - 旧明文密码订单（`query_password`）：走老 `/lookup` 验证明文，只返回概要。
@@ -28,6 +29,8 @@
 - 支付组合白名单：仅 `OKX|X Layer` 与 `Binance|BEP20`。下单、轮询、TXID 核验、扫描四处均校验白名单；非白名单订单不自动认账，只保留超时自动取消。
 - 链上核验严格：合约地址校验、Transfer 事件、收款地址、按合约实际 `decimals()` 精确 BigInt 金额匹配、按链确认数（X Layer 1、BEP20 15）防重组。decimals 读取失败 fail-closed。
 - TRC20 / ERC20 / 站内转账代码已删除，无任何外部调用路径。
+- TXID 认领安全（v17 + v18）：租约-first（先原子获取订单租约，再碰认领表；无租约不触碰认领）；认领令牌化（每次新认领 `randomHex(32)` 的 `claim_token`）；无回滚删除入口，已消费认领永久保留（遗留空令牌行同样永不被自动删除）；同订单接管收养认领（重绑 `order_lease_token`，`source` 不改写）；失败路径不删认领行。认领查询异常 fail-closed（查不到 ≠ 无认领）；Schema 迁移不完整时不许降级写入。链上认领与账本写入的安全顺序为认领 → 账本 → 副作用（见 `docs/PAYMENT_FLOW.md`）；账本与认领归属不一致时先恢复旧账本，再处理新付款。
+- 人工与链上共享同一 `txid_claims` 全局原子认领（`tx_hash` 主键决定胜负），`source` 区分 `'chain_verified'` / `'manual_confirmed'`；`manual_confirmed` 仅表示管理员系统外核对后人工确认，不构成链上证据，不伪造回执/区块高度/确认数。人工账本写入失败时 fail-closed：仅重读确认已有同订单 + 同 TXID + 同状态 `manual_confirmed` 行才可幂等继续，否则释放本请求租约、认领保留、返回失败。
 - 收款二维码走第三方 qrserver.com（前端调 `api.qrserver.com` 生成，收款地址以查询参数传给第三方）；收款地址本就是公开收款信息，接受现状。
 
 ## 管理端鉴权
@@ -43,7 +46,8 @@
 - 全部响应带 `cache-control: no-store`（含错误响应）。
 - 错误脱敏：公开接口只返回稳定通用错误 + 关联 ID，绝不返回 SQL、数据库结构、内部路径、堆栈、凭据；详情只记 Worker 日志。
 - 参数化查询（无字符串拼接 SQL）；输入长度/格式校验；金额用 BigInt 精确比较，禁止 float 比较。
-- 图形验证码：4 位、5 分钟过期、最多试 3 次，失败计数；下单、查单列表均需验证码。SVG 验证码只是减速带（字符以明文 `<text>` 输出，可被脚本解析），真正防线是 IP 限流；Turnstile 保持条件加载现状（仅 `turnstile_enabled=1` 时启用）。
+- 图形验证码：4 位、5 分钟过期、最多试 3 次，失败计数；下单、查单列表均需验证码。SVG 验证码字符以 5×7 点阵字体绘制为 `<rect>` 像素块（无 `<text>` 节点，正则/文本提取无法直接读出验证码；服务端仍在 DB 存哈希校验）。SVG 验证码只是减速带，真正防线是 IP 限流与按单记数；Turnstile 保持条件加载现状（仅 `turnstile_enabled=1` 时启用）。
+- 限流 fail-closed：`/pay` 限流、登录限流（IP 级 + 全站级）、上游调用限流的检查本身异常时，返回错误/拒绝（不放行）。上游限流检查异常时不发起采购调用。
 - 下单限流：同 IP 限流（`order_rate`）。
 - `/pay` 限流：同一订单 10 分钟 5 次，同一 IP 10 分钟 20 次。限流不影响后台轮询继续核验已到账付款。
 - 管理端卡密列表（`GET /api/admin/cards`）返回完整卡密 code：这是管理员权限操作（需登录，无导出接口，分页），保留现状。卡密不在任何公开接口返回。

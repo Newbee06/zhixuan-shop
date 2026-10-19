@@ -7,7 +7,7 @@
 - `migrations/*.sql` 是只读镜像，仅供审计与 Schema 对照，**不得**用 `wrangler d1 migrations apply` 直接执行。
   原因：SQLite 的 `ALTER TABLE ADD COLUMN` 不支持 `IF NOT EXISTS`；部分迁移含去重/数据修复与失败不标记版本语义，
   文件版无法完整表达；0001–0006 不写版本记录，与内嵌迁移不互通（旧问题，已废止该用法）。
-- `schema.sql` 是新库建表脚本（已含全部终态表结构 + 预置全部版本），新库直接用它建库，不跑迁移。
+- `schema.sql` 是新库建表脚本（已含全部终态表结构 + 预置 v1–v10），新库直接用它建库，不跑迁移。
 - 旧库升级只走 Worker 的 `runMigrations`（幂等、失败不标记版本、下次重试）。
 
 禁止长期依赖人工同步两套迁移。新增迁移时只改 `MIGRATIONS` 数组，同时更新本目录的镜像文件与 `schema.sql`，并在 PR 中说明。
@@ -20,7 +20,7 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 版本落后时才执行 `runMigrations`（见 `src/worker.js` 的 `MIGRATIONS`），逐个版本 apply，成功才标记版本。
 失败时返回明确的版本号与原因，不伪装成功。并发请求同时迁移时，版本标记用 `INSERT OR IGNORE`，避免唯一冲突。
 
-- 新库：直接用 `schema.sql`（已含全部列/表，且预置全部迁移版本），不跑迁移。
+- 新库：直接用 `schema.sql`（已含全部列/表，且预置 v1–v10），不跑迁移。
 - 旧库：部署新版 Worker 后首次请求自动升级，幂等、可重试。
 
 管理员也可显式触发：`POST /api/admin/migrate`（返回本次应用的版本），或查询状态：`GET /api/admin/migrate`。
@@ -53,6 +53,16 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 | v14 | 查单改 aisou.pro 方向（`orders.query_password_hash` + `secret_attempts` 按单取卡密尝试记录） |
 | v15 | P0（查询密码必填 + 随机 salt PBKDF2 + 移除邮箱查询：`orders.query_password_salt`） |
 | v16 | P2-4（补 6 个查询索引：`idx_cards_product`、`idx_cards_used`、`idx_orders_no`、`idx_orders_status`、`idx_orders_created`、`idx_sessions_expires`；仅补 MIGRATIONS v1–v15 真缺失的，schema.sql 新库已含，`IF NOT EXISTS` 幂等；不删历史数据，不加 claim_token 列） |
+| v17 | P1-1/P1-2（`txid_claims` 加 `claim_token`（每次新认领的密码学安全随机令牌；无回滚删除入口，已消费认领永久保留）+ `source`（`chain_verified` / `manual_confirmed`，人工与链上共享同一全局原子认领）+ `order_lease_token`（认领时持有者的订单租约，接管时收养更新）；`ADD COLUMN` 幂等，旧库真正加列、新库 schema.sql 已含为 no-op；现有认领记录保留，旧行三列为默认值） |
+| v18 | 资金安全（`orders.pending_tx_hash` 未核验候选 TXID + `orders.payment_state` 超额付款态（`''` / `'overpaid_pending'`）+ `lookup_attempts`（/lookup 按单原子记数，与 /secret 同口径）；`ADD COLUMN` / `CREATE TABLE IF NOT EXISTS` 幂等，旧库真正加列/建表、新库 schema.sql 已含为 no-op） |
+
+> v17 核对（与 `src/worker.js` MIGRATIONS v17 + `migrations/0017_txid_claim_token_source_lease.sql` 一致）：三列均为 `ADD COLUMN`；`claim_token` 为 `randomHex(32)`；`source` 默认 `'chain_verified'`（v17 前只有链上路径写认领表）；`order_lease_token` 默认空。`GET /api/admin/schema-check` 按 `expectedTables` 校验 `txid_claims` 六列齐全。预置版本仍为 10（`schema.sql` 只预置 v1–v10），v11–v18 由 Worker 按序执行，不得把预置版本改到 18（否则 v11 图标种子等会被跳过）。
+>
+> v18 核对（与 `src/worker.js` MIGRATIONS v18 + `migrations/0018_pending_tx_hash_payment_state_lookup_attempts.sql` 一致）：`orders.pending_tx_hash` / `orders.payment_state` 为 `ADD COLUMN`；`lookup_attempts` 为 `CREATE TABLE IF NOT EXISTS` + 索引 `idx_lookup_attempts_order`。`GET /api/admin/schema-check` 按 `expectedTables` 校验 `orders` 含 `pending_tx_hash` / `payment_state`、`lookup_attempts` 三列齐全。预置版本仍为 10（`schema.sql` 只预置 v1–v10），v11–v18 由 Worker 按序执行。
+
+## 管理员首次建站（B-P0）
+
+新数据库首次登录不再接受公开默认密码。未设管理员密码时，登录须提供与环境变量 `ZHIXUAN_SETUP_TOKEN` 匹配的建站令牌（请求体 `setup_token` 字段；密码可为空）；未配置该环境变量时登录 fail-closed（503 并提示配置）。登录后必须改密（`must_change_password`），改密时旧密码可留空（会话本身已由建站令牌授权）。已有密码哈希的数据库行为不变（走密码校验）。**该令牌是建站凭证，不得写进代码/仓库/日志，前端登录页仅提供输入框。**
 
 ## 兼容性
 
@@ -66,5 +76,5 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 1. 备份生产 D1（`wrangler d1 export` 或 CF 面板快照）。
 2. 在测试 D1 上先演练迁移（见测试报告的迁移测试）。
 3. 部署前跑 `GET /api/admin/schema-check` 预检（只读），确认无差异。
-4. 部署新版 Worker，首次请求自动迁移；用 `GET /api/admin/migrate` 确认 `current_version = 16`。
+4. 部署新版 Worker，首次请求自动迁移；用 `GET /api/admin/migrate` 确认 `current_version = 18`。
 5. 回滚：重新部署旧版 Worker；新列/新表旧版代码不读取，不影响旧版运行。

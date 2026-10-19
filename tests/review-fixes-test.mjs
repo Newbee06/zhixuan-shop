@@ -96,11 +96,12 @@ function makeEnv() {
       bind(...a) { params = a; return api; },
       async first() { try { const st = db.prepare(sql); const r = st.get(...params); return r === undefined ? null : r; } catch (e) { throw e; } },
       async all() { const st = db.prepare(sql); return { results: st.all(...params) }; },
-      async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; },
+      async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes, last_row_id: info.lastInsertRowid } }; },
     };
     return api;
   };
   const env = {
+    ZHIXUAN_SETUP_TOKEN: 'test-setup-token',
     DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } },
     PRODSELLER_API_KEY: 'test-key', RESEND_API_KEY: 'test-resend',
     __fetch: mockFetch,
@@ -195,10 +196,10 @@ function evmLogFor(order, txHash, blockNumber, logIndex = '0x0') {
 setSetting('usdt_addresses', JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111', 'Binance|BEP20': '0x2222222222222222222222222222222222222222' }));
 setSetting('rpc_urls', JSON.stringify({ 'X Layer': ['https://mock-xlayer'], 'BEP20': ['https://mock-bsc'] }));
 setSetting('prodseller_enabled', '0');
-let r = await call('POST', '/api/admin/login', { password: 'admin' });
+let r = await call('POST', '/api/admin/login', { setup_token: 'test-setup-token' });
 check('init: default admin login', r.json && r.json.ok === true, JSON.stringify(r.json));
 let cookie = r.headers.get('set-cookie') || '';
-r = await call('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'admin123' }, cookie);
+r = await call('POST', '/api/admin/change-password', { old_password: '', new_password: 'admin123' }, cookie);
 check('init: change password', r.json && r.json.ok === true, JSON.stringify(r.json));
 
 // ================= P1 =================
@@ -212,7 +213,7 @@ check('init: change password', r.json && r.json.ok === true, JSON.stringify(r.js
   const o1 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   setGate(0); // 确认前关闭门禁
   ps.creates = 0;
-  r = await call('POST', '/api/admin/orders/' + o1.id + '/confirm-payment', { reason: '门禁关闭时确认' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + o1.id + '/confirm-payment', { reason: '门禁关闭时确认' , manual_confirm: true }, cookie);
   check('P1-1: confirm with gate closed -> pending_upstream, no upstream call', r.json && r.json.ok === true && q('SELECT status FROM orders WHERE id=?', o1.id).status === 'pending_upstream' && ps.creates === 0, JSON.stringify(r.json) + ' creates=' + ps.creates);
   // 轮询时门禁仍关闭 → 不创建
   const ctx = makeCtx(); await worker.scheduled({ type: 'cron', cron: '*/1 * * * *' }, env, ctx); await ctx.drain();
@@ -223,7 +224,9 @@ check('init: change password', r.json && r.json.ok === true, JSON.stringify(r.js
   setGate(1);
 }
 
-// P1-2（2026-10-18 整改）：人工确认通道绝不写 txid_claims；改写 payments manual_confirmed 行 + 审计 manual_confirm_payment + admin_note【人工确认收款】前缀。
+// P1-2（v17 语义变更）：人工确认通道写 txid_claims 全局认领（source=manual_confirmed，与链上共享同一全局原子认领）+ payments manual_confirmed 行 + 审计 manual_confirm_payment + admin_note【人工确认收款】前缀。
+// 旧断言“人工确认绝不写 txid_claims”已被 P1-2 根治要求取代（人工与链上必须共享同一全局原子消费机制，否则两路径间仍有 TOCTOU 窗口）；
+// manual_confirmed 仅表示人工确认，不构成链上证据，不伪造回执/区块高度/确认数。
 {
   const tx = 'a'.repeat(64);
   r = await call('POST', '/api/admin/products', { title: '手动商品-P1-2', category: 'recharge', stock_type: 'manual', sell_price: 4, source: 'self' }, cookie);
@@ -231,9 +234,9 @@ check('init: change password', r.json && r.json.ok === true, JSON.stringify(r.js
   r = await orderCall({ product_id: pM.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const o = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(tx, o.id);
-  r = await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-2' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-2' , manual_confirm: true }, cookie);
   check('P1-2: admin manual confirm succeeds (manual channel)', r.json && r.json.ok === true, JSON.stringify(r.json));
-  check('P1-2: manual confirm NEVER writes txid_claims', !q('SELECT * FROM txid_claims WHERE tx_hash=?', tx));
+  check('P1-2: manual confirm writes shared txid_claims (source=manual_confirmed)', (() => { const row = q('SELECT * FROM txid_claims WHERE tx_hash=?', tx); return row && Number(row.order_id) === Number(o.id) && row.source === 'manual_confirmed' && !!row.claim_token; })());
   check('P1-2: manual confirm writes manual_confirmed ledger row', (() => { const p = q("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", tx); return p && Number(p.order_id) === Number(o.id); })());
   check('P1-2: manual confirm audit action = manual_confirm_payment', !!q("SELECT * FROM admin_audit WHERE order_id=? AND action='manual_confirm_payment'", o.id));
   check('P1-2: manual confirm admin_note has 【人工确认收款】 prefix', (q('SELECT admin_note FROM orders WHERE id=?', o.id).admin_note || '').includes('【人工确认收款】'));
@@ -241,7 +244,7 @@ check('init: change password', r.json && r.json.ok === true, JSON.stringify(r.js
   r = await orderCall({ product_id: pM.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const o2 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(tx, o2.id);
-  r = await call('POST', '/api/admin/orders/' + o2.id + '/confirm-payment', { reason: 'P1-2 第二单' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + o2.id + '/confirm-payment', { reason: 'P1-2 第二单' , manual_confirm: true }, cookie);
   check('P1-2: second confirm with same txid rejected', r.json && !r.json.ok && /已用于其他订单/.test(r.json.error || ''), JSON.stringify(r.json));
 }
 
@@ -273,7 +276,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   r = await orderCall({ product_id: pUp.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const o = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   ps.createFn = () => ({ ok: true, status: 200, json: async () => ({ id: 'PS-TERM-' + termStatus, status: 'paid' }), text: async () => JSON.stringify({ id: 'PS-TERM-' + termStatus, status: 'paid' }) });
-  r = await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-4 setup' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-4 setup' , manual_confirm: true }, cookie);
   check('P1-4(' + termStatus + '): setup pending_activation', r.json && r.json.ok === true && q('SELECT status FROM orders WHERE id=?', o.id).status === 'pending_activation', JSON.stringify(r.json));
   ps.getFn = () => ({ ok: true, status: 200, json: async () => ({ id: 'PS-TERM-' + termStatus, status: termStatus }), text: async () => JSON.stringify({ id: 'PS-TERM-' + termStatus, status: termStatus }) });
   const ctx = makeCtx(); await worker.scheduled({ type: 'cron', cron: '*/1 * * * *' }, env, ctx); await ctx.drain();
@@ -291,7 +294,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   r = await orderCall({ product_id: pUp.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const oF = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   ps.createFn = () => ({ ok: true, status: 200, json: async () => ({ id: 'PS-VOID-FULFILL', status: 'paid' }), text: async () => JSON.stringify({ id: 'PS-VOID-FULFILL', status: 'paid' }) });
-  await call('POST', '/api/admin/orders/' + oF.id + '/confirm-payment', { reason: 'P1-5 setup' }, cookie);
+  await call('POST', '/api/admin/orders/' + oF.id + '/confirm-payment', { reason: 'P1-5 setup' , manual_confirm: true }, cookie);
   ps.createFn = null;
   r = await call('POST', '/api/admin/orders/' + oF.id + '/fulfill', { delivery_content: 'VOID-TEST' }, cookie);
   check('P1-5: fulfill with psId, no flag -> 409', r.status === 409 && /作废/.test(r.json && r.json.error || ''), JSON.stringify(r.json));
@@ -301,7 +304,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   r = await orderCall({ product_id: pUp.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const oR = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   ps.createFn = () => ({ ok: true, status: 200, json: async () => ({ id: 'PS-VOID-REFUND', status: 'paid' }), text: async () => JSON.stringify({ id: 'PS-VOID-REFUND', status: 'paid' }) });
-  await call('POST', '/api/admin/orders/' + oR.id + '/confirm-payment', { reason: 'P1-5 refund setup' }, cookie);
+  await call('POST', '/api/admin/orders/' + oR.id + '/confirm-payment', { reason: 'P1-5 refund setup' , manual_confirm: true }, cookie);
   ps.createFn = null;
   r = await call('POST', '/api/admin/orders/' + oR.id + '/exception', { reason: '客户要求退款', refund_needed: true }, cookie);
   check('P1-5: exception refund_needed -> refund_pending', r.json && r.json.ok === true && q('SELECT status FROM orders WHERE id=?', oR.id).status === 'refund_pending', JSON.stringify(r.json));
@@ -314,7 +317,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   r = await orderCall({ product_id: pUp.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const oN = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   ps.createFn = () => ({ ok: true, status: 200, json: async () => ({ id: 'PS-VOID-NONE', status: 'delivered', deliveredKey: 'PS-KEY-NONE' }), text: async () => JSON.stringify({ id: 'PS-VOID-NONE', status: 'delivered', deliveredKey: 'PS-KEY-NONE' }) });
-  await call('POST', '/api/admin/orders/' + oN.id + '/confirm-payment', { reason: 'P1-5 no-psid setup' }, cookie);
+  await call('POST', '/api/admin/orders/' + oN.id + '/confirm-payment', { reason: 'P1-5 no-psid setup' , manual_confirm: true }, cookie);
   ps.createFn = null;
   check('P1-5: delivered upstream order completed (no flag needed)', q('SELECT status FROM orders WHERE id=?', oN.id).status === 'completed');
 }
@@ -325,7 +328,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   const pM = q("SELECT * FROM products WHERE title='手动商品-P1-6'");
   r = await orderCall({ product_id: pM.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const o = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-6 setup' }, cookie);
+  await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-6 setup' , manual_confirm: true }, cookie);
   db.prepare('INSERT INTO cards (product_id, code, is_used, order_id) VALUES (?, ?, 1, ?)').run(pM.id, 'P16-RESIDUAL-1', o.id);
   db.prepare('INSERT INTO cards (product_id, code, is_used, order_id) VALUES (?, ?, 1, ?)').run(pM.id, 'P16-DELIVERED-1', o.id);
   r = await call('POST', '/api/admin/orders/' + o.id + '/fulfill', { delivery_content: 'P16-DELIVERED-1' }, cookie);
@@ -341,7 +344,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   const pM = q("SELECT * FROM products WHERE title='手动商品-P1-7'");
   r = await orderCall({ product_id: pM.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const o = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-7 setup' }, cookie);
+  await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-7 setup' , manual_confirm: true }, cookie);
   const [f1, f2] = await Promise.all([
     call('POST', '/api/admin/orders/' + o.id + '/fulfill', { delivery_content: 'P17-A' }, cookie),
     call('POST', '/api/admin/orders/' + o.id + '/fulfill', { delivery_content: 'P17-B' }, cookie),
@@ -358,7 +361,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   db.prepare('INSERT INTO cards (product_id, code) VALUES (?, ?)').run(pC.id, 'P17-C1');
   r = await orderCall({ product_id: pC.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const oC = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  r = await call('POST', '/api/admin/orders/' + oC.id + '/confirm-payment', { reason: 'P1-7 card setup' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + oC.id + '/confirm-payment', { reason: 'P1-7 card setup' , manual_confirm: true }, cookie);
   check('P1-7: card order auto-completes with C1', r.json && r.json.ok === true && q('SELECT delivery_content FROM orders WHERE id=?', oC.id).delivery_content === 'P17-C1', JSON.stringify(r.json));
   r = await call('POST', '/api/admin/orders/' + oC.id + '/fulfill', { delivery_content: 'P17-AGAIN' }, cookie);
   check('P1-7: fulfill on completed card order rejected', r.json && !r.json.ok, JSON.stringify(r.json));
@@ -376,7 +379,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   check('P1-8: order reserves earliest card R1', r1.reserved_order_id === o.id, JSON.stringify(r1));
   // 模拟发货前崩溃：M1 被标记为该订单已用（未完成）
   db.prepare("UPDATE cards SET is_used=1, order_id=? WHERE code='P18-M1'").run(o.id);
-  r = await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-8' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-8' , manual_confirm: true }, cookie);
   check('P1-8: confirm completes with crash-marked M1', r.json && r.json.ok === true && q('SELECT delivery_content FROM orders WHERE id=?', o.id).delivery_content === 'P18-M1', JSON.stringify(r.json));
   check('P1-8: reserved R1 released after fulfill', (() => { const c = q("SELECT * FROM cards WHERE code='P18-R1'"); return c.reserved_order_id == null && c.is_used === 0; })());
 }
@@ -402,14 +405,14 @@ for (const termStatus of ['cancelled', 'failed']) {
   r = await orderCall({ product_id: pUp.id, quantity: 2, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const oShort = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   ps.createFn = () => ({ ok: true, status: 200, json: async () => ({ id: 'PS-SHORT-1', status: 'delivered', delivered_keys: ['ONLY-ONE'] }), text: async () => JSON.stringify({ id: 'PS-SHORT-1', status: 'delivered', delivered_keys: ['ONLY-ONE'] }) });
-  r = await call('POST', '/api/admin/orders/' + oShort.id + '/confirm-payment', { reason: 'P1-10 数量不足' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + oShort.id + '/confirm-payment', { reason: 'P1-10 数量不足' , manual_confirm: true }, cookie);
   const afterShort = q('SELECT * FROM orders WHERE id=?', oShort.id);
   check('P1-10: delivered keys < qty -> pending_activation', afterShort.status === 'pending_activation', 'status=' + afterShort.status);
   check('P1-10: admin_note mentions insufficient quantity', /数量不足/.test(afterShort.admin_note || ''), afterShort.admin_note);
   r = await orderCall({ product_id: pUp.id, quantity: 2, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const oFull = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   ps.createFn = () => ({ ok: true, status: 200, json: async () => ({ id: 'PS-FULL-1', status: 'delivered', delivered_keys: ['K-A', 'K-B'] }), text: async () => JSON.stringify({ id: 'PS-FULL-1', status: 'delivered', delivered_keys: ['K-A', 'K-B'] }) });
-  r = await call('POST', '/api/admin/orders/' + oFull.id + '/confirm-payment', { reason: 'P1-10 数量足够' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + oFull.id + '/confirm-payment', { reason: 'P1-10 数量足够' , manual_confirm: true }, cookie);
   check('P1-10: delivered keys >= qty -> completed with both keys', r.json && r.json.ok === true && q('SELECT status FROM orders WHERE id=?', oFull.id).status === 'completed' && q('SELECT delivery_content FROM orders WHERE id=?', oFull.id).delivery_content === 'K-A\nK-B', JSON.stringify(r.json));
   ps.createFn = null;
 }
@@ -421,7 +424,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   const o = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   ps.creates = 0;
   ps.createFn = () => ({ ok: true, status: 200, json: async () => ({ status: 'delivered', deliveredKey: 'NO-PSID-KEY' }), text: async () => JSON.stringify({ status: 'delivered', deliveredKey: 'NO-PSID-KEY' }) });
-  r = await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-11 no psid' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-11 no psid' , manual_confirm: true }, cookie);
   const after = q('SELECT * FROM orders WHERE id=?', o.id);
   const upRow = q('SELECT * FROM upstream_orders WHERE order_id=?', o.id);
   check('P1-11: create success without id -> pending_upstream', after.status === 'pending_upstream', 'status=' + after.status);
@@ -456,7 +459,7 @@ for (const termStatus of ['cancelled', 'failed']) {
 // P2-1：token 订单 /lookup full 分支删 admin_note；管理端详情走 level='admin' 保留 exception_reason/refund_ref。
 {
   const o = insertOrder({ status: 'completed', delivery_content: 'P21-CARD', query_token_hash: sha256('token-123'), admin_note: 'SECRET-NOTE', exception_reason: 'EXC-REASON', refund_ref: 'REF-1' });
-  r = await call('POST', '/api/orders/' + o.order_no + '/lookup', { credential: 'token-123' });
+  r = await call('POST', '/api/orders/' + o.order_no + '/lookup', { credential: 'token-123', captcha_id: mkCaptcha('AB12'), captcha_code: 'AB12' });
   const fullOrder = r.json && r.json.order;
   check('P2-1: token /lookup full returns delivery', r.json && r.json.ok === true && fullOrder && fullOrder.delivery_content === 'P21-CARD', JSON.stringify(r.json));
   check('P2-1: full branch deletes admin_note', fullOrder && !('admin_note' in fullOrder), JSON.stringify(r.json));
@@ -469,12 +472,12 @@ for (const termStatus of ['cancelled', 'failed']) {
 // P2-2：legacy 订单首次 /lookup 明文成功即转为 salted 哈希（明文清空），之后 /lookup 返回统一错误，须走 /secret。
 {
   const o = insertOrder({ status: 'completed', delivery_content: 'LEGACY-CARD-1', query_password: 'legacy-pw-999' });
-  r = await call('POST', '/api/orders/' + o.order_no + '/lookup', { credential: 'legacy-pw-999' });
+  r = await call('POST', '/api/orders/' + o.order_no + '/lookup', { credential: 'legacy-pw-999', captcha_id: mkCaptcha('AB12'), captcha_code: 'AB12' });
   check('P2-2: legacy /lookup first success returns legacy:true summary', r.json && r.json.ok === true && r.json.legacy === true && !('delivery_content' in r.json), JSON.stringify(r.json));
   const after = q('SELECT * FROM orders WHERE id=?', o.id);
   check('P2-2: plaintext cleared after migration', after.query_password === '');
   check('P2-2: salt + hash set after migration', !!after.query_password_salt && !!after.query_password_hash);
-  r = await call('POST', '/api/orders/' + o.order_no + '/lookup', { credential: 'legacy-pw-999' });
+  r = await call('POST', '/api/orders/' + o.order_no + '/lookup', { credential: 'legacy-pw-999', captcha_id: mkCaptcha('AB12'), captcha_code: 'AB12' });
   check('P2-2: second /lookup same password -> 401 unified error', r.status === 401 && r.json && r.json.error === '查单凭证错误', JSON.stringify(r.json));
   r = await call('POST', '/api/orders/' + o.order_no + '/secret', { password: 'legacy-pw-999' });
   check('P2-2: /secret with same password returns card', r.json && r.json.ok === true && r.json.delivery_content === 'LEGACY-CARD-1', JSON.stringify(r.json));
@@ -515,7 +518,10 @@ for (const termStatus of ['cancelled', 'failed']) {
   const dqStart = frontendHtml.indexOf('async function doQueryList');
   const dqEnd = frontendHtml.indexOf('async function doQuerySecret', dqStart);
   const dqSrc = dqStart !== -1 && dqEnd !== -1 ? frontendHtml.slice(dqStart, dqEnd) : '';
-  check('P2-8: doQueryList has credential_type branches', dqSrc.includes("o.credential_type === 'password'") && dqSrc.includes("o.credential_type === 'token'") && dqSrc.includes("o.credential_type === 'legacy'"));
+  // P2-8 更新（B-P2-5）：/query 不再返回 credential_type（凭证方案是未认证调用方可利用的 oracle），
+  // 前端 doQueryList 不再按 credential_type 分支，统一渲染查询密码输入 + 旧订单凭证入口（doQueryLegacyStart）。
+  check('P2-8: doQueryList has no credential_type branches', !dqSrc.includes('credential_type'));
+  check('P2-8: doQueryList has generic password input + legacy entry', dqSrc.includes('doQuerySecret') && dqSrc.includes('doQueryLegacyStart'));
   check('P2-8: legacy branch shows contact-support hint', dqSrc.includes('联系客服'));
   check('P2-8: doQueryList does not read o.has_delivery', !dqSrc.includes('o.has_delivery'));
 }
@@ -525,7 +531,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   const pM = q("SELECT * FROM products WHERE title='手动商品-P1-6'");
   r = await orderCall({ product_id: pM.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const o = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P2-9 setup' }, cookie);
+  await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P2-9 setup' , manual_confirm: true }, cookie);
   r = await call('POST', '/api/admin/orders/' + o.id + '/exception', { reason: '仅记录异常，不退款', refund_needed: false }, cookie);
   check('P2-9: exception note-only ok', r.json && r.json.ok === true, JSON.stringify(r.json));
   r = await call('GET', '/api/admin/orders/' + o.id + '?level=admin', null, cookie);
@@ -540,7 +546,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   r = await orderCall({ product_id: pUp.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const o = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   ps.createFn = () => ({ ok: true, status: 200, json: async () => ({ id: 'PS-BACKOFF-1', status: 'paid' }), text: async () => JSON.stringify({ id: 'PS-BACKOFF-1', status: 'paid' }) });
-  await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P2-10 setup' }, cookie);
+  await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P2-10 setup' , manual_confirm: true }, cookie);
   ps.createFn = null;
   ps.gets = 0;
   ps.getFn = () => ({ ok: false, status: 500, json: async () => null, text: async () => 'err' });
@@ -595,7 +601,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   r = await orderCall({ product_id: pUp.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const o = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   ps.createFn = () => ({ ok: true, status: 200, json: async () => ({ id: 'PS-LEASE-1', status: 'paid' }), text: async () => JSON.stringify({ id: 'PS-LEASE-1', status: 'paid' }) });
-  await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P2-13 setup' }, cookie);
+  await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P2-13 setup' , manual_confirm: true }, cookie);
   ps.createFn = null;
   db.prepare("UPDATE orders SET upstream_lock='HELD-BY-OTHER', upstream_lock_expires_at=datetime('now','+10 minutes'), admin_note='ORIGINAL-NOTE' WHERE id=?").run(o.id);
   ps.gets = 0;
@@ -874,10 +880,10 @@ for (const termStatus of ['cancelled', 'failed']) {
 // P3-18：/lookup 错密码统一返回“查单凭证错误”（salted 订单与 legacy 订单相同）。
 {
   const oSalted = insertOrder({ status: 'completed', delivery_content: 'P318-CARD', query_password_hash: 'a'.repeat(64), query_password_salt: Buffer.from('s'.repeat(16)).toString('base64') });
-  r = await call('POST', '/api/orders/' + oSalted.order_no + '/lookup', { credential: 'wrong-pw' });
+  r = await call('POST', '/api/orders/' + oSalted.order_no + '/lookup', { credential: 'wrong-pw', captcha_id: mkCaptcha('AB12'), captcha_code: 'AB12' });
   check('P3-18: /lookup wrong pw on salted order -> exactly 查单凭证错误', r.status === 401 && r.json && r.json.error === '查单凭证错误', JSON.stringify(r.json));
   const oLegacy = insertOrder({ status: 'completed', delivery_content: 'P318-LEGACY', query_password: 'legacy-true-pw' });
-  r = await call('POST', '/api/orders/' + oLegacy.order_no + '/lookup', { credential: 'wrong-pw-legacy' });
+  r = await call('POST', '/api/orders/' + oLegacy.order_no + '/lookup', { credential: 'wrong-pw-legacy', captcha_id: mkCaptcha('AB12'), captcha_code: 'AB12' });
   check('P3-18: /lookup wrong pw on legacy order -> exactly 查单凭证错误', r.status === 401 && r.json && r.json.error === '查单凭证错误', JSON.stringify(r.json));
 }
 
@@ -914,7 +920,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   r = await orderCall({ product_id: pUp.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const o = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   ps.createFn = () => ({ ok: true, status: 200, json: async () => ({ id: 'PS-323-1', status: 'paid' }), text: async () => JSON.stringify({ id: 'PS-323-1', status: 'paid' }) });
-  await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P3-23 setup' }, cookie);
+  await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P3-23 setup' , manual_confirm: true }, cookie);
   ps.createFn = null;
   db.prepare("UPDATE orders SET claim_token='STALE-323' WHERE id=?").run(o.id);
   ps.getFn = () => ({ ok: true, status: 200, json: async () => ({ id: 'PS-323-1', status: 'delivered', deliveredKey: 'PS-323-KEY' }), text: async () => JSON.stringify({ id: 'PS-323-1', status: 'delivered', deliveredKey: 'PS-323-KEY' }) });
@@ -929,7 +935,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   const pM = q("SELECT * FROM products WHERE title='手动商品-P1-6'");
   r = await orderCall({ product_id: pM.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const o = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P3-24 setup' }, cookie);
+  await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P3-24 setup' , manual_confirm: true }, cookie);
   db.prepare("UPDATE orders SET exception_reason='OLD-EXCEPTION' WHERE id=?").run(o.id);
   r = await call('POST', '/api/admin/orders/' + o.id + '/fulfill', { delivery_content: 'P324-DELIVERY' }, cookie);
   check('P3-24: manual fulfill clears exception_reason', r.json && r.json.ok === true && q('SELECT exception_reason FROM orders WHERE id=?', o.id).exception_reason === '', JSON.stringify(r.json));
@@ -941,7 +947,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   r = await orderCall({ product_id: pUp.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const o500 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   ps.createFn = () => ({ ok: true, status: 200, json: async () => ({ id: 'PS-500-1', status: 'paid' }), text: async () => JSON.stringify({ id: 'PS-500-1', status: 'paid' }) });
-  await call('POST', '/api/admin/orders/' + o500.id + '/confirm-payment', { reason: 'P3-25 setup' }, cookie);
+  await call('POST', '/api/admin/orders/' + o500.id + '/confirm-payment', { reason: 'P3-25 setup' , manual_confirm: true }, cookie);
   ps.createFn = null;
   ps.getFn = (id) => id === 'PS-500-1'
     ? { ok: false, status: 500, json: async () => null, text: async () => 'err' }
@@ -949,7 +955,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   r = await orderCall({ product_id: pUp.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: freshContact() }, contact: freshContact() });
   const o404 = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   ps.createFn = () => ({ ok: true, status: 200, json: async () => ({ id: 'PS-404-1', status: 'paid' }), text: async () => JSON.stringify({ id: 'PS-404-1', status: 'paid' }) });
-  await call('POST', '/api/admin/orders/' + o404.id + '/confirm-payment', { reason: 'P3-25 setup 404' }, cookie);
+  await call('POST', '/api/admin/orders/' + o404.id + '/confirm-payment', { reason: 'P3-25 setup 404' , manual_confirm: true }, cookie);
   ps.createFn = null;
   const ctx = makeCtx(); await worker.scheduled({ type: 'cron', cron: '*/1 * * * *' }, env, ctx); await ctx.drain();
   check('P3-25: GET 500 -> admin_note contains 上游轮询 GET 失败 + fail count', /上游轮询 GET 失败/.test(q('SELECT admin_note FROM orders WHERE id=?', o500.id).admin_note || ''), q('SELECT admin_note FROM orders WHERE id=?', o500.id).admin_note);
@@ -968,9 +974,10 @@ for (const termStatus of ['cancelled', 'failed']) {
   evm.receipt = null; evm.latest = 10000;
 }
 
-// P3-27：扫描回填 event_key — /pay 阶段账本 event_key=''，扫描命中同一 TXID 后回填为日志 logIndex。
-// 隔离手段：游标预置 9700，日志块 9750 — 逐单路径 fromBlock=latest-200=9800 扫不到（不建第二行），
-// 扫描从游标 9700 起扫，命中后回填 event_key 并完成订单。
+// P3-27：扫描回填 event_key（任务二顺序更新）。
+// 旧断言“/pay 阶段即写 event_key='' 账本行”已不再成立：任务二要求认领成功后才写账本，
+// 故被活租约挡住的 /pay 不写任何账本行（fail-closed）。回填本身仍覆盖：种子一行“账本已写、
+// 履约前崩溃”的 event_key='' verified 行，扫描命中同一 TXID 后回填为日志 logIndex，且只留一行。
 {
   // 卡密商品订单（扫描履约后真正 completed，便于断言）
   const pC27 = q("SELECT * FROM products WHERE title='卡密商品-P1-8'");
@@ -979,9 +986,10 @@ for (const termStatus of ['cancelled', 'failed']) {
   evm.receipt = evmReceiptFor(o, '3'.repeat(64), 100);
   evm.latest = 115; // BEP20 需 15 确认
   r = await payCall(o.order_no, '3'.repeat(64));
-  check('P3-27: /pay stage records payment with event_key empty', (() => { const p = q('SELECT * FROM payments WHERE tx_hash=?', '3'.repeat(64)); return p && p.event_key === ''; })());
-  // 解除认领后，预置扫描游标到 9700（早于逐单路径的 latest-200=9800），日志块 9750 仅扫描命中
+  check('P3-27: /pay blocked by live lease writes no ledger (claim-before-ledger)', r.json && !r.json.ok && qa('SELECT * FROM payments WHERE tx_hash=?', '3'.repeat(64)).length === 0, JSON.stringify(r.json));
+  // 解除认领 + 种子“账本已写、履约前崩溃”的 event_key='' 行；预置扫描游标到 9700（早于逐单路径的 latest-200=9800），日志块 9750 仅扫描命中
   db.prepare("UPDATE orders SET claim_token='', claimed_at=NULL WHERE id=?").run(o.id);
+  db.prepare("INSERT INTO payments (order_id, chain, pay_address, tx_hash, event_key, amount, status) VALUES (?, 'BEP20', '0x2222222222222222222222222222222222222222', ?, '', 9.0066, 'verified')").run(o.id, '3'.repeat(64));
   db.prepare("INSERT OR REPLACE INTO scan_cursors (chain, last_block) VALUES (?, ?)").run('BEP20|0x2222222222222222222222222222222222222222', 9700);
   const log = evmLogFor(o, '3'.repeat(64), 9750, '0x7');
   evm.logs = [log];
@@ -1061,9 +1069,9 @@ for (const termStatus of ['cancelled', 'failed']) {
     return id;
   }
   // 初始化管理员
-  let rr = await callA('POST', '/api/admin/login', { password: 'admin' });
+  let rr = await callA('POST', '/api/admin/login', { setup_token: 'test-setup-token' });
   const ckA = rr.headers.get('set-cookie') || '';
-  rr = await callA('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'admin123' }, ckA);
+  rr = await callA('POST', '/api/admin/change-password', { old_password: '', new_password: 'admin123' }, ckA);
   // 1) 取消
   dbA.prepare("INSERT INTO orders (order_no, query_password, product_id, status, contact, pay_address, actual_amount) VALUES ('AISAUDIT1', '', 1, 'pending_payment', 'audit1@test.example', '0x5100000000000000000000000000000000000001', 51.0001)").run();
   const oCancel = qA("SELECT * FROM orders WHERE order_no='AISAUDIT1'");
@@ -1073,7 +1081,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   // 2) 确认收款
   dbA.prepare("INSERT INTO orders (order_no, query_password, product_id, status, contact, pay_address, actual_amount, pay_method, pay_chain) VALUES ('AISAUDIT2', '', 1, 'pending_payment', 'audit2@test.example', '0x5100000000000000000000000000000000000002', 51.0002, 'Binance', 'BEP20')").run();
   const oConfirm = qA("SELECT * FROM orders WHERE order_no='AISAUDIT2'");
-  rr = await callA('POST', '/api/admin/orders/' + oConfirm.id + '/confirm-payment', { reason: 'P3-20 confirm' }, ckA);
+  rr = await callA('POST', '/api/admin/orders/' + oConfirm.id + '/confirm-payment', { reason: 'P3-20 confirm' , manual_confirm: true }, ckA);
   check('P3-20: audit failure confirm-payment -> ok + audit_failed', rr.json && rr.json.ok === true && rr.json.audit_failed === true && /审计/.test(rr.json.warning || ''), JSON.stringify(rr.json));
   // 3) 发货
   dbA.prepare("INSERT INTO orders (order_no, query_password, product_id, status, contact, pay_address, actual_amount) VALUES ('AISAUDIT3', '', 1, 'pending_fulfill', 'audit3@test.example', '0x5100000000000000000000000000000000000003', 51.0003)").run();
@@ -1101,7 +1109,7 @@ for (const termStatus of ['cancelled', 'failed']) {
 
 // P3-30（2026-10-18 整改重定向）：claimTxid INSERT 失败（模拟 D1 临时错误）时不得谎称“已用于其他订单”、不得留孤儿行；
 // 失败是临时的，移除障碍后轮询重试应能成功认领（轮询是恢复路径）。
-// 人工确认通道永不写 txid_claims，故改走仍用 claimTxid 的链上 /pay + 轮询路径。
+// 人工确认通道现共享 txid_claims（v17），P3-30 仍改走链上 /pay + 轮询路径（claimTxid INSERT 失败语义与人工路径无关）。
 // /pay 设计：核验通过但履约失败时走 deferred（auto:false，轮询重试），不把临时失败谎报为“已用于其他订单”。
 {
   const { db: dbS, env: envS, worker: workerS } = makeEnv();
@@ -1164,7 +1172,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   for (let ip = 1; ip <= 6; ip++) {
     for (let k = 0; k < 5; k++) await callG('POST', '/api/admin/login', { password: 'wrong-pw' }, '10.99.7.' + ip);
   }
-  const r7 = await callG('POST', '/api/admin/login', { password: 'admin' }, '10.99.7.7');
+  const r7 = await callG('POST', '/api/admin/login', { setup_token: 'test-setup-token' }, '10.99.7.7');
   check('P2-7: 7th IP correct password blocked by global lock -> 429', r7.status === 429 && r7.json && !r7.json.ok, JSON.stringify(r7.json));
   check('P2-7: global fail count reset to 0 at lock', qG("SELECT value FROM admin_meta WHERE key='login_global_fail_count'")?.value === '0', JSON.stringify(qG("SELECT * FROM admin_meta WHERE key='login_global_fail_count'")));
   check('P2-7: blocked_until set in future (ISO datetime string)', (() => { const row = qG("SELECT value FROM admin_meta WHERE key='login_global_blocked_until'"); return row && new Date(String(row.value).replace(' ', 'T') + 'Z').getTime() > Date.now(); })());
@@ -1212,8 +1220,8 @@ check('P1-18: RUNBOOK rollback mentions v8 unique-index caveat + new-table list'
 // P2-19：RELEASE_READINESS 顶部历史快照横幅。
 check('P2-19: RELEASE_READINESS starts with history-snapshot banner', releaseReadiness.includes('§一–§八为第四轮历史快照'));
 
-// P2-20：d1-local-test.sh 口径（v16、真实下单 + /secret、精确 COUNT、查询密码术语）。
-check('P2-20: d1-local-test.sh comments say v16', d1LocalSh.includes('版本=16') && d1LocalSh.includes('迁移到 v16'));
+// P2-20：d1-local-test.sh 口径（v18、真实下单 + /secret、精确 COUNT、查询密码术语）。
+check('P2-20: d1-local-test.sh comments say v18', d1LocalSh.includes('版本=18') && d1LocalSh.includes('迁移到 v18'));
 check('P2-20: d1-local-test.sh has real fresh-DB order + /secret assertions', d1LocalSh.includes('/api/orders/$FRESH_NO/secret') && d1LocalSh.includes('FRESH-DB SECRET OK'));
 check('P2-20: d1-local-test.sh dedup uses precise COUNT parse, no grep -o \'1\'', !d1LocalSh.includes("grep -o '1'") && d1LocalSh.includes('DEDUP_COUNT'));
 check('P2-20: d1-local-test.sh uses 查询密码 terminology, no 查单凭证', d1LocalSh.includes('查询密码') && !d1LocalSh.includes('查单凭证'));
@@ -1317,6 +1325,18 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   check('home: section head below grid (above footer)', frontendHtml.includes('id="list" class="grid shop-grid"></div>\' + homeSectionHeadHTML()'));
   // 新增配色与线条图标同色（.ic 蓝 #5b7bff 同色系），不留 #7c3aed 系紫色。
   check('home: accent matches line-icon blue', frontendHtml.includes('.home-h1-accent{color:#5b7bff}') && frontendHtml.includes('.home-cta{border:0;background:#5b7bff') && !/#7c3aed|#a78bfa|#6d28d9|#5b21b6/.test(frontendHtml));
+  // 芯片符号用实心（▲/▶）：空心 △/▷ 在小字号 + 低对比下肉眼几乎看不见，用户反馈“不显示”。
+  check('home: chips use solid glyphs', frontendHtml.includes('▲ <span>创造</span>') && frontendHtml.includes('▶ <span>放松</span>'));
+  // TXID 可选：空着提交不该报长度错误——前端拦截提示 + 后端友好报错（纵深防御）。
+  check('pay: empty TXID guarded client + server', frontendHtml.includes('请先填写 TXID（不填可直接等待自动发货）') && workerCode.includes('请填写 TXID（不填可直接等待自动发货）'));
+  // 商品卡按钮背景色（用户要求，手机端 + PC 端都改）：立即购买 微亮绿色、售罄 微亮红色；深色模式各配半透明版，售罄需单独写 :disabled（深色 .pcard-btn 特异性高于基础 :disabled，否则售罄会变绿）。
+  check('shop: card button colors', frontendHtml.includes('background:#d6f5e0;color:#1a8f4a') && frontendHtml.includes('.pcard-btn:disabled{background:#ffe0e1;color:#d92b2b') && frontendHtml.includes('rgba(48,209,88,.28);color:#7be3a8') && frontendHtml.includes('rgba(255,69,58,.28);color:#ff9d97'));
+  check('shop: mobile card title/desc sizes + shrink', frontendHtml.includes('.pcard-title{font-size:12px') && frontendHtml.includes('.pcard-desc{font-size:9px') && frontendHtml.includes('.pcard{padding:8px}') && frontendHtml.includes('.pcard-price{font-size:20px}') && frontendHtml.includes('.pcard-btn{font-size:12px') && frontendHtml.includes('.pcard-arrow{font-size:14px}') && frontendHtml.includes('.pcard-img{margin-bottom:6px;aspect-ratio:4/2.7}') && frontendHtml.includes('.shop-grid{gap:10px}') && frontendHtml.includes('relHtml += productCard(rel[ri])'));
+  check('home: mobile hero is row layout', frontendHtml.includes('.home-hero{flex-direction:row;gap:12px;padding:16px;align-items:flex-start}') && frontendHtml.includes('.home-visual{flex:0 0 156px;height:119px;min-width:0}') && frontendHtml.includes('.home-visual-scale{width:420px;height:320px;transform:scale(0.37)') && frontendHtml.includes('<div class="home-visual"><div class="home-visual-scale">') && frontendHtml.includes('.home-h1{font-size:10px}') && frontendHtml.includes('.home-cta{font-size:10px;padding:6px 12px}') && frontendHtml.includes('.home-sub{font-size:8px') && frontendHtml.includes('.home-eyebrow{font-size:8px') && frontendHtml.includes('.home-note{font-size:8px') && !frontendHtml.includes('.home-visual-ring{display:none}') && !frontendHtml.includes('.home-pcard{width:calc(100% - 8px)') && !frontendHtml.includes('.home-visual-cap{display:none}'));
+  // 查单：订单号或下单邮箱双查（用户 2026-10-17 明确要求，取代 v15“邮箱查询禁用”）；卡密仍走 /secret + 查询密码。
+  check('query: order no or email', workerCode.includes('LOWER(contact) = ?') && frontendHtml.includes('订单号或下单邮箱') && frontendHtml.includes('输入订单号或下单邮箱查询订单'));
+  check('home: mobile section title fits one line', frontendHtml.includes('.home-section-title{font-size:20px}') && frontendHtml.includes('.home-section-star{font-size:22px}'));
+  check('home: desktop hero/title fonts unchanged', frontendHtml.includes('.home-hero{display:flex;gap:24px;align-items:center;justify-content:space-between;background:var(--card2);border:1px solid var(--line);border-radius:28px;padding:36px 36px 28px') && frontendHtml.includes('.home-section-title{font-size:26px'));
   {
     const heroStart = frontendHtml.indexOf('function homeHeroHTML(');
     const headEnd = frontendHtml.indexOf('function filterStock(', heroStart);

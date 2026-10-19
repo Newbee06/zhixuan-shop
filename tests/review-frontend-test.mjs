@@ -42,11 +42,19 @@ let ADMIN_PW = '';
   };
   if (await tryLogin('browser-ci-admin-123')) ADMIN_PW = 'browser-ci-admin-123';
   else if (await tryLogin('review-admin-123')) ADMIN_PW = 'review-admin-123';
-  else if (await tryLogin('admin')) {
-    const chg = await api('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'review-admin-123' }, ck);
-    if (chg.json && chg.json.ok) ADMIN_PW = 'review-admin-123';
+  else {
+    // B-P0: new DB first login uses setup token (runner injects via ZHIXUAN_SETUP_TOKEN); no public default password.
+    const setupToken = process.env.ZHIXUAN_SETUP_TOKEN || '';
+    if (setupToken) {
+      const r = await api('POST', '/api/admin/login', { setup_token: setupToken });
+      if (r.json && r.json.ok) {
+        ck = r.cookie;
+        const chg = await api('POST', '/api/admin/change-password', { old_password: '', new_password: 'review-admin-123' }, ck);
+        if (chg.json && chg.json.ok) ADMIN_PW = 'review-admin-123';
+      }
+    }
   }
-  if (!ADMIN_PW) { console.error('FATAL: admin setup failed (tried browser-ci-admin-123 / review-admin-123 / admin)'); process.exit(1); }
+if (!ADMIN_PW) { console.error('FATAL: admin setup failed (tried browser-ci-admin-123 / review-admin-123 / setup token)'); process.exit(1); }
   // 收款地址（下单/支付块渲染需要有效地址）
   await api('POST', '/api/admin/settings', { settings: { usdt_addresses: JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111', 'Binance|BEP20': '0x2222222222222222222222222222222222222222' }) } }, ck);
   // 卡密测试：找一个可导入卡密的商品，否则新建一个一次性测试商品；导入一条已知掩码测试卡密。
@@ -365,7 +373,8 @@ check('P1-3: 开启但 Site Key 缺失时 fail-closed（提示、无 Slot）', t
     return out;
   });
   check('P2-5: 手动深色 .pcard-img 容器底色', dark.imgBg === 'rgb(28, 28, 30)', dark.imgBg);
-  check('P2-12: 深色售罄按钮背景与文字', dark.soldBg === 'rgba(255, 69, 58, 0.2)' && dark.soldColor === 'rgb(255, 157, 153)', JSON.stringify(dark));
+  // PR2 移植后：深色售罄统一为 PR2 配色（.28 / #ff9d97），取代 PR3 的 .20 / #ff9d99。
+  check('P2-12: 深色售罄按钮背景与文字', dark.soldBg === 'rgba(255, 69, 58, 0.28)' && dark.soldColor === 'rgb(255, 157, 151)', JSON.stringify(dark));
   check('P3-20: 深色验证码背景协调', dark.capBg === 'rgb(44, 44, 46)', dark.capBg);
   // 跟随系统深色
   await page.evaluate(() => { delete document.documentElement.dataset.theme; try { localStorage.removeItem('theme'); } catch (_) {} });
@@ -408,8 +417,10 @@ for (const w of [390, 360]) {
       overflow,
     };
   });
-  check('P2-12: Hero 标题字号 ' + w + '（冻结规格 36px 不动）', hero.h1 === '36px', JSON.stringify(hero));
-  check('P3-14: 浮动卡片字号 ' + w + ' 可读且不截断', hero.chip === '12px' && hero.chipTrunc, JSON.stringify(hero));
+  // PR2 移植后：移动端 Hero 标题 10px（与缩放卡内“智选”渲染约 9.6px 统一，用户确认），取代 PR3 冻结规格的 36px。
+  check('P2-12: Hero 标题字号 ' + w + '（PR2：10px，与缩放卡内智选统一）', hero.h1 === '10px', JSON.stringify(hero));
+  // PR2 移植后：芯片不再手调移动端字号，取桌面基础 13px（视觉上由 scale(0.37) 缩小），取代移植前移动端覆盖 12px。
+  check('P3-14: 浮动卡片字号 ' + w + ' 可读且不截断', hero.chip === '13px' && hero.chipTrunc, JSON.stringify(hero));
   check('P2-12: 合集标题 ' + w + ' 一行', hero.titleOneLine === true, JSON.stringify(hero));
   check('P2-12: ' + w + ' 无横向溢出', hero.overflow <= 1, JSON.stringify(hero));
 }

@@ -22,11 +22,11 @@ function wrapStmt(sql) {
     bind(...a) { params = a; return api; },
     async first() { try { const st = db.prepare(sql); const r = st.get(...params); return r === undefined ? null : r; } catch (e) { throw e; } },
     async all() { const st = db.prepare(sql); const rows = st.all(...params); return { results: rows }; },
-    async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; },
+    async run() { const st = db.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes, last_row_id: info.lastInsertRowid } }; },
   };
   return api;
 }
-const env = { DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } } };
+const env = { ZHIXUAN_SETUP_TOKEN: 'test-setup-token', DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } } };
 // ---- EVM / Tronscan mock ----
 const USDT0_XLAYER = '0x779Ded0c9e1022225f8E0630b35a9b54bE713736';
 const OLD_XLAYER = '0x1e4a5963abfd975d8c9021ce480b42188849d41d';
@@ -128,7 +128,7 @@ setSetting('rpc_urls', JSON.stringify({ 'X Layer': ['https://mock-xlayer'], 'BEP
 setSetting('chain_confirmations', JSON.stringify({ 'X Layer': 1, 'BEP20': 15 }));
 setSetting('poll_enabled', '1');
 // 商品：卡密商品（用于验证履约发卡）
-let r = await call('POST', '/api/admin/login', { password: 'admin' });
+let r = await call('POST', '/api/admin/login', { setup_token: 'test-setup-token' });
 assert(r.json.ok, 'admin login');
 let cookie = (r.headers.get('set-cookie') || '').split(';')[0];
 const INIT_PW = ['a', 'd', 'm', 'i', 'n'].join('');
@@ -385,7 +385,7 @@ function resetEvm() { evmState.latestBlock = 10000; evmState.logs = []; evmState
   // 历史 BinanceUID 订单：仍可经管理员确认恢复（不走白名单）
   db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES ('AISHIST0002', '', '', ?, '{}', 1, 10, 10, 10, '', '2099-01-01 00:00:00', ?, 'hist2@test.example', 'BinanceUID', '站内转账', '', 'pending_payment', datetime('now'))").run(cardProd.id, JSON.stringify({ contact_email: 'hist2@test.example', delivery_email: 'hist2@test.example' }));
   const hist2 = q("SELECT * FROM orders WHERE order_no='AISHIST0002'");
-  r = await call('POST', '/api/admin/orders/' + hist2.id + '/confirm-payment', { reason: '历史订单恢复测试' }, cookie);
+  r = await call('POST', '/api/admin/orders/' + hist2.id + '/confirm-payment', { reason: '历史订单恢复测试' , manual_confirm: true }, cookie);
   assert(r.json && r.json.ok, '11. historical BinanceUID order still confirmable by admin: ' + JSON.stringify(r.json));
   const hist2After = q("SELECT * FROM orders WHERE order_no='AISHIST0002'");
   assert(hist2After.status === 'completed', '11. historical BinanceUID order completed via admin confirm: ' + hist2After.status);

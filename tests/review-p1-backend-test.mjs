@@ -102,6 +102,7 @@ function setup() {
     return api;
   };
   const env = {
+    ZHIXUAN_SETUP_TOKEN: 'test-setup-token',
     DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } },
     PRODSELLER_API_KEY: 'test-key',
     PRODSELLER_BASE_URL: 'https://prodseller.com/v1',
@@ -135,9 +136,9 @@ function setup() {
   function setSetting(key, value) { db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value); }
   function setGate(v) { setSetting('prodseller_enabled', String(v)); }
   async function adminLogin() {
-    let r = await call('POST', '/api/admin/login', { password: 'admin' });
+    let r = await call('POST', '/api/admin/login', { setup_token: 'test-setup-token' });
     const c0 = r.headers.get('set-cookie') || '';
-    r = await call('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'admin123' }, c0);
+    r = await call('POST', '/api/admin/change-password', { old_password: '', new_password: 'admin123' }, c0);
     if (!r.json || !r.json.ok) throw new Error('admin setup failed: ' + JSON.stringify(r.json));
     return c0;
   }
@@ -273,7 +274,9 @@ const t = setup(); t.initBase();
 const cookie = await t.adminLogin();
 await t.call('POST', '/api/admin/products', { title: '手动商品-P1-2', category: 'recharge', stock_type: 'manual', sell_price: 4, source: 'self'}, cookie);
 const pM = t.q("SELECT * FROM products WHERE title='手动商品-P1-2'");
-// 无证据确认：缺原因拒绝；有原因 → 人工确认态，绝不写 txid_claims
+// 无证据确认：缺原因拒绝；有原因 → 人工确认态，写 txid_claims 全局认领（source=manual_confirmed，与链上共享同一全局原子认领；
+// v17 语义变更：旧断言“人工确认绝不写 txid_claims”已被 P1-2 根治要求取代——人工与链上必须共享同一全局原子消费机制，
+// 否则先 SELECT 后 INSERT 的人工路径与链上路径之间仍有 TOCTOU 窗口）
 const forged = 'd'.repeat(64);
 let r = await t.orderCall({ product_id: pM.id, quantity: 1});
 const ordE = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
@@ -281,11 +284,11 @@ t.db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(forged, ordE.id);
 r = await t.call('POST', '/api/admin/orders/' + ordE.id + '/confirm-payment', {}, cookie);
 check('P1-2: confirm without reason rejected', r.json &&!r.json.ok && /原因/.test(r.json.error || ''), JSON.stringify(r.json));
 check('P1-2: no-reason confirm leaves order pending', t.q('SELECT status FROM orders WHERE id=?', ordE.id).status === 'pending_payment');
-r = await t.call('POST', '/api/admin/orders/' + ordE.id + '/confirm-payment', { reason: '已在收款地址核对到账', manual_confirm: false}, cookie);
+r = await t.call('POST', '/api/admin/orders/' + ordE.id + '/confirm-payment', { reason: '已在收款地址核对到账', manual_confirm: false }, cookie);
 check('P1-2: explicit manual_confirm=false rejected', r.json &&!r.json.ok, JSON.stringify(r.json));
-r = await t.call('POST', '/api/admin/orders/' + ordE.id + '/confirm-payment', { reason: '已在收款地址核对到账', manual_confirm: true}, cookie);
+r = await t.call('POST', '/api/admin/orders/' + ordE.id + '/confirm-payment', { reason: '已在收款地址核对到账', manual_confirm: true }, cookie);
 check('P1-2: manual confirm with reason ok + marked manual', r.json && r.json.ok === true && /人工确认/.test(r.json.message || ''), JSON.stringify(r.json));
-check('P1-2: manual confirm NEVER writes txid_claims',!t.q('SELECT * FROM txid_claims WHERE tx_hash=?', forged));
+check('P1-2: manual confirm writes shared txid_claims (source=manual_confirmed)', (() => { const row = t.q('SELECT * FROM txid_claims WHERE tx_hash=?', forged); return row && row.order_id === ordE.id && row.source === 'manual_confirmed' && !!row.claim_token; })());
 check('P1-2: manual confirm writes manual_confirmed ledger row', (() => { const row = t.q("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", forged); return row && row.order_id === ordE.id;})());
 check('P1-2: manual confirm marks order admin_note', (t.q('SELECT admin_note FROM orders WHERE id=?', ordE.id).admin_note || '').includes('人工确认收款'));
 check('P1-2: manual confirm audit action distinct',!!t.q("SELECT * FROM admin_audit WHERE order_id=? AND action='manual_confirm_payment'", ordE.id));
@@ -293,7 +296,7 @@ check('P1-2: manual confirm audit action distinct',!!t.q("SELECT * FROM admin_au
 r = await t.orderCall({ product_id: pM.id, quantity: 1});
 const ordF = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
 t.db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(forged, ordF.id);
-r = await t.call('POST', '/api/admin/orders/' + ordF.id + '/confirm-payment', { reason: '第二单确认'}, cookie);
+r = await t.call('POST', '/api/admin/orders/' + ordF.id + '/confirm-payment', { reason: '第二单确认', manual_confirm: true }, cookie);
 check('P1-2: second manual confirm same TXID rejected', r.json &&!r.json.ok && /已用于其他订单/.test(r.json.error || ''), JSON.stringify(r.json));
 check('P1-2: second manual order still pending', t.q('SELECT status FROM orders WHERE id=?', ordF.id).status === 'pending_payment');
 // 链上通道：人工消耗过的 TXID 即使链上真实存在，也不得被他单链上认领
@@ -503,21 +506,21 @@ await t.call('POST', '/api/admin/products', { title: '手动商品-P2-2', catego
   M.createFn = () => psResp({ id: 'PS-E1', status: 'delivered', deliveredKeys: [] });
   let r = await t.orderCall({ product_id: pU.id, quantity: 1 });
   const o1 = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  r = await t.call('POST', '/api/admin/orders/' + o1.id + '/confirm-payment', { reason: 'P2-3 空 keys' }, cookie);
+  r = await t.call('POST', '/api/admin/orders/' + o1.id + '/confirm-payment', { reason: 'P2-3 空 keys' , manual_confirm: true }, cookie);
   check('P2-3: delivered + empty keys -> pending_activation, not completed', t.q('SELECT status FROM orders WHERE id=?', o1.id).status === 'pending_activation', JSON.stringify(r.json));
   check('P2-3: empty keys note has missing count + suggestion', /缺 1 个/.test(t.q('SELECT admin_note FROM orders WHERE id=?', o1.id).admin_note || '') && /建议/.test(t.q('SELECT admin_note FROM orders WHERE id=?', o1.id).admin_note || ''));
   // 创建路径：keys 不足
   M.createFn = () => psResp({ id: 'PS-E2', status: 'delivered', deliveredKeys: ['K1'] });
   r = await t.orderCall({ product_id: pU.id, quantity: 2 });
   const o2 = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  r = await t.call('POST', '/api/admin/orders/' + o2.id + '/confirm-payment', { reason: 'P2-3 keys 不足' }, cookie);
+  r = await t.call('POST', '/api/admin/orders/' + o2.id + '/confirm-payment', { reason: 'P2-3 keys 不足' , manual_confirm: true }, cookie);
   check('P2-3: delivered + insufficient keys -> pending_activation', t.q('SELECT status FROM orders WHERE id=?', o2.id).status === 'pending_activation');
   check('P2-3: insufficient keys note has missing count', /缺 1 个/.test(t.q('SELECT admin_note FROM orders WHERE id=?', o2.id).admin_note || ''));
   // 创建路径：keys 完整
   M.createFn = () => psResp({ id: 'PS-E3', status: 'delivered', deliveredKeys: ['K1', 'K2'] });
   r = await t.orderCall({ product_id: pU.id, quantity: 2 });
   const o3 = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  r = await t.call('POST', '/api/admin/orders/' + o3.id + '/confirm-payment', { reason: 'P2-3 keys 完整' }, cookie);
+  r = await t.call('POST', '/api/admin/orders/' + o3.id + '/confirm-payment', { reason: 'P2-3 keys 完整' , manual_confirm: true }, cookie);
   check('P2-3: delivered + full keys -> completed', t.q('SELECT status FROM orders WHERE id=?', o3.id).status === 'completed' && t.q('SELECT delivery_content FROM orders WHERE id=?', o3.id).delivery_content === 'K1\nK2');
   // 轮询 GET 路径：先空后完整
   const o4 = t.insertOrder({ product_id: pU.id, quantity: 1, status: 'pending_activation', paid_at: "datetime('now')", contact: freshContact() });
@@ -766,7 +769,7 @@ await t.call('POST', '/api/admin/products', { title: '手动商品-P2-2', catego
   await t.call('POST', '/api/admin/cards/import', { product_id: pCard.id, codes: 'P37-CARD-1' }, cookie);
   r = await t.orderCall({ product_id: pCard.id, quantity: 1 });
   const ordC = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
-  r = await t.call('POST', '/api/admin/orders/' + ordC.id + '/confirm-payment', { reason: 'P3-7 发卡' }, cookie);
+  r = await t.call('POST', '/api/admin/orders/' + ordC.id + '/confirm-payment', { reason: 'P3-7 发卡' , manual_confirm: true }, cookie);
   check('P3-7: setup card order completed', t.q('SELECT status FROM orders WHERE id=?', ordC.id).status === 'completed');
   r = await t.call('POST', '/api/orders/' + ordC.order_no + '/secret', { password: 'abc' });
   check('P3-7: /secret wrong-length password -> 401 generic', r.status === 401 && r.json && !r.json.ok, JSON.stringify(r.json));
@@ -851,7 +854,7 @@ r = await t.orderCall({ product_id: pM.id, quantity: 99 });
   const pU = t.q("SELECT * FROM products WHERE title='上游商品-边界'");
   M.creates = 0;
   const oUp = t.insertOrder({ product_id: pU.id, quantity: 1, status: 'pending_payment' });
-  r = await t.call('POST', '/api/admin/orders/' + oUp.id + '/confirm-payment', { reason: '门禁关闭确认' }, cookie);
+  r = await t.call('POST', '/api/admin/orders/' + oUp.id + '/confirm-payment', { reason: '门禁关闭确认' , manual_confirm: true }, cookie);
   check('边界: gate closed -> pending_upstream, zero upstream creates', t.q('SELECT status FROM orders WHERE id=?', oUp.id).status === 'pending_upstream' && M.creates === 0, JSON.stringify(r.json) + ' creates=' + M.creates);
 }
 

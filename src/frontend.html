@@ -6,15 +6,15 @@
 <title>智选</title>
 <style>
 :root{--bg:#f2f2f7;--card:rgba(255,255,255,.68);--card2:rgba(255,255,255,.9);--text:#1c1c1e;--sub:#6b7280;--line:rgba(255,255,255,.6);--accent:#0a84ff;--green:#34c759;--orange:#ff9f0a;--red:#ff453a;--radius:24px}
-@media (prefers-color-scheme:dark){html:not([data-theme]){--bg:#000;--card:rgba(28,28,30,.62);--card2:rgba(44,44,46,.85);--text:#f5f5f7;--sub:#a1a1aa;--line:rgba(255,255,255,.14)}html:not([data-theme]) .pcard-btn{background:rgba(109,92,255,.28);color:#b7adff}}
+@media (prefers-color-scheme:dark){html:not([data-theme]){--bg:#000;--card:rgba(28,28,30,.62);--card2:rgba(44,44,46,.85);--text:#f5f5f7;--sub:#a1a1aa;--line:rgba(255,255,255,.14)}html:not([data-theme]) .pcard-btn{background:rgba(48,209,88,.28);color:#7be3a8}html:not([data-theme]) .pcard-btn:disabled{background:rgba(255,69,58,.28);color:#ff9d97}}
 html[data-theme="dark"]{--bg:#000;--card:rgba(28,28,30,.62);--card2:rgba(44,44,46,.85);--text:#f5f5f7;--sub:#a1a1aa;--line:rgba(255,255,255,.14)}
-html[data-theme="dark"] .pcard-btn{background:rgba(109,92,255,.28);color:#b7adff}
+html[data-theme="dark"] .pcard-btn{background:rgba(48,209,88,.28);color:#7be3a8}html[data-theme="dark"] .pcard-btn:disabled{background:rgba(255,69,58,.28);color:#ff9d97}
 html[data-theme="dark"] .pcard-img{background:#1c1c1e}
 html[data-theme="dark"] .prod-img{background:#1c1c1e}
 html[data-theme="dark"] .detail-img-photo{background:#1c1c1e}
-@media (prefers-color-scheme:dark){html:not([data-theme]) .pcard-img,html:not([data-theme]) .prod-img,html:not([data-theme]) .detail-img-photo{background:#1c1c1e}html:not([data-theme]) .home-h1-accent,html:not([data-theme]) .home-section-star,html:not([data-theme]) .home-eyebrow b{color:#8ea6ff}html:not([data-theme]) .pcard-btn:disabled{background:rgba(127,127,127,.25);color:#a1a1aa}html:not([data-theme]) .pcard-btn-soldout{background:rgba(255,69,58,.20)!important;color:#ff9d99!important}html:not([data-theme]) .captcha-img{background:#2c2c2e!important}}
-html[data-theme="dark"] .pcard-btn:disabled{background:rgba(127,127,127,.25);color:#a1a1aa}
-html[data-theme="dark"] .pcard-btn-soldout{background:rgba(255,69,58,.20)!important;color:#ff9d99!important}
+@media (prefers-color-scheme:dark){html:not([data-theme]) .pcard-img,html:not([data-theme]) .prod-img,html:not([data-theme]) .detail-img-photo{background:#1c1c1e}html:not([data-theme]) .home-h1-accent,html:not([data-theme]) .home-section-star,html:not([data-theme]) .home-eyebrow b{color:#8ea6ff}html:not([data-theme]) .pcard-btn:disabled{background:rgba(255,69,58,.28);color:#ff9d97}html:not([data-theme]) .pcard-btn-soldout{background:rgba(255,69,58,.28)!important;color:#ff9d97!important}html:not([data-theme]) .captcha-img{background:#2c2c2e!important}}
+html[data-theme="dark"] .pcard-btn:disabled{background:rgba(255,69,58,.28);color:#ff9d97}
+html[data-theme="dark"] .pcard-btn-soldout{background:rgba(255,69,58,.28)!important;color:#ff9d97!important}
 html[data-theme="dark"] .captcha-img{background:#2c2c2e!important}
 .captcha-img{background:#f2f2f7}
 *{box-sizing:border-box}
@@ -68,6 +68,7 @@ a{color:var(--accent);text-decoration:none}
 #shopBrowse{scroll-margin-top:72px}
 .home-note{color:var(--sub);font-size:13px;margin-top:16px}
 .home-visual{position:relative;width:420px;height:320px;flex:0 0 auto}
+.home-visual-scale{position:relative;width:100%;height:100%}
 .home-visual-ring{position:absolute;border:1px solid rgba(91,123,255,.18);border-radius:50%}
 .home-pcard{position:absolute;left:50%;top:52%;transform:translate(-50%,-50%) rotate(-10deg);width:340px;height:200px;border-radius:22px;background:linear-gradient(135deg,#8ea6ff,#5b7bff 55%,#3d5afe);color:#fff;padding:20px;display:flex;flex-direction:column;justify-content:space-between;box-shadow:0 24px 50px rgba(91,123,255,.35)}
 .home-pcard-top{display:flex;justify-content:space-between;align-items:flex-start;font-size:13px}
@@ -87,7 +88,7 @@ a{color:var(--accent);text-decoration:none}
 .home-back-top{border:0;background:transparent;color:var(--sub);font-size:14px;cursor:pointer;white-space:nowrap;padding:6px 0}
 .home-back-top:hover{color:var(--text)}
 html[data-theme="dark"] .home-h1-accent,html[data-theme="dark"] .home-section-star,html[data-theme="dark"] .home-eyebrow b{color:#8ea6ff}
-@media(max-width:640px){.home-hero{flex-direction:column;padding:24px 20px}.home-h1{font-size:36px}.home-visual{width:100%;max-width:340px;height:280px}.home-pcard{width:300px}.home-chip{font-size:12px;padding:10px 12px;max-width:46%}}
+@media(max-width:640px){.home-hero{flex-direction:row;gap:12px;padding:16px;align-items:flex-start}.home-hero>div:first-child{flex:1;min-width:0}.home-h1{font-size:10px}.home-eyebrow{font-size:8px;margin-bottom:10px}.home-sub{font-size:8px;margin-bottom:16px}.home-cta{font-size:10px;padding:6px 12px}.home-note{font-size:8px;margin-top:12px}.home-visual{flex:0 0 156px;height:119px;min-width:0}.home-visual-scale{width:420px;height:320px;transform:scale(0.37);transform-origin:top left}.home-section-title{font-size:20px}.home-section-star{font-size:22px}}
 .h1{font-size:26px;font-weight:800;margin:6px 0 4px}
 .h2{font-size:18px;font-weight:700;margin:0 0 10px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -112,9 +113,10 @@ html[data-theme="dark"] .home-h1-accent,html[data-theme="dark"] .home-section-st
 .pcard-foot{display:flex;flex-direction:column;gap:10px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(127,127,127,.15)}
 .pcard-price-label{font-size:11px;color:var(--sub)}
 .pcard-price{font-size:24px;font-weight:800;line-height:1.2}
-.pcard-btn{border:0;border-radius:12px;padding:12px 14px;font-size:14px;font-weight:700;cursor:pointer;background:#e8e4ff;color:#6d5cff;white-space:nowrap;text-align:center}
-.pcard-btn:disabled{background:rgba(127,127,127,.15);color:var(--sub);cursor:not-allowed}
+.pcard-btn{border:0;border-radius:12px;padding:12px 14px;font-size:14px;font-weight:700;cursor:pointer;background:#d6f5e0;color:#1a8f4a;white-space:nowrap;text-align:center}
+.pcard-btn:disabled{background:#ffe0e1;color:#d92b2b;cursor:not-allowed}
 .pcard-btn-soldout{background:#ffe0e1!important;color:#d92b2b!important}
+@media(max-width:640px){.pcard-title{font-size:12px;margin:8px 0 4px}.pcard-desc{font-size:9px;min-height:29px}.pcard{padding:8px}.pcard-img{margin-bottom:6px;aspect-ratio:4/2.7}.pcard-foot{gap:6px;margin-top:8px;padding-top:8px}.pcard-price-label{font-size:10px}.pcard-price{font-size:20px}.pcard-btn{font-size:12px;padding:10px 12px}.pcard-arrow{font-size:14px}.shop-grid{gap:10px}}
 .emoji{font-size:34px}
 .badge{display:inline-block;font-size:12px;padding:4px 9px;border-radius:999px;background:rgba(10,132,255,.14);color:var(--accent)}
 .badge.green{background:rgba(52,199,89,.16);color:var(--green)}
@@ -533,7 +535,7 @@ function renderShop(){
 }
 // 首页 Hero（参考 prodseller 版式，文案按截图、品牌换本站的）：左文案 + 右紫色倾斜卡 + 漂浮标签。
 function homeHeroHTML(){
-  return '<div class="home-hero"><div><div class="home-eyebrow"><b>✦</b> 您的数字化升级之旅由此开启</div><div class="home-h1">无限可能，<br><span class="home-h1-accent">更实惠的价格。</span></div><p class="home-sub">你下一个最爱的工具就在这里。探索适用于工作、创意以及其他各种用途的数字订阅服务。</p><button class="home-cta" onclick="document.getElementById(\x27shopBrowse\x27).scrollIntoView({behavior:\x27smooth\x27})">探索 <span>↗</span></button><div class="home-note">更多选择，尽在一处。</div></div><div class="home-visual"><span class="home-visual-ring" style="width:340px;height:340px;left:40px;top:-10px"></span><span class="home-visual-ring" style="width:260px;height:260px;left:80px;top:30px"></span><div class="home-chip home-chip-create">△ <span>创造</span></div><div class="home-chip home-chip-relax">▷ <span>放松</span></div><div class="home-pcard"><div class="home-pcard-top"><span class="home-pcard-logo">智选 ↗</span><span class="home-pcard-note">一切都数字化了。</span></div><div class="home-pcard-bottom"><div>略微升级，<br>潜力却更大。</div><span class="home-pcard-arrow">↗</span></div></div><div class="home-chip home-chip-discover">✳ <span>发现</span></div><div class="home-visual-cap">好工具，大可能。</div></div></div>';
+  return '<div class="home-hero"><div><div class="home-eyebrow"><b>✦</b> 您的数字化升级之旅由此开启</div><div class="home-h1">无限可能，<br><span class="home-h1-accent">更实惠的价格。</span></div><p class="home-sub">你下一个最爱的工具就在这里。探索适用于工作、创意以及其他各种用途的数字订阅服务。</p><button class="home-cta" onclick="document.getElementById(\x27shopBrowse\x27).scrollIntoView({behavior:\x27smooth\x27})">探索 <span>↗</span></button><div class="home-note">更多选择，尽在一处。</div></div><div class="home-visual"><div class="home-visual-scale"><span class="home-visual-ring" style="width:340px;height:340px;left:40px;top:-10px"></span><span class="home-visual-ring" style="width:260px;height:260px;left:80px;top:30px"></span><div class="home-chip home-chip-create">▲ <span>创造</span></div><div class="home-chip home-chip-relax">▶ <span>放松</span></div><div class="home-pcard"><div class="home-pcard-top"><span class="home-pcard-logo">智选 ↗</span><span class="home-pcard-note">一切都数字化了。</span></div><div class="home-pcard-bottom"><div>略微升级，<br>潜力却更大。</div><span class="home-pcard-arrow">↗</span></div></div><div class="home-chip home-chip-discover">✳ <span>发现</span></div><div class="home-visual-cap">好工具，大可能。</div></div></div></div>';
 }
 // 商品合集区标题（截图第二块；本站无收藏夹，右侧改为返回顶部）。
 function homeSectionHeadHTML(){
@@ -571,14 +573,35 @@ function renderList(){
   var pc = el('prodCount');
   if (pc) pc.textContent = list.length + ' 种产品';
 }
+// 收款方式由后端配置下发（CFG.pay_config.methods，含每链开关）；前端绝不硬编码收款地址、开关默认值与上游 API 地址/Key。
+// 无 pay_config 时回退双链全开（兼容旧后端）；后端返回 methods 且全部关闭时返回空数组，付款页显示“收款暂未开放”。
+function enabledPayOptions(){
+  var ms = (typeof CFG !== 'undefined' && CFG && CFG.pay_config && CFG.pay_config.methods) || null;
+  if (!ms || !ms.length) return [{ pay_method: 'OKX', pay_chain: 'X Layer', enabled: true }, { pay_method: 'Binance', pay_chain: 'BEP20', enabled: true }];
+  return ms.filter(function(m){ return !!m.enabled; });
+}
+function payOptionButtonHTML(m, isOn){
+  var cls = 'pill pay-opt' + (isOn ? ' on' : '');
+  if (m.pay_chain === 'X Layer') return '<button type="button" class="' + cls + '" data-pm="OKX" data-pc="X Layer" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="2.5" y="13" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="13" width="8.5" height="8.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>USDT0 \u00b7 X Layer</button>';
+  if (m.pay_chain === 'BEP20') return '<button type="button" class="' + cls + '" data-pm="Binance" data-pc="BEP20" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.6 22.4 12 12 22.4 1.6 12Z" fill="#F0B90B"/><path d="M12 7.2 16.8 12 12 16.8 7.2 12Z" fill="#fff"/></svg>USDT \u00b7 BEP20</button>';
+  return '';
+}
+function payOptionsHTML(){
+  var opts = enabledPayOptions();
+  if (!opts.length) return '<div class="warn-box"><b>' + ic('warn') + ' 收款暂未开放</b><p class="muted" style="margin:6px 0 0">收款暂未开放，请稍后再试或联系管理员。</p></div>';
+  var h = '';
+  for (var i = 0; i < opts.length; i++) h += payOptionButtonHTML(opts[i], i === 0);
+  return h;
+}
 async function renderProduct(id){
   var r = await api('/api/products/' + id);
   if (!r.ok){ el('app').innerHTML = '<div class="muted">商品不存在 · <a href="#/">回商城</a></div>'; return; }
   var p = r.product;
   window._curProduct = p;
-  window._payMethod = 'OKX';
-  window._payChain = 'X Layer';
-  var payOpts = '<button type="button" class="pill pay-opt on" data-pm="OKX" data-pc="X Layer" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="2.5" y="13" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="13" width="8.5" height="8.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>USDT0 · X Layer</button><button type="button" class="pill pay-opt" data-pm="Binance" data-pc="BEP20" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.6 22.4 12 12 22.4 1.6 12Z" fill="#F0B90B"/><path d="M12 7.2 16.8 12 12 16.8 7.2 12Z" fill="#fff"/></svg>USDT · BEP20</button>';
+  var _enabledPay = enabledPayOptions();
+  window._payMethod = _enabledPay.length ? _enabledPay[0].pay_method : '';
+  window._payChain = _enabledPay.length ? _enabledPay[0].pay_chain : '';
+  var payOpts = payOptionsHTML();
   var fh = '';
   for (var i = 0; i < p.form_fields.length; i++){ var f = p.form_fields[i]; if (isLegacyContactField(f)) continue; fh += '<label>' + escH(f.label) + (f.required ? ' *' : '') + '</label><input data-k="' + escH(f.key) + '" data-label="' + escH(f.label) + '"' + (f.required ? ' data-required="1"' : '') + ' placeholder="' + escH(f.placeholder || '') + '">'; }
   var inSt = Number(p.in_stock == null ? 1 : p.in_stock);
@@ -614,7 +637,7 @@ async function renderProduct(id){
   html += '<div class="pay-card"><div class="pay-card-title">' + ic('cart') + ' 付款</div><div class="pills pay-options" id="payOptions">' + payOpts + '</div></div>';
   html += actHint;
   html += '<div class="total-box"><span>合计 <span id="stickyQty">1</span> 件</span><span><b id="totalPrice" style="font-size:20px">' + fmtCNY(p.price_usdt) + '</b> <span class="muted" id="totalUsdt">约 ' + Number(p.price_usdt||0).toFixed(2) + ' USDT</span></span></div>';
-  html += '<div style="margin-top:14px">' + (inSt === 0 ? '<button class="btn block" disabled style="background:rgba(127,127,127,.3);cursor:not-allowed">缺货 · 补货中</button>' : '<button class="btn block" data-pid="' + p.id + '" onclick="submitOrder(this.dataset.pid)">立即购买</button>') + '</div>';
+  html += '<div style="margin-top:14px">' + (inSt === 0 ? '<button class="btn block" disabled style="background:rgba(127,127,127,.3);cursor:not-allowed">缺货 · 补货中</button>' : (!_enabledPay.length ? '<button class="btn block" disabled style="background:rgba(127,127,127,.3);cursor:not-allowed">收款暂未开放</button>' : '<button class="btn block" data-pid="' + p.id + '" onclick="submitOrder(this.dataset.pid)">立即购买</button>')) + '</div>';
   html += '</div></div>';
   // Below: detail blocks full width (intro + usage + order notice)
   var useTxt = p.notice || '按交付内容里的说明使用即可。如交付内容包含兑换链接或操作步骤，按步骤完成；遇到问题先在查单页核对订单状态。';
@@ -651,6 +674,12 @@ function validateDynamicFields(){ var ins = document.querySelectorAll('[data-k]'
 async function submitOrder(pid){
   // 数量提交前钳 1–99（P2-10）。
   var qty = clampQty();
+  // 收款开关（1A/2A）：双关时拒绝下单并明确提示；所选方式已关闭时同样拒绝（后端为最终权威校验，前端先拦截省一次请求）。
+  var _payOptsNow = enabledPayOptions();
+  if (!_payOptsNow.length){ toast('收款暂未开放，请稍后再试或联系管理员', 'error'); return; }
+  var _selOk = false;
+  for (var _si = 0; _si < _payOptsNow.length; _si++){ if (_payOptsNow[_si].pay_method === (window._payMethod || '') && _payOptsNow[_si].pay_chain === (window._payChain || '')) _selOk = true; }
+  if (!_selOk){ toast('收款暂未开放：该收款方式已关闭，请选择其他收款方式', 'error'); return; }
   // ---- 1) 全部字段校验在发请求之前完成 ----
   var fieldErr = validateDynamicFields();
   if (fieldErr){ toast(fieldErr, 'error'); return; }
@@ -780,7 +809,7 @@ async function submitTxid(no){
   var txEl = el('txid') || el('qtxid-' + no) || el('qtxid');
   // P3-18：提交最前面规范化——去首尾空白后再长度与格式校验，载荷用规范化串。
   var tx = txEl ? txEl.value.trim() : '';
-  if (!tx){ toast('请填写 TXID', 'error'); return; }
+  if (!tx){ toast('请先填写 TXID（不填可直接等待自动发货）', 'error'); return; }
   if (tx.length < 6 || tx.length > 200){ toast('TXID 长度无效（6-200字符）', 'error'); return; }
   if (!/^[A-Za-z0-9_-]+$/.test(tx)){ toast('TXID 仅支持字母数字 _ -', 'error'); return; }
   var body = { txid: tx };
@@ -865,15 +894,13 @@ async function doQueryList(){
     if (o.status === 'pending_payment') {
       h += '<p class="muted">待付款：请按精确应付金额付款，付完等待自动发货。</p>' + payBlockHTML(o, o.order_no);
     }
-    // P2-8：不再依赖后端不返回的 has_delivery；按 credential_type 分支，不再声称“暂无交付内容”。
-    if (o.credential_type === 'password') {
+    // B-P2-5：不再按后端已移除的凭证方案字段分支（该字段会向未认证调用方泄露订单凭证方案）。
+    // 统一渲染：查询密码输入（→ /secret）+ 旧订单凭证入口（→ /lookup，含图形验证码）。
+    // 新订单用查询密码取卡密；旧系统凭证订单用“旧订单凭证查询”。
+    {
       var pwId = 'qpw-' + escH(o.order_no);
       h += '<label>查询密码</label><input id="' + pwId + '" type="password" placeholder="请输入查询密码" autocomplete="off"><div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" data-pw="' + pwId + '" onclick="doQuerySecret(this.dataset.no, this.dataset.pw)">查看卡密</button></div><div id="qsec-' + escH(o.order_no) + '" style="margin-top:10px"></div>';
-    } else if (o.credential_type === 'token') {
-      var tkId = 'qtk-' + escH(o.order_no);
-      h += '<label>查单凭证（旧订单）</label><input id="' + tkId + '" placeholder="查单凭证" autocomplete="off"><div style="margin-top:8px"><button class="btn small" data-no="' + escH(o.order_no) + '" data-tk="' + tkId + '" onclick="doQueryLegacy(this.dataset.no, this.dataset.tk)">查看卡密</button></div><div id="qsec-' + escH(o.order_no) + '" style="margin-top:10px"></div>';
-    } else if (o.credential_type === 'legacy') {
-      h += '<p class="muted">该订单未设置查询密码，交付内容请联系客服核实后获取。</p>';
+      h += '<p class="muted">旧订单（系统凭证）请点“旧订单凭证查询”，按提示完成图形验证码后输入查单凭证。</p><div style="margin-top:4px"><button class="btn small ghost" data-no="' + escH(o.order_no) + '" onclick="doQueryLegacyStart(this.dataset.no)">旧订单凭证查询</button></div>';
     }
     h += '</div>';
   }
@@ -891,11 +918,26 @@ async function doQuerySecret(no, pwInputId){
   var delId = 'qdel-' + escH(no);
   if (box) box.innerHTML = '<p>交付内容：</p><div class="codebox" id="' + delId + '">' + escH(r.delivery_content || '') + '</div><button class="btn small" style="margin-top:8px" data-copy-target="' + delId + '">复制交付内容</button>';
 }
-// 旧订单（系统凭证）由 doQueryLegacy 处理（新查询页列表内按单输入凭证）。
-async function doQueryLegacy(no, tkInputId){
+// 旧订单（系统凭证）由 doQueryLegacy 处理（新查询页列表内按单输入凭证 + 图形验证码）。
+// 两步流程：先取新验证码（/lookup 的验证码一次有效），渲染到卡片内，用户填码后提交 /lookup。
+async function doQueryLegacyStart(no){
+  var box = el('qsec-' + no);
+  if (!box) return;
+  var r = await api('/api/captcha', 'GET');
+  if (!r.ok || !r.svg) { box.innerHTML = '<div class="muted">验证码获取失败，请重试</div>'; return; }
+  window._legacyCaptcha = window._legacyCaptcha || {};
+  window._legacyCaptcha[no] = r.captcha_id;
+  var tkId = 'qtk-' + escH(no);
+  var capId = 'qlcap-' + escH(no);
+  box.innerHTML = '<label>查单凭证（旧订单）</label><input id="' + tkId + '" placeholder="查单凭证" autocomplete="off"><label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="' + capId + '" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img src="data:image/svg+xml,' + encodeURIComponent(r.svg) + '" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px" onclick="doQueryLegacyStart(\'' + escH(no) + '\')"></div><div style="margin-top:8px"><button class="btn small" data-no="' + escH(no) + '" data-tk="' + tkId + '" data-cap="' + capId + '" onclick="doQueryLegacy(this.dataset.no, this.dataset.tk, this.dataset.cap)">查看卡密</button></div>';
+}
+async function doQueryLegacy(no, tkInputId, capInputId){
   var cred = el(tkInputId) ? el(tkInputId).value.trim() : '';
   if (!cred) { toast('请填写查单凭证（旧订单）', 'error'); return; }
-  var r = await api('/api/orders/' + encodeURIComponent(no) + '/lookup', 'POST', { credential: cred });
+  var capCode = capInputId && el(capInputId) ? el(capInputId).value.trim() : '';
+  if (!capCode) { toast('请填写图形验证码', 'error'); return; }
+  var capId = (window._legacyCaptcha && window._legacyCaptcha[no]) || '';
+  var r = await api('/api/orders/' + encodeURIComponent(no) + '/lookup', 'POST', { credential: cred, captcha_id: capId, captcha_code: capCode });
   var box = el('qsec-' + no);
   if (!r.ok){ if (box) box.innerHTML = '<div class="muted">' + escH(r.error) + '</div>'; else toast(r.error, 'error'); return; }
   if (box) box.innerHTML = renderQueryOrderDetail(r.order, !!r.legacy);
@@ -904,13 +946,13 @@ async function doQueryLegacy(no, tkInputId){
 // ===== 管理后台（SaaS 风格：信息密度优先，统一 Toast/Modal/Drawer） =====
 async function renderAdmin(){
   var me = await api('/api/admin/me');
-  if (!me.ok){ var html = '<div class="glass"><div class="h2">后台登录</div><p class="muted">初始密码 admin，首次登录强制改密。</p><label>密码</label><input id="apwd" type="password" onkeydown="if(event.key===\'Enter\')adminLogin()"><div style="margin-top:12px"><button class="btn" id="loginBtn" onclick="adminLogin()">登录</button></div></div>'; el('app').innerHTML = html; return; }
-  if (me.must_change_password){ var h2 = '<div class="glass"><div class="h2">首次登录请改密</div><p class="muted">为保护后台安全，首次登录必须修改初始密码。</p><label>旧密码</label><input id="oldpw" type="password"><label>新密码（至少8位）</label><input id="newpw" type="password"><div style="margin-top:12px"><button class="btn" id="changePwBtn" onclick="adminChangePw()">改密并进入后台</button></div></div>'; el('app').innerHTML = h2; return; }
+  if (!me.ok){ var html = '<div class="glass"><div class="h2">后台登录</div><p class="muted">首次建站请使用建站令牌登录（部署时配置的环境变量 ZHIXUAN_SETUP_TOKEN），登录后设置管理员密码。已有密码时用密码登录。</p><label>密码（已有密码时填写）</label><input id="apwd" type="password" onkeydown="if(event.key===\'Enter\')adminLogin()"><label>建站令牌（仅首次建站时填写）</label><input id="asetup" type="password" placeholder="首次建站令牌" onkeydown="if(event.key===\'Enter\')adminLogin()"><div style="margin-top:12px"><button class="btn" id="loginBtn" onclick="adminLogin()">登录</button></div></div>'; el('app').innerHTML = html; return; }
+  if (me.must_change_password){ var h2 = '<div class="glass"><div class="h2">首次登录请改密</div><p class="muted">为保护后台安全，首次登录必须修改初始密码。建站令牌登录时旧密码可留空。</p><label>旧密码（建站令牌登录可留空）</label><input id="oldpw" type="password"><label>新密码（至少8位）</label><input id="newpw" type="password"><div style="margin-top:12px"><button class="btn" id="changePwBtn" onclick="adminChangePw()">改密并进入后台</button></div></div>'; el('app').innerHTML = h2; return; }
   renderAdminHome();
 }
 async function adminLogin(){
   var btn = el('loginBtn'); setBtnLoading(btn, true);
-  var r = await api('/api/admin/login', 'POST', { password: el('apwd').value });
+  var r = await api('/api/admin/login', 'POST', { password: el('apwd').value, setup_token: el('asetup') ? el('asetup').value : '' });
   setBtnLoading(btn, false);
   if (!r.ok){ toast(r.error, 'error'); return; }
   toast('登录成功', 'success'); renderAdmin();
@@ -1122,7 +1164,7 @@ async function adminOrderDetail(id){
   else { auditHtml = '<table class="adm-table"><thead><tr><th>时间</th><th>操作</th><th>状态变化</th><th>说明</th></tr></thead><tbody>'; for (var ai = 0; ai < alist.length; ai++){ var a = alist[ai]; auditHtml += '<tr><td data-label="时间">' + escH(fmtTime(a.created_at)) + '</td><td data-label="操作">' + escH(a.action) + '</td><td data-label="状态变化">' + escH(a.before_status || '-') + ' → ' + escH(a.after_status || '-') + '</td><td data-label="说明">' + escH(a.note || '') + '</td></tr>'; } auditHtml += '</tbody></table>'; }
   var h = '<div class="drawer-section"><h4>基本信息</h4><div class="drawer-kv"><span class="k">订单号</span><span class="v adm-mono">' + escH(o.order_no) + '</span><span class="k">状态</span><span class="v">' + statusPill(o.status) + '</span><span class="k">商品</span><span class="v">' + escH(snap.title || '') + ' × ' + o.quantity + '</span><span class="k">金额</span><span class="v">' + o.total_usdt + ' USDT（精确应付 ' + (o.actual_amount || o.total_usdt) + ' USDT）</span><span class="k">支付</span><span class="v">' + escH(o.pay_method || '') + ' · ' + escH(o.pay_chain || '') + '</span><span class="k">创建时间</span><span class="v">' + escH(fmtTime(o.created_at)) + '</span><span class="k">付款时间</span><span class="v">' + escH(fmtTime(o.paid_at)) + '</span><span class="k">完成时间</span><span class="v">' + escH(fmtTime(o.fulfilled_at)) + '</span></div></div>';
   h += '<div class="drawer-section"><h4>客户信息</h4><div class="drawer-kv"><span class="k">联系方式</span><span class="v">' + escH(o.contact || '') + '</span><span class="k">客户字段</span><span class="v">' + escH(JSON.stringify(cf)) + '</span></div></div>';
-  h += '<div class="drawer-section"><h4>付款信息</h4><div class="drawer-kv"><span class="k">收款地址</span><span class="v adm-mono">' + escH(o.pay_address || o.wallet_address || '') + '</span><span class="k">TXID</span><span class="v adm-mono">' + escH(o.txid || o.tx_hash || '未提交') + '</span><span class="k">备注</span><span class="v">' + escH(o.admin_note || '') + '</span></div></div>';
+  h += '<div class="drawer-section"><h4>付款信息</h4><div class="drawer-kv"><span class="k">收款地址</span><span class="v adm-mono">' + escH(o.pay_address || o.wallet_address || '') + '</span><span class="k">已消费 TXID</span><span class="v adm-mono">' + escH(o.tx_hash || '无') + '</span><span class="k">待核验候选 TXID</span><span class="v adm-mono">' + escH(o.pending_tx_hash || '无') + '</span><span class="k">提交 TXID（遗留）</span><span class="v adm-mono">' + escH(o.txid || '无') + '</span>' + (o.payment_state === 'overpaid_pending' ? '<span class="k">付款状态</span><span class="v">超额付款待对账（已有入账付款后又收到第二笔真实付款，未重复发货，请在付款记录中对账）</span>' : '') + '<span class="k">备注</span><span class="v">' + escH(o.admin_note || '') + '</span></div></div>';
   if (o.exception_reason || o.refund_status) h += '<div class="drawer-section"><h4>异常 / 退款</h4><div class="drawer-kv"><span class="k">异常原因</span><span class="v">' + escH(o.exception_reason || '') + '</span><span class="k">退款状态</span><span class="v">' + escH(o.refund_status === 'pending' ? '退款待处理（须在系统外真实退款）' : (o.refund_status === 'refunded' ? '已确认退款' : o.refund_status || '无')) + '</span>' + (o.refund_ref ? '<span class="k">退款凭证</span><span class="v adm-mono">' + escH(o.refund_ref) + '</span>' : '') + '</div><p class="muted">本系统不执行真实退款。“确认已退款”仅表示管理员确认已在系统外完成退款，须填写退款凭证备查。</p></div>';
   h += '<div class="drawer-section"><h4>交付情况</h4>';
   if (o.data_expired) h += '<p class="muted">交付数据已超过 7 天自动清空</p>';
@@ -1136,7 +1178,7 @@ async function adminOrderDetail(id){
 async function adminConfirm(id){
   showModal({ title: '确认收款（人工操作）', bodyHTML: '<p>你正在手动确认该订单已收款。确认后系统将按人工确认通道发货（自营卡密自动发 / 上游走 ProdSeller），记为人工确认态（非链上自动核验）。<b>请确保已在收款地址核对到账</b>，误确认无法自动撤销。</p>', confirmText: '确认已收款', showInput: true, inputLabel: '操作原因（必填，记入审计）', inputPlaceholder: '如：已在收款地址核对到账，TXID xxx', onConfirm: async function(reason){
     if (!reason || !reason.trim()){ toast('请填写操作原因', 'error'); return false; }
-    var r = await api('/api/admin/orders/' + id + '/confirm-payment', 'POST', { reason: reason.trim() });
+    var r = await api('/api/admin/orders/' + id + '/confirm-payment', 'POST', { reason: reason.trim(), manual_confirm: true });
     if (!r.ok){ toast(r.error, 'error'); return false; }
     toast(r.message || '已确认', 'success'); closeDrawer(); renderAdminOrders(window._orderFilter.page || 1);
   }});
@@ -1669,21 +1711,61 @@ async function renderAdminSettings(){
   var sr = await api('/api/admin/settings');
   if (!sr.ok){ el('adminBody').innerHTML = '<div class="adm-empty">加载失败：' + escH(sr.error) + '</div>'; return; }
   var sv = sr.settings || {};
+  var payMethods = (sr.pay_config && sr.pay_config.methods) || [];
+  function payEntry(chain){ for (var i = 0; i < payMethods.length; i++){ if (payMethods[i].pay_chain === chain) return payMethods[i]; } return { address: '', enabled: false }; }
+  var payX = payEntry('X Layer');
+  var payB = payEntry('BEP20');
+  var keyConfigured = !!sr.prodseller_api_key_configured;
   var h = '<div class="admin-page"><div class="admin-page-head"><h2>系统设置</h2></div>';
   h += '<p class="muted">JSON 配置保存前会校验结构与字段，错误时会指出具体字段，不会静默保存无效配置。未修改的配置不会因界面未展示字段而被清空。敏感密钥请走 Secrets，不要写进设置。</p>';
   h += '<div class="adm-card"><h3>基础设置</h3>' + adminSettingInput(sv, 'site_name', '站点名称', '前台显示的站名') + adminSettingField(sv, 'announcement', '公告', 2, '前台顶部公告') + adminSettingField(sv, 'order_notice', '下单须知', 3, '显示在商品详情页') + adminSettingInput(sv, 'tg_link', '客服 / TG 链接', '必须是 http(s) 开头的 URL') + '</div>';
-  h += '<div class="adm-card"><h3>收款设置</h3>' + adminSettingField(sv, 'usdt_addresses', '收款地址 JSON', 4, '键必须是“支付方式|链”格式，仅支持 OKX|X Layer、Binance|BEP20，如 {"OKX|X Layer":"0x…","Binance|BEP20":"0x…"}；旧键保留在库但新订单不再使用') + adminSettingInput(sv, 'binance_uid', '币安 UID', '历史订单恢复用，新订单不再支持币安 UID 站内转账') + adminSettingField(sv, 'pay_tutorials', '支付教程 JSON', 2, '键是支付方式，值是教程 URL') + '</div>';
+  h += '<div class="adm-card"><h3>收款设置</h3><p class="muted">每链独立开关；地址与开关一起保存，保存时写审计日志（地址记掩码首尾，不记全文）。两个都关闭时付款页显示“收款暂未开放”，商品不可下单；开关只影响新订单，已有待付款订单仍按创建时的收款方式显示。</p>'
+    + '<div class="adm-field"><label>X Layer（OKX）收款地址（完整地址）</label><input id="payXlayerAddress" value="' + escH(payX.address || '') + '" placeholder="0x + 40 位十六进制"><div class="hint">买家按此地址转账；非法地址不保存。</div></div>'
+    + '<div class="adm-field"><label><input type="checkbox" id="payXlayerEnabled" style="width:auto"' + (payX.enabled ? ' checked' : '') + '> 开启 X Layer 收款</label></div>'
+    + '<div class="adm-field"><label>BEP20（Binance）收款地址（完整地址）</label><input id="payBep20Address" value="' + escH(payB.address || '') + '" placeholder="0x + 40 位十六进制"><div class="hint">买家按此地址转账；非法地址不保存。</div></div>'
+    + '<div class="adm-field"><label><input type="checkbox" id="payBep20Enabled" style="width:auto"' + (payB.enabled ? ' checked' : '') + '> 开启 BEP20 收款</label></div>'
+    + '<div><button class="btn" id="savePayConfigBtn" onclick="adminSavePayConfig()">保存收款设置</button></div>'
+    + adminSettingInput(sv, 'binance_uid', '币安 UID', '历史订单恢复用，新订单不再支持币安 UID 站内转账') + adminSettingField(sv, 'pay_tutorials', '支付教程 JSON', 2, '键是支付方式，值是教程 URL') + '</div>';
   h += '<div class="adm-card"><h3>链上到账轮询</h3>' + adminSettingInput(sv, 'poll_enabled', '轮询开关', '1 开 / 0 关（关了只走手动 TXID / 管理员确认）') + adminSettingField(sv, 'rpc_urls', 'RPC 地址 JSON', 3, '键是链，值是 URL 数组，如 {"X Layer":["https://xlayerrpc.okx.com"],"BEP20":["https://bsc-dataseed.binance.org"]}') + adminSettingField(sv, 'usdt_contracts', 'USDT 合约 JSON', 3, '键是链，值是合约地址；X Layer 默认 USDT0，BEP20 默认 Binance-Peg USDT（18 位精度）') + adminSettingField(sv, 'chain_confirmations', '确认数 JSON', 2, '键是链，值是确认数，如 {"X Layer":1,"BEP20":15}；未达确认数不入账、不履约') + '</div>';
-  h += '<div class="adm-card"><h3>上游与汇率</h3>' + adminSettingInput(sv, 'prodseller_base_url', '上游 Base URL', 'Env 优先于此设置') + adminSettingInput(sv, 'upstream_markup', '上游加价倍率', '导入售价 = cost × markup + fixed，默认 1.2', 'number') + adminSettingInput(sv, 'upstream_fixed', '上游固定加价', '默认 0', 'number') + adminSettingInput(sv, 'cny_rate', 'CNY 汇率', '前台 CNY 展示汇率，当前 7.2', 'number') + '</div>';
+  h += '<div class="adm-card"><h3>对接商品 API</h3>'
+    + adminSettingInput(sv, 'prodseller_base_url', '上游 Base URL', '存 D1 settings；Env 优先于此设置')
+    + '<div class="adm-field"><label>API Key 状态</label><div class="muted">' + (keyConfigured ? '已配置' : '未配置') + '</div><div class="hint">改 Key 走 CF 面板或安全流程；后台只显示“已配置/未配置”，绝不显示 Key 明文。</div></div>'
+    + '<div><button class="btn ghost" id="testProdSellerBtn" onclick="adminTestProdSeller()">测试连接</button></div><div id="prodsellerTestRes" style="margin-top:8px"></div>'
+    + '<p class="muted">测试连接只调一次 ProdSeller 只读接口（查余额），绝不下单；返回成功/失败 + 失败原因，不泄露 Key。</p></div>';
+  h += '<div class="adm-card"><h3>上游与汇率</h3>' + adminSettingInput(sv, 'upstream_markup', '上游加价倍率', '导入售价 = cost × markup + fixed，默认 1.2', 'number') + adminSettingInput(sv, 'upstream_fixed', '上游固定加价', '默认 0', 'number') + adminSettingInput(sv, 'cny_rate', 'CNY 汇率', '前台 CNY 展示汇率，当前 7.2', 'number') + '</div>';
   h += '<div><button class="btn" id="saveSettingsBtn" onclick="adminSaveSettings()">保存设置</button></div></div>';
   el('adminBody').innerHTML = h;
+}
+async function adminSavePayConfig(){
+  var addrX = el('payXlayerAddress') ? el('payXlayerAddress').value.trim() : '';
+  var enX = el('payXlayerEnabled') ? (el('payXlayerEnabled').checked ? '1' : '0') : '0';
+  var addrB = el('payBep20Address') ? el('payBep20Address').value.trim() : '';
+  var enB = el('payBep20Enabled') ? (el('payBep20Enabled').checked ? '1' : '0') : '0';
+  var evmRe = /^0x[0-9a-fA-F]{40}$/;
+  if (addrX && !evmRe.test(addrX)){ toast('X Layer 收款地址格式无效（须为 0x + 40 位十六进制）', 'error'); return; }
+  if (addrB && !evmRe.test(addrB)){ toast('BEP20 收款地址格式无效（须为 0x + 40 位十六进制）', 'error'); return; }
+  var btn = el('savePayConfigBtn'); setBtnLoading(btn, true);
+  var r = await api('/api/admin/pay-config', 'POST', { xlayer_address: addrX, xlayer_enabled: enX, bep20_address: addrB, bep20_enabled: enB });
+  setBtnLoading(btn, false);
+  if (!r.ok){ toast(r.error || '保存失败', 'error'); return; }
+  toast('收款设置已保存', 'success');
+  renderAdminSettings();
+}
+async function adminTestProdSeller(){
+  var btn = el('testProdSellerBtn'); setBtnLoading(btn, true);
+  var r = await api('/api/admin/prodseller/test-connection', 'POST', {});
+  setBtnLoading(btn, false);
+  var box = el('prodsellerTestRes');
+  if (!box) return;
+  if (!r.ok){ box.innerHTML = '<div class="warn-box">测试失败：' + escH(r.error || '连接失败') + '</div>'; return; }
+  box.innerHTML = '<div class="muted">测试成功：已连接 ProdSeller，余额：' + escH(JSON.stringify(r.balance == null ? '' : r.balance)) + '</div>';
 }
 async function adminSaveSettings(){
   var obj = {};
   var tas = document.querySelectorAll('[data-sk]');
   for (var i = 0; i < tas.length; i++) obj[tas[i].getAttribute('data-sk')] = tas[i].value;
   // 前端先做一层 JSON 校验，错误时指出字段，不发请求
-  var jsonKeys = ['usdt_addresses', 'pay_tutorials', 'rpc_urls', 'usdt_contracts', 'chain_confirmations'];
+  var jsonKeys = ['pay_tutorials', 'rpc_urls', 'usdt_contracts', 'chain_confirmations'];
   for (var j = 0; j < jsonKeys.length; j++){
     var k = jsonKeys[j];
     if (obj[k] !== undefined) { try { var parsed = JSON.parse(obj[k] || '{}'); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('x'); } catch (e) { toast('设置 ' + k + ' 不是合法 JSON 对象', 'error'); return; } }

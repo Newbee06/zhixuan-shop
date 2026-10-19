@@ -73,7 +73,7 @@ async function mockFetch(url, opts = {}) {
   }
   return new Response(JSON.stringify({}), { status: 404 });
 }
-const env = { DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1', TURNSTILE_SECRET_KEY: 'test-secret', __fetch: mockFetch };
+const env = { ZHIXUAN_SETUP_TOKEN: 'test-setup-token', DB: { prepare: (sql) => wrapStmt(sql), async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1', TURNSTILE_SECRET_KEY: 'test-secret', __fetch: mockFetch };
 globalThis.fetch = mockFetch;
 const workerSrc = fs.readFileSync(path.join(dir, '..', 'src', 'worker.js'), 'utf8');
 const html = fs.readFileSync(path.join(dir, '..', 'src', 'frontend.html'), 'utf8');
@@ -105,10 +105,10 @@ db.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.st
 db.prepare("UPDATE settings SET value=? WHERE key='usdt_contracts'").run(JSON.stringify({ 'X Layer': '0x00000000000000000000000000000000000000aa', 'ERC20': '0xdAC17F958D2ee523a2206206994597C13D831ec7' }));
 db.prepare("UPDATE settings SET value=? WHERE key='rpc_urls'").run(JSON.stringify({ 'X Layer': ['https://xlayerrpc.okx.com'], 'ERC20': ['https://eth.llamarpc.com'] }));
 // admin
-let r = await call('POST', '/api/admin/login', { password: 'admin' });
+let r = await call('POST', '/api/admin/login', { setup_token: 'test-setup-token' });
 check('admin login', r.json && r.json.ok === true, JSON.stringify(r.json));
 let cookie = (r.headers.get('set-cookie') || '').split(';')[0];
-r = await call('POST', '/api/admin/change-password', { old_password: 'admin', new_password: 'r4-test-pass-123' }, cookie);
+r = await call('POST', '/api/admin/change-password', { old_password: '', new_password: 'r4-test-pass-123' }, cookie);
 check('change-password', r.json && r.json.ok === true, JSON.stringify(r.json));
 cookie = (r.headers.get('set-cookie') || '').split(';')[0] || cookie;
 // 种子：自营卡密商品 + 上游商品
@@ -268,7 +268,7 @@ function insertHistBEP20Order(orderNo, actualAmount, contact, cardCode) {
 {
   r = await call('GET', '/api/admin/schema-check', null, cookie);
   check('7. schema-check ok', r.json && r.json.ok === true && r.json.precheck && r.json.precheck.ok === true, JSON.stringify(r.json));
-  check('7. schema-check version 16', r.json && r.json.precheck && r.json.precheck.current_version === 16, JSON.stringify(r.json));
+  check('7. schema-check version 18', r.json && r.json.precheck && r.json.precheck.current_version === 18, JSON.stringify(r.json));
   // 模拟缺表：删 payments 表后预检应报告问题（随后重建）
   db.exec('DROP TABLE payments');
   r = await call('GET', '/api/admin/schema-check', null, cookie);
@@ -342,7 +342,7 @@ db.prepare('DELETE FROM order_rate').run();
     dbBad.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
   dbBad.exec(fs.readFileSync(path.join(dir, '..', 'schema.sql'), 'utf8'));
   dbBad.exec('DROP TABLE orders');
-  const envBad = { DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbBad.prepare(sql); const r = st.get(...params); return r === undefined ? null : r; } catch (e) { throw e; } }, async all() { const st = dbBad.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbBad.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; } }; return api; }, async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } } };
+  const envBad = { DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbBad.prepare(sql); const r = st.get(...params); return r === undefined ? null : r; } catch (e) { throw e; } }, async all() { const st = dbBad.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbBad.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes, last_row_id: info.lastInsertRowid } }; } }; return api; }, async batch(stmts) { const out = []; for (const st of stmts) out.push(await st.run()); return out; } } };
   const ctxBad = makeCtx();
   const reqBad = new Request('http://test/api/orders/AISNOTEXIST', { method: 'GET', headers: { 'content-type': 'application/json' } });
   const resBad = await worker.fetch(reqBad, envBad, ctxBad);
@@ -416,7 +416,7 @@ db.prepare('DELETE FROM order_rate').run();
   const hashV9 = (s) => cryptoV9.createHash('sha256').update(s).digest('hex');
   // 第一笔待付款 BinanceUID 订单（直接 INSERT，模拟 v8 下已存在的订单）
   dbV9.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES ('AISV9FIRST001', '', ?, ?, '{}', 1, 10, 10, 10, '', datetime('now','+30 minutes'), ?, 'v9-first@test.example', 'BinanceUID', '站内转账', '', 'pending_payment', datetime('now'))").run(hashV9('v9-token-1'), v9Prod.id, JSON.stringify({ delivery_email: 'v9-first@test.example' }));
-  const envV9 = { DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbV9.prepare(sql); const r = st.get(...params); return r === undefined ? null : r; } catch (e) { throw e; } }, async all() { const st = dbV9.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbV9.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes } }; } }; return api; }, async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key' };
+  const envV9 = { DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbV9.prepare(sql); const r = st.get(...params); return r === undefined ? null : r; } catch (e) { throw e; } }, async all() { const st = dbV9.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbV9.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes, last_row_id: info.lastInsertRowid } }; } }; return api; }, async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key' };
   async function callV9(method, p, body) {
     const ctx = makeCtx();
     const req = new Request('http://test' + p, { method, headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
@@ -426,11 +426,11 @@ db.prepare('DELETE FROM order_rate').run();
     let j = null; try { j = JSON.parse(txt); } catch {}
     return { status: res.status, json: j, txt };
   }
-  // 触发迁移（首次请求自动跑 v9 + v10 + v11 + v12 + v13 + v14 + v15 + v16）
+  // 触发迁移（首次请求自动跑 v9 + v10 + v11 + v12 + v13 + v14 + v15 + v16 + v17 + v18）
   const migV9 = await callV9('GET', '/api/config');
-  check('15. v9/v10/v11/v12/v13/v14/v15/v16 migration applied (config ok)', migV9.json && migV9.json.ok === true, migV9.txt.slice(0, 200));
+  check('15. v9..v18 migration applied (config ok)', migV9.json && migV9.json.ok === true, migV9.txt.slice(0, 200));
   const verV9 = dbV9.prepare('SELECT MAX(version) AS v FROM schema_migrations').get();
-  check('15. v9+v10+v11+v12+v13+v14+v15+v16 version marked', verV9 && verV9.v === 16, JSON.stringify(verV9));
+  check('15. v9..v18 version marked', verV9 && verV9.v === 18, JSON.stringify(verV9));
   const idxV9 = dbV9.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_orders_amount_claim'").get();
   check('15. v9 index excludes BinanceUID', idxV9 && /pay_method != 'BinanceUID'/.test(idxV9.sql || ''), (idxV9 && idxV9.sql) || '');
   const idxV16 = dbV9.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_orders_no'").get();
