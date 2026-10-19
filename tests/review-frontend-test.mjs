@@ -320,6 +320,8 @@ check('P1-3: 开启但 Site Key 缺失时 fail-closed（提示、无 Slot）', t
   });
   const act = await page.evaluate(async () => {
     window._curProduct = Object.assign({}, window._curProduct, { requires_email_activation: 1 });
+    // 多邮箱（P-2 第二步）后数量 >1 会按件渲染邮箱输入；本用例只测单件路径，先把数量还原为 1。
+    { const qe = document.getElementById('qty'); if (qe) qe.value = '1'; }
     document.querySelectorAll('[data-k]').forEach((el) => { el.value = 'filled@test.example'; });
     const contact = document.getElementById('contact'); if (contact) contact.value = 'buyer@test.example';
     const qp = document.getElementById('query_password'); if (qp) qp.value = 'testpw123';

@@ -295,7 +295,7 @@ html[data-theme="light"] .toast{background:#1c1c1e;color:#fff}
 </head>
 <body>
 <header class="top"><div class="top-in"><a class="logo" href="#/"><span id="siteName">智选</span></a><nav class="nav"><a class="nav-icon" href="#/" title="商城" aria-label="商城"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg></a><a class="nav-icon" href="#/query" title="查询订单" aria-label="查询订单"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></a><button id="themeBtn" class="theme-btn" onclick="toggleTheme()" title="切换深浅色"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></button></nav></div></header>
-<main class="wrap"><div id="announce" class="glass muted" style="margin-bottom:14px"></div><div id="app"></div><div class="footer muted">虚拟商品一经交付不退换，下单前请仔细阅读商品说明。</div></main>
+<main class="wrap"><div id="announce" class="glass muted" style="margin-bottom:14px;display:none"></div><div id="app"></div><div class="footer muted">虚拟商品一经交付不退换，下单前请仔细阅读商品说明。</div></main>
 <script>
 var CFG = null;
 var PRODUCTS = [];
@@ -496,7 +496,7 @@ function fmtPrice(usdt){ return fmtCNY(usdt) + ' <span class="muted" style="font
 function productThumb(p){
   return productImgHtml(p, 'prod-img', 'prod-img prod-emoji');
 }
-async function load(){ var r = await api('/api/config'); if (r.ok) CFG = r.config; var pr = await api('/api/products'); if (pr.ok) PRODUCTS = pr.products; await loadAppIcons(); if (CFG) { el('siteName').textContent = CFG.site_name; el('announce').textContent = CFG.announcement || ''; }
+async function load(){ var r = await api('/api/config'); if (r.ok) CFG = r.config; var pr = await api('/api/products'); if (pr.ok) PRODUCTS = pr.products; await loadAppIcons(); if (CFG) { el('siteName').textContent = CFG.site_name; var _ann = String(CFG.announcement || '').trim(); el('announce').textContent = _ann; el('announce').style.display = _ann ? '' : 'none'; }
   // Turnstile 开启且配置有效时预加载官方脚本；未开启不加载第三方脚本。
   if (tsConfigured()) ensureTurnstileScript();
   route(); }
@@ -525,7 +525,7 @@ window.addEventListener('hashchange', route);
 function renderShop(){
   curQ = '';
   var html = homeHeroHTML();
-  html += '<div class="muted" id="shopBrowse" style="margin:0 0 12px">下单后按页面收款地址付精确金额，付完成功后自动发货。</div>';
+  html += payAvailable() ? '<div class="muted" id="shopBrowse" style="margin:0 0 12px">下单后按页面收款地址付精确金额，付完成功后自动发货。</div>' : '<div class="warn-box" id="shopBrowse" style="margin:0 0 12px"><b>' + ic('warn') + ' ' + PAY_OFF_MSG + '</b><p class="muted" style="margin:6px 0 0">商品可正常浏览，收款开放后即可下单。</p></div>';
   html += '<div class="search-row"><div class="search-wrap"><span class="search-icon">' + ic('search') + '</span><input id="q" placeholder="搜索商品…" oninput="doSearch()"></div><select id="sortSel" class="sort-sel" onchange="changeSort(this.value)"><option value="featured">排序方式：精选</option><option value="price-asc">排序方式：价格从低到高</option><option value="price-desc">排序方式：价格从高到低</option><option value="name-asc">排序方式：名称：A 到 Z</option></select></div>';
   html += '<div class="filter-row"><div class="tabs" style="margin:0"><button id="pill-all" onclick="filterStock(\x27all\x27)">全部 <span id="cntAll"></span></button><button id="pill-instock" onclick="filterStock(\x27instock\x27)"><span class="stock-dot"></span> 有货 <span id="cntStock"></span></button></div><div class="muted" id="prodCount"></div></div><div id="list" class="grid shop-grid"></div>' + homeSectionHeadHTML();
   el('app').innerHTML = html;
@@ -575,6 +575,13 @@ function renderList(){
 }
 // 收款方式由后端配置下发（CFG.pay_config.methods，含每链开关）；前端绝不硬编码收款地址、开关默认值与上游 API 地址/Key。
 // 无 pay_config 时回退双链全开（兼容旧后端）；后端返回 methods 且全部关闭时返回空数组，付款页显示“收款暂未开放”。
+// 收款是否可用：后端 /api/config 的 pay_available=false，或所有收款方式 enabled:false 时视为关闭（后端仍为最终裁决）。
+function payAvailable(){
+  if (!CFG) return true;
+  if (CFG.pay_available === false || (CFG.pay_config && CFG.pay_config.pay_available === false)) return false;
+  return enabledPayOptions().length > 0;
+}
+var PAY_OFF_MSG = '收款暂未开放，暂不支持下单';
 function enabledPayOptions(){
   var ms = (typeof CFG !== 'undefined' && CFG && CFG.pay_config && CFG.pay_config.methods) || null;
   if (!ms || !ms.length) return [{ pay_method: 'OKX', pay_chain: 'X Layer', enabled: true }, { pay_method: 'Binance', pay_chain: 'BEP20', enabled: true }];
@@ -638,7 +645,7 @@ async function renderProduct(id){
   html += '<div class="pay-card"><div class="pay-card-title">' + ic('cart') + ' 付款</div><div class="pills pay-options" id="payOptions">' + payOpts + '</div></div>';
   html += actHint;
   html += '<div class="total-box"><span>合计 <span id="stickyQty">1</span> 件</span><span><b id="totalPrice" style="font-size:20px">' + fmtCNY(p.price_usdt) + '</b> <span class="muted" id="totalUsdt">约 ' + Number(p.price_usdt||0).toFixed(2) + ' USDT</span></span></div>';
-  html += '<div style="margin-top:14px">' + (inSt === 0 ? '<button class="btn block" disabled style="background:rgba(127,127,127,.3);cursor:not-allowed">缺货 · 补货中</button>' : (!_enabledPay.length ? '<button class="btn block" disabled style="background:rgba(127,127,127,.3);cursor:not-allowed">收款暂未开放</button>' : '<button class="btn block" data-pid="' + p.id + '" onclick="submitOrder(this.dataset.pid)">立即购买</button>')) + '</div>';
+  html += '<div style="margin-top:14px">' + (inSt === 0 ? '<button class="btn block" disabled style="background:rgba(127,127,127,.3);cursor:not-allowed">缺货 · 补货中</button>' : ((!_enabledPay.length || !payAvailable()) ? '<button class="btn block" disabled aria-disabled="true" title="' + PAY_OFF_MSG + '" style="background:rgba(127,127,127,.3);cursor:not-allowed">收款暂未开放</button><p class="muted" id="payOffReason" style="margin:8px 0 0;text-align:center">' + PAY_OFF_MSG + '</p>' : '<button class="btn block" data-pid="' + p.id + '" onclick="submitOrder(this.dataset.pid)">立即购买</button>')) + '</div>';
   html += '</div></div>';
   // Below: detail blocks full width (intro + usage + order notice)
   var useTxt = p.notice || '按交付内容里的说明使用即可。如交付内容包含兑换链接或操作步骤，按步骤完成；遇到问题先在查单页核对订单状态。';
