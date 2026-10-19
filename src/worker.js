@@ -2515,8 +2515,6 @@ function sanitizeOrderForPublic(o, level) {
     delete out.upstream_lock;
     delete out.upstream_lock_expires_at;
   } else {
-    // 匿名概要不暴露内部自增 id（订单号已足够随机，客户端只用 order_no）。
-    delete out.id;
     delete out.delivery_content;
     delete out.customer_fields;
     delete out.contact;
@@ -2966,7 +2964,9 @@ async function handleApi(req, env, url, ctx) {
     var no = decodeURIComponent(mOrderNo[1]);
     var ord = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ?').bind(no).first();
     if (!ord) return err('订单不存在', 404);
-    return json({ ok: true, order: sanitizeOrderForPublic(ord, 'summary') });
+    // 匿名概要不暴露内部自增 id（订单号已足够随机，客户端只用 order_no）；管理端告警等仍保留 id。
+    var pubSummary = sanitizeOrderForPublic(ord, 'summary'); delete pubSummary.id;
+    return json({ ok: true, order: pubSummary });
   }
   // POST 查单验证：凭证在请求体中。正确凭证 → 完整详情（含交付内容）；旧订单正确旧密码 → 仅概要。
   // B-P1-6：与 /secret 同口径——加图形验证码 + 按单原子记数（lookup_attempts，5 次/10 分钟），成功后清零。
