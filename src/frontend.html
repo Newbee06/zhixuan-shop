@@ -146,7 +146,7 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
 .breadcrumb a{color:var(--sub)}
 .detail-meta{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
 .qty-row{display:inline-flex;align-items:stretch;border:1.5px solid var(--line);border-radius:12px;overflow:hidden;background:var(--card2)}
-.qty-btn{width:44px;border:0;background:var(--accent);color:#fff;font-size:20px;font-weight:700;cursor:pointer}
+.qty-btn{width:44px;border:0;background:var(--accent);color:#fff;font-size:20px;font-weight:700;cursor:pointer}.qty-btn:disabled{opacity:.4;cursor:not-allowed;background:var(--sub);color:#fff}.qty-input:disabled,.qty-input[readonly]{opacity:.7;cursor:not-allowed}
 .qty-input{width:64px;text-align:center;border:0;background:transparent;font-size:16px;font-weight:700;color:var(--text);padding:10px 0}
 .total-box{display:flex;justify-content:space-between;align-items:center;background:rgba(10,132,255,.08);border:1px solid rgba(10,132,255,.2);border-radius:16px;padding:12px 14px;margin-top:14px}
 .related{margin-top:18px}
@@ -625,14 +625,12 @@ async function renderProduct(id){
   html += '<div class="buy-price">' + fmtCNY(p.price_usdt) + ' <small>约 ' + Number(p.price_usdt||0).toFixed(2) + ' USDT · 单价</small></div>';
   html += fh;
   if (p.requires_email_activation) {
-    html += '<label>激活邮箱（要开通会员的邮箱，必须填对） *</label><input id="activation_email" type="email" placeholder="要开通会员的邮箱"><label>再次确认激活邮箱 *</label><input id="activation_email_confirm" type="email" placeholder="再输一次激活邮箱"><label><input type="checkbox" id="activation_confirm" style="width:auto"> 我已确认：这是要开通的邮箱，填错无法开通</label>';
+    html += '<label>激活邮箱（要开通会员的邮箱，必须填对） *</label><input id="activation_email" type="email" placeholder="要开通会员的邮箱"><label>再次确认激活邮箱 *</label><input id="activation_email_confirm" type="email" placeholder="再输一次激活邮箱"><div id="actMultiBox"></div><label><input type="checkbox" id="activation_confirm" style="width:auto"> 我已确认：这是要开通的邮箱，填错无法开通</label>';
   }
   html += '<label>邮箱地址 *</label><input id="contact" type="email" placeholder="如 your@email.com"><div class="muted" style="margin-top:4px">用于订单联系；需要邮件交付的商品，也会使用该邮箱接收卡密或账号。</div>';
   html += '<label>查询密码 *</label><input id="query_password" type="password" placeholder="设置查询订单的密码（至少 6 位）" autocomplete="new-password" minlength="6" maxlength="64" required><div class="muted" style="margin-top:4px">查询卡密时需要输入该密码，请牢记。未设置查询密码的订单只能联系客服处理。</div>';
-  // P-2 第一步：激活类商品锁定数量 = 1（多件需逐个激活邮箱，待接口定稿后再开多邮箱输入）。后端仍为最终权威。
-  var _qtyLocked = qtyMax() === 1;
-  html += '<label>购买数量</label><div class="qty-row"><button class="qty-btn" onclick="changeQty(-1)"' + (_qtyLocked ? ' disabled' : '') + '>−</button><input id="qty" class="qty-input" type="number" value="1" min="1" max="' + qtyMax() + '"' + (_qtyLocked ? ' readonly' : '') + ' oninput="clampQty();updateTotal()" onchange="clampQty();updateTotal()"><button class="qty-btn" onclick="changeQty(1)"' + (_qtyLocked ? ' disabled' : '') + '>+</button></div>';
-  if (_qtyLocked) html += '<div class="muted" id="qtyLockHint" style="margin-top:6px;font-size:13px">激活类商品每单限购 1 件，如需多件请分开下单。</div>';
+  // P-2 第二步：激活类商品允许 1–99 件；qty>1 时每件一个激活邮箱 + 确认框（renderActivationInputs）。后端仍为最终权威。
+  html += '<label>购买数量</label><div class="qty-row"><button class="qty-btn" onclick="changeQty(-1)">−</button><input id="qty" class="qty-input" type="number" value="1" min="1" max="' + qtyMax() + '" oninput="clampQty();updateTotal()" onchange="clampQty();updateTotal()"><button class="qty-btn" onclick="changeQty(1)">+</button></div>';
   // 人机验证：Turnstile 按 turnstile_enabled 分支（开启且配置有效显式 render；开启但 Site Key 缺失 fail-closed 提示；关闭用 SVG）。
   if (tsFailClosed()) { html += '<label>人机验证</label>' + turnstileBoxHTML('order'); }
   else if (tsEnabled()) { html += '<label>人机验证</label><div id="turnstileBox">' + turnstileBoxHTML('order') + '</div>'; }
@@ -660,11 +658,31 @@ async function renderProduct(id){
 function selectPayOption(btn){ var all = document.querySelectorAll('#payOptions .pay-opt'); for (var i=0;i<all.length;i++) all[i].classList.remove('on'); btn.classList.add('on'); window._payMethod = btn.getAttribute('data-pm'); window._payChain = btn.getAttribute('data-pc'); }
 // 用户可见的代币名称必须与实际到账合约一致：X Layer 收 USDT0（非旧版 X Layer USDT），BEP20 收 USDT。
 function payTokenLabel(chain){ if (chain === 'X Layer') return 'USDT0 · X Layer'; if (chain === 'BEP20') return 'USDT · BEP20'; return chain || ''; }
-function qtyMax(){ var p = window._curProduct; return (p && Number(p.requires_email_activation)) ? 1 : 99; }
+function qtyMax(){ return 99; }
+// 多邮箱输入：qty=1 用 #activation_email/#activation_email_confirm；qty>1 隐藏单框，按件生成“第 N 件”邮箱+确认框，重绘时保留已输入值（仅内存，不写 localStorage）。
+function renderActivationInputs(qty){
+  var p = window._curProduct; var box = el('actMultiBox'); if (!box || !p || !Number(p.requires_email_activation)) return;
+  var single = el('activation_email'), singleC = el('activation_email_confirm');
+  var keep = { e: [], c: [] };
+  var olds = box.querySelectorAll('[data-act-i]');
+  for (var i = 0; i < olds.length; i++){ var idx = Number(olds[i].getAttribute('data-act-i')); keep[olds[i].getAttribute('data-act-t')][idx] = olds[i].value; }
+  var multi = qty > 1;
+  if (multi && !olds.length && single){ keep.e[0] = single.value; keep.c[0] = singleC ? singleC.value : ''; }
+  if (!multi && olds.length && single){ if (keep.e[0] != null) single.value = keep.e[0]; if (singleC && keep.c[0] != null) singleC.value = keep.c[0]; }
+  [single, singleC].forEach(function(n){ if (!n) return; n.style.display = multi ? 'none' : ''; var lb = n.previousElementSibling; if (lb && lb.tagName === 'LABEL') lb.style.display = multi ? 'none' : ''; });
+  if (!multi){ box.innerHTML = ''; return; }
+  if (olds.length === qty * 2) return;
+  var h = '<div class="muted" style="margin:10px 0 2px;font-size:13px">共 ' + qty + ' 件，请为每件分别填写要开通的激活邮箱。</div>';
+  for (var n = 0; n < qty; n++){
+    h += '<label>第 ' + (n + 1) + ' 件 · 激活邮箱 *</label><input type="email" data-act-t="e" data-act-i="' + n + '" placeholder="第 ' + (n + 1) + ' 件要开通的邮箱" value="' + escH(keep.e[n] || '') + '">';
+    h += '<label>第 ' + (n + 1) + ' 件 · 再次确认 *</label><input type="email" data-act-t="c" data-act-i="' + n + '" placeholder="再输一次第 ' + (n + 1) + ' 件邮箱" value="' + escH(keep.c[n] || '') + '">';
+  }
+  box.innerHTML = h;
+}
 function changeQty(d){ var q = el('qty'); if (!q) return; var mx = qtyMax(); var v = parseInt(q.value||'1',10) + d; if (v < 1) v = 1; if (v > mx) v = mx; q.value = v; updateTotal(); }
 // P2-10：数量钳 1–99（初始化/变化/提交前三处都钳，不只更新总价）。
 function clampQty(){ var q = el('qty'); if (!q) return 1; var mx = qtyMax(); var v = parseInt(q.value || '', 10); if (isNaN(v)) return 1; if (v < 1) v = 1; if (v > mx) v = mx; q.value = v; return v; }
-function updateTotal(){ var p = window._curProduct; if (!p) return; var qtyEl = el('qty'); var qty = qtyEl && qtyEl.value !== '' ? clampQty() : 1; var totalUsdt = Number(p.price_usdt||0) * qty; var t1 = el('totalPrice'); if (t1) t1.textContent = fmtCNY(totalUsdt); var t2 = el('totalUsdt'); if (t2) t2.textContent = '约 ' + totalUsdt.toFixed(2) + ' USDT'; var sq = el('stickyQty'); if (sq) sq.textContent = qty; }
+function updateTotal(){ var p = window._curProduct; if (!p) return; var qtyEl = el('qty'); var qty = qtyEl && qtyEl.value !== '' ? clampQty() : 1; var totalUsdt = Number(p.price_usdt||0) * qty; var t1 = el('totalPrice'); if (t1) t1.textContent = fmtCNY(totalUsdt); var t2 = el('totalUsdt'); if (t2) t2.textContent = '约 ' + totalUsdt.toFixed(2) + ' USDT'; var sq = el('stickyQty'); if (sq) sq.textContent = qty; renderActivationInputs(qty); }
 async function loadCaptcha(){
   var img = el('captchaImg'); if (!img) return;
   try {
@@ -704,19 +722,36 @@ async function submitOrder(pid){
   var p = window._curProduct || {};
   var activationEmail = el('activation_email') ? el('activation_email').value.trim() : '';
   var activationConfirm = el('activation_email_confirm') ? el('activation_email_confirm').value.trim() : '';
+  var actFlagTrue = false;
   if (p.requires_email_activation){
-    if (!activationEmail){ toast('请填写激活邮箱', 'error'); return; }
-    if (!validEmail(activationEmail)){ toast('激活邮箱格式不正确，请检查邮箱地址', 'error'); return; }
-    if (activationEmail !== activationConfirm){ toast('两次激活邮箱不一致', 'error'); return; }
+    var actList = [], actConfList = [];
+    if (qty > 1){
+      renderActivationInputs(qty);
+      for (var ai = 0; ai < qty; ai++){
+        var ie = document.querySelector('[data-act-t="e"][data-act-i="' + ai + '"]'), icf = document.querySelector('[data-act-t="c"][data-act-i="' + ai + '"]');
+        var ve = ie ? ie.value.trim() : '', vc = icf ? icf.value.trim() : '';
+        if (!ve){ toast('请填写第 ' + (ai + 1) + ' 件的激活邮箱', 'error'); if (ie) ie.focus(); return; }
+        if (!validEmail(ve)){ toast('第 ' + (ai + 1) + ' 件的激活邮箱格式不正确', 'error'); ie.focus(); return; }
+        if (ve !== vc){ toast('第 ' + (ai + 1) + ' 件的两次激活邮箱不一致', 'error'); if (icf) icf.focus(); return; }
+        actList.push(ve); actConfList.push(vc);
+      }
+    } else {
+      if (!activationEmail){ toast('请填写激活邮箱', 'error'); return; }
+      if (!validEmail(activationEmail)){ toast('激活邮箱格式不正确，请检查邮箱地址', 'error'); return; }
+      if (activationEmail !== activationConfirm){ toast('两次激活邮箱不一致', 'error'); return; }
+      actList = [activationEmail];
+    }
     if (!el('activation_confirm').checked){ toast('请勾选确认激活邮箱无误', 'error'); return; }
+    var listHTML = actList.map(function(e, k){ return '<li>' + (actList.length > 1 ? '第 ' + (k + 1) + ' 件：' : '') + '<b>' + escH(e) + '</b></li>'; }).join('');
     var confirmed = await new Promise(function(resolve){
-      showModal({ title: '再次确认激活邮箱', bodyHTML: '<p>激活邮箱 <b>' + escH(activationEmail) + '</b> 是要开通会员的邮箱，填错无法开通。确认无误？</p>', confirmText: '确认无误，下单', onConfirm: function(){ resolve(true); }, onCancel: function(){ resolve(false); } });
+      showModal({ title: '再次确认激活邮箱', bodyHTML: '<p>以下激活邮箱是要开通会员的邮箱，填错无法开通。确认无误？</p><ul style="padding-left:18px;margin:8px 0">' + listHTML + '</ul>', confirmText: '确认无误，下单', onConfirm: function(){ resolve(true); }, onCancel: function(){ resolve(false); } });
     });
     if (!confirmed) return;
+    actFlagTrue = true;
+    cust.activation_confirm = true;
+    if (qty > 1){ cust.activation_emails = actList; cust.activation_emails_confirm = actConfList; }
+    else { cust.activation_email = activationEmail; cust.activation_email_confirm = activationConfirm; }
   }
-  cust.activation_email = activationEmail; cust.activation_email_confirm = activationConfirm;
-  // Q-1：后端独立校验 activation_confirm，前端须随单发送（仅激活类商品，且已通过勾选 + 二次确认）。
-  if (p.requires_email_activation) cust.activation_confirm = true;
   // ---- 2) 人机验证（P1-3）：fail-closed / 本次 Widget Token / 未开启走 SVG ----
   if (tsFailClosed()){ toast('反机器人验证未配置（Site Key 缺失），请联系管理员', 'error'); return; }
   var useTurnstile = tsEnabled();
@@ -732,7 +767,10 @@ async function submitOrder(pid){
   // ---- 3) 提交（P3-16：支付方式只用当前状态模型 window._payMethod/_payChain，不读已不存在的 payMethod/payChain 元素） ----
   var btn = document.querySelector('[data-pid="' + pid + '"]');
   setBtnLoading(btn, true);
-  var r = await api('/api/orders', 'POST', { product_id: Number(pid), quantity: qty, customer_fields: cust, contact: emailValue, pay_method: window._payMethod || 'OKX', pay_chain: window._payChain || 'X Layer', captcha_id: window._captchaId || '', captcha_code: capCode, turnstile_token: orderTsToken, query_password: qpVal });
+  var orderBody = { product_id: Number(pid), quantity: qty, customer_fields: cust, contact: emailValue, pay_method: window._payMethod || 'OKX', pay_chain: window._payChain || 'X Layer', captcha_id: window._captchaId || '', captcha_code: capCode, turnstile_token: orderTsToken, query_password: qpVal };
+  // Q-1：激活类订单始终在 body 顶层带 activation_confirm:true（与 customer_fields.activation_confirm 一致；后端 body 优先、cust 兜底）。
+  if (actFlagTrue) orderBody.activation_confirm = true;
+  var r = await api('/api/orders', 'POST', orderBody);
   setBtnLoading(btn, false);
   if (!r.ok){ toast(r.error || '下单失败', 'error'); if ((r.error || '').indexOf('验证码') !== -1) loadCaptcha(); if (!/网络异常|请求超时/.test(r.error || '')) resetTurnstile('order'); return; }
   // 查询密码由买家自设（服务端只存哈希），下单成功页不再展示系统凭证；仅把有无密码记入内存用于提示。
