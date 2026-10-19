@@ -638,7 +638,7 @@ async function renderProduct(id){
   html += '<label>邮箱地址 *</label><input id="contact" type="email" placeholder="如 your@email.com"><div class="muted" style="margin-top:4px">用于订单联系；需要邮件交付的商品，也会使用该邮箱接收卡密或账号。</div>';
   html += '<label>查询密码 *</label><input id="query_password" type="password" placeholder="设置查询订单的密码（至少 6 位）" autocomplete="new-password" minlength="6" maxlength="64" required><div class="muted" style="margin-top:4px">查询卡密时需要输入该密码，请牢记。未设置查询密码的订单只能联系客服处理。</div>';
   // P-2 第二步：激活类商品允许 1–99 件；qty>1 时每件一个激活邮箱 + 确认框（renderActivationInputs）。后端仍为最终权威。
-  html += '<label>购买数量</label><div class="qty-row"><button class="qty-btn" onclick="changeQty(-1)">−</button><input id="qty" class="qty-input" type="number" value="1" min="1" max="' + qtyMax() + '" oninput="clampQty();updateTotal()" onchange="clampQty();updateTotal()"><button class="qty-btn" onclick="changeQty(1)">+</button></div>';
+  html += '<label>购买数量</label><div class="qty-row"><button class="qty-btn" onclick="changeQty(-1)">−</button><input id="qty" class="qty-input" data-prev-qty="1" type="number" value="1" min="1" max="' + qtyMax() + '" oninput="clampQty();updateTotal()" onchange="clampQty();updateTotal()"><button class="qty-btn" onclick="changeQty(1)">+</button></div>';
   // 人机验证：Turnstile 按 turnstile_enabled 分支（开启且配置有效显式 render；开启但 Site Key 缺失 fail-closed 提示；关闭用 SVG）。
   if (tsFailClosed()) { html += '<label>人机验证</label>' + turnstileBoxHTML('order'); }
   else if (tsEnabled()) { html += '<label>人机验证</label><div id="turnstileBox">' + turnstileBoxHTML('order') + '</div>'; }

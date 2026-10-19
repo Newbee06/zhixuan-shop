@@ -374,7 +374,7 @@ check('P1-3: 开启但 Site Key 缺失时 fail-closed（提示、无 Slot）', t
     window._curProduct = Object.assign({}, window._curProduct, { requires_email_activation: 1 });
     if (!document.getElementById('activation_email')) document.body.insertAdjacentHTML('beforeend', '<label>a</label><input id="activation_email"><label>b</label><input id="activation_email_confirm"><div id="actMultiBox"></div><input type="checkbox" id="activation_confirm">');
     const q = document.getElementById('qty');
-    q.value = '1'; updateTotal();
+    q.value = '1'; // 不调用 updateTotal：验证首次改数量即复位勾选（M-1）
     // 改数量复位勾选：先勾选，再 +1 / 改输入，均应取消勾选
     const cb = document.getElementById('activation_confirm');
     cb.checked = true; changeQty(1);
