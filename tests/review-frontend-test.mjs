@@ -359,6 +359,63 @@ check('P1-3: 开启但 Site Key 缺失时 fail-closed（提示、无 Slot）', t
   await page.unrouteAll({ behavior: 'wait' });
 }
 
+// ===== 6b. 多邮箱 qty=3 提交 + 改数量复位确认勾选（拦截 /api/orders）=====
+{
+  await gotoFresh(page, BASE + '/#/product/1');
+  await page.waitForTimeout(1000);
+  let captured = null;
+  await page.route('**/api/orders', async (route) => {
+    if (route.request().method() === 'POST') {
+      try { captured = JSON.parse(route.request().postData() || '{}'); } catch (e) { captured = { parseError: true }; }
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, order: { order_no: 'AIS-TEST-Q3', total_usdt: 3, actual_amount: 3, pay_address: '0x1111111111111111111111111111111111111111', expires_at: new Date(Date.now() + 600000).toISOString(), pay_method: 'OKX', pay_chain: 'X Layer', has_query_password: 1 } }) });
+    } else await route.continue();
+  });
+  const m = await page.evaluate(async () => {
+    window._curProduct = Object.assign({}, window._curProduct, { requires_email_activation: 1 });
+    if (!document.getElementById('activation_email')) document.body.insertAdjacentHTML('beforeend', '<label>a</label><input id="activation_email"><label>b</label><input id="activation_email_confirm"><div id="actMultiBox"></div><input type="checkbox" id="activation_confirm">');
+    const q = document.getElementById('qty');
+    q.value = '1'; updateTotal();
+    // 改数量复位勾选：先勾选，再 +1 / 改输入，均应取消勾选
+    const cb = document.getElementById('activation_confirm');
+    cb.checked = true; changeQty(1);
+    const uncheckedByBtn = cb.checked === false;
+    cb.checked = true; q.value = '3'; q.dispatchEvent(new Event('input')); 
+    const uncheckedByInput = cb.checked === false;
+    cb.checked = true; updateTotal();
+    const keptWhenSame = cb.checked === true;
+    const pairs = document.querySelectorAll('[data-act-t="e"]').length;
+    const emails = ['one@test.example', 'two@test.example', 'one@test.example'];
+    emails.forEach((e, i) => {
+      document.querySelector('[data-act-t="e"][data-act-i="' + i + '"]').value = e;
+      document.querySelector('[data-act-t="c"][data-act-i="' + i + '"]').value = e;
+    });
+    document.querySelectorAll('[data-k]').forEach((el) => { el.value = 'filled@test.example'; });
+    const contact = document.getElementById('contact'); if (contact) contact.value = 'buyer@test.example';
+    const qp = document.getElementById('query_password'); if (qp) qp.value = 'testpw123';
+    const cap = document.getElementById('captchaCode'); if (cap) cap.value = 'ABCD';
+    window._captchaId = 'cap-x';
+    cb.checked = true;
+    const p = submitOrder(1);
+    await new Promise((r) => setTimeout(r, 400));
+    const modalShown = !!document.getElementById('modalConfirm');
+    if (modalShown) document.getElementById('modalConfirm').click();
+    await p;
+    await new Promise((r) => setTimeout(r, 300));
+    return { uncheckedByBtn, uncheckedByInput, keptWhenSame, pairs, modalShown };
+  });
+  await page.waitForTimeout(300);
+  const cf = (captured && captured.customer_fields) || {};
+  check('Q3: 改数量（按钮）取消确认勾选', m.uncheckedByBtn === true, JSON.stringify(m));
+  check('Q3: 改数量（输入框）取消确认勾选', m.uncheckedByInput === true, JSON.stringify(m));
+  check('Q3: 数量未变不误取消勾选', m.keptWhenSame === true, JSON.stringify(m));
+  check('Q3: qty=3 渲染 3 对激活邮箱输入', m.pairs === 3, JSON.stringify(m));
+  check('Q3: qty=3 请求 quantity=3', captured && captured.quantity === 3, JSON.stringify(captured));
+  check('Q3: activation_emails 长度 3（允许重复）', Array.isArray(cf.activation_emails) && cf.activation_emails.length === 3 && cf.activation_emails[0] === cf.activation_emails[2], JSON.stringify(cf));
+  check('Q3: activation_emails_confirm 与 activation_emails 逐项相等', JSON.stringify(cf.activation_emails_confirm) === JSON.stringify(cf.activation_emails), JSON.stringify(cf));
+  check('Q3: customer_fields.activation_confirm === true', cf.activation_confirm === true, JSON.stringify(cf));
+  await page.unrouteAll({ behavior: 'wait' });
+}
+
 // ===== 7. P2-5/P2-12 深色模式计算样式 =====
 {
   await page.goto(BASE + '/', { waitUntil: 'networkidle' });

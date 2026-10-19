@@ -548,7 +548,8 @@ function productCard(p){
   var inSt = Number(p.in_stock == null ? 1 : p.in_stock);
   var img = productImgHtml(p, '', 'emoji');
   var stock = inSt ? '<span class="stock-dot">有存货</span>' : '<span class="stock-dot out">缺货</span>';
-  var btn = inSt ? '<button class="pcard-btn" onclick="event.stopPropagation();location.hash=\x27#/product/' + p.id + '\x27">立即购买 +</button>' : '<button class="pcard-btn pcard-btn-soldout" disabled>售罄</button>';
+  // 收款关闭时卡片按钮改为中性「查看详情」（仍进入商品页）；仅前端提示，后端仍为最终权威。
+  var btn = inSt ? '<button class="pcard-btn" onclick="event.stopPropagation();location.hash=\x27#/product/' + p.id + '\x27">' + (payAvailable() ? '立即购买 +' : '查看详情') + '</button>' : '<button class="pcard-btn pcard-btn-soldout" disabled>售罄</button>';
   return '<div class="glass card pcard" data-pid="' + p.id + '" onclick="location.hash=\x27#/product/' + p.id + '\x27"><div class="pcard-img">' + img + '<span class="pcard-arrow">↗</span></div><div class="pcard-meta">' + stock + '<span class="muted pcard-cat">数字产品</span></div><div class="pcard-title">' + escH(p.title) + '</div><div class="pcard-desc">' + escH(p.description || '') + '</div><div class="pcard-foot"><div><div class="pcard-price-label">您的价格</div><div class="pcard-price">' + fmtCNY(p.price_usdt) + '</div></div>' + btn + '</div></div>';
 }
 function renderList(){
@@ -612,7 +613,7 @@ async function renderProduct(id){
   var fh = '';
   for (var i = 0; i < p.form_fields.length; i++){ var f = p.form_fields[i]; if (isLegacyContactField(f)) continue; fh += '<label>' + escH(f.label) + (f.required ? ' *' : '') + '</label><input data-k="' + escH(f.key) + '" data-label="' + escH(f.label) + '"' + (f.required ? ' data-required="1"' : '') + ' placeholder="' + escH(f.placeholder || '') + '">'; }
   var inSt = Number(p.in_stock == null ? 1 : p.in_stock);
-  var badgeMain = inSt === 0 ? '<span class="badge" style="background:rgba(255,69,58,.14);color:var(--red)">缺货 · 补货中</span>' : '<span class="badge green">自动发货</span>';
+  var badgeMain = inSt === 0 ? '<span class="badge" style="background:rgba(255,69,58,.14);color:var(--red)">缺货 · 补货中</span>' : (payAvailable() ? '<span class="badge green">自动发货</span>' : '<span class="badge" id="payOffBadge">收款开放后可下单</span>');
   var actHint = p.requires_email_activation ? '<div class="warn-box" style="margin-top:12px">' + ic('warn') + ' 激活类商品：激活邮箱是要开通会员的邮箱，必须填对，填错无法开通。</div>' : '';
   var rel = PRODUCTS.filter(function(x){ return x.id !== p.id && x.category === p.category; }).slice(0,4);
   var relHtml = '';
@@ -689,7 +690,8 @@ function renderActivationInputs(qty){
 function changeQty(d){ var q = el('qty'); if (!q) return; var mx = qtyMax(); var v = parseInt(q.value||'1',10) + d; if (v < 1) v = 1; if (v > mx) v = mx; q.value = v; updateTotal(); }
 // P2-10：数量钳 1–99（初始化/变化/提交前三处都钳，不只更新总价）。
 function clampQty(){ var q = el('qty'); if (!q) return 1; var mx = qtyMax(); var v = parseInt(q.value || '', 10); if (isNaN(v)) return 1; if (v < 1) v = 1; if (v > mx) v = mx; q.value = v; return v; }
-function updateTotal(){ var p = window._curProduct; if (!p) return; var qtyEl = el('qty'); var qty = qtyEl && qtyEl.value !== '' ? clampQty() : 1; var totalUsdt = Number(p.price_usdt||0) * qty; var t1 = el('totalPrice'); if (t1) t1.textContent = fmtCNY(totalUsdt); var t2 = el('totalUsdt'); if (t2) t2.textContent = '约 ' + totalUsdt.toFixed(2) + ' USDT'; var sq = el('stickyQty'); if (sq) sq.textContent = qty; renderActivationInputs(qty); }
+function updateTotal(){ var p = window._curProduct; if (!p) return; var qtyEl = el('qty'); var qty = qtyEl && qtyEl.value !== '' ? clampQty() : 1; var totalUsdt = Number(p.price_usdt||0) * qty; var t1 = el('totalPrice'); if (t1) t1.textContent = fmtCNY(totalUsdt); var t2 = el('totalUsdt'); if (t2) t2.textContent = '约 ' + totalUsdt.toFixed(2) + ' USDT'; var sq = el('stickyQty'); if (sq) sq.textContent = qty; if (qtyEl){ var prevQ = qtyEl.getAttribute('data-prev-qty'); if (prevQ !== null && prevQ !== String(qty)){ var ac = el('activation_confirm'); if (ac) ac.checked = false; } qtyEl.setAttribute('data-prev-qty', String(qty)); } renderActivationInputs(qty); }
+// 改数量后取消「确认激活邮箱」勾选，要求按新件数重新确认（重复邮箱允许，不去重）。
 async function loadCaptcha(){
   var img = el('captchaImg'); if (!img) return;
   try {
