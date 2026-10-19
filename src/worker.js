@@ -2818,6 +2818,12 @@ async function handleApi(req, env, url, ctx) {
       if (qty > 1) {
         var actEmailsNorm = normalizeActivationEmails(cust, qty);
         if (!actEmailsNorm.ok) return err(actEmailsNorm.error);
+        // 与 qty=1 同口径：每个邮箱都须二次确认，activation_emails_confirm 须逐项一致（缺失即拒）。
+        var actConfirmArr = Array.isArray(cust.activation_emails_confirm) ? cust.activation_emails_confirm.map(function (e) { return String(e || '').trim(); }) : null;
+        if (!actConfirmArr || actConfirmArr.length !== actEmailsNorm.list.length) return err('请为每个激活邮箱再次输入确认（activation_emails_confirm，长度须等于 quantity）');
+        for (var ai = 0; ai < actEmailsNorm.list.length; ai++) {
+          if (actConfirmArr[ai] !== actEmailsNorm.list[ai]) return err('第 ' + (ai + 1) + ' 个激活邮箱两次输入不一致，请重新确认');
+        }
         cust.activation_emails = actEmailsNorm.list;
         cust.activation_email = actEmailsNorm.list[0];
         activationEmail = actEmailsNorm.list[0];
