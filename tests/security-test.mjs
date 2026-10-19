@@ -320,7 +320,7 @@ check('refund_ref stored (second flow)', q('SELECT refund_ref FROM orders WHERE 
 
 // ===== 8d. 迁移状态端点 =====
 r = await call('GET', '/api/admin/migrate', null, cookie);
-check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 15, JSON.stringify(r.json));
+check('migrate status up_to_date', r.json && r.json.ok === true && r.json.up_to_date === true && r.json.current_version === 16, JSON.stringify(r.json));
 r = await call('POST', '/api/admin/migrate', {}, cookie);
 check('migrate POST idempotent', r.json && r.json.ok === true && r.json.applied.length === 0, JSON.stringify(r.json));
 
@@ -328,7 +328,7 @@ check('migrate POST idempotent', r.json && r.json.ok === true && r.json.applied.
 r = await call('GET', '/api/admin/audit', null, cookie);
 check('audit list ok', r.json && r.json.ok === true && Array.isArray(r.json.audit) && r.json.audit.length > 0, JSON.stringify(r.json));
 const actions = (r.json.audit || []).map((a) => a.action);
-check('audit has confirm_payment + cancel', actions.includes('confirm_payment') && actions.includes('cancel'), JSON.stringify(actions));
+check('audit has manual_confirm_payment + cancel', actions.includes('manual_confirm_payment') && actions.includes('cancel'), JSON.stringify(actions));
 check('audit entries have no card codes/passwords', !JSON.stringify(r.json.audit).includes('SEC-CARD-ONLY-1') && !JSON.stringify(r.json.audit).includes('query_token'));
 
 // ===== 10. 第三轮复审修复回归（A-02 / E-03 / F-02）=====

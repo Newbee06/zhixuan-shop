@@ -1,5 +1,7 @@
 > ⚠️ §一–§八为第四轮历史快照，仅文末附录为最新状态。
 >
+> 文末附录（本次整改，2026-10-18）为最新状态；旧章节中与附录冲突的表述（邮箱查单、审计失败、`/pay` 验证码、商品卡字号）以附录及 `docs/SECURITY.md` / `docs/ARCHITECTURE.md` 为准。历史章节不改写（保留当时快照）。
+>
 > # 智选商城 — 上线就绪报告（Release Readiness，第四轮）
 
 > 分支：`feat/admin-overhaul-security`（未合并 `main`，未部署生产）
@@ -704,3 +706,56 @@ curl -s https://zhixuan-shop-staging.<子域>.workers.dev/api/config | head -c 3
 - Staging：备份成功，部署 Version 375c8e5e，浏览器 + API 端到端验收通过（详见 docs/CODE_REVIEW_2026-10-17.md“最终合并前验收”）。
 - 结论：代码与 CI PASS、Staging 部署 PASS、Staging 验收 PASS；真实链上支付 NOT VERIFIED、P1-11 BLOCKED。
 - 建议合 PR #1（仍需用户授权）；合并 ≠ 可部署生产 ≠ 可开放真实销售。生产真实收款地址、真实链上小额验收、ProdSeller 真实密钥仍 BLOCKED。
+
+---
+
+## 附录：本次整改（2026-10-18，分支 `fix/review-findings-2026-10-18`，仅文档）
+
+本附录只改文档（`docs/` + 根目录 `README.md`），不改代码/测试/迁移/CI，不 commit、不 push、不部署、不碰生产。文档结论以代码为准：编写前已实际阅读 `src/worker.js` 与 `src/frontend.html` 核对（见“核验口径”）。
+
+### 审查发现（文档与代码不一致处）
+
+| 编号 | 旧文档表述 | 代码事实 | 处理 |
+|---|---|---|---|
+| P1-6 | “邮箱不是查询凭证”“查单仅按订单号”“邮箱查单已关闭” | `POST /api/orders/query` 已实现订单号/邮箱双查：关键词含 `@` 按邮箱精确匹配（大小写不敏感），匹配键为订单号 OR `LOWER(contact)` OR `LOWER(customer_fields.contact_email)`；`activation_email` 不是查询键 | 文档改写为双查口径；历史章节不改写，以本附录为准 |
+| P1-6 | 未说明邮箱查单的隐私含义 | 邮箱 + 图形验证码 ≠ 所有权证明；知邮箱可枚举订单概要 | 文档新增隐私风险说明与最小化响应清单；邮件 OTP 未实现，不得声称可用 |
+| P1-6 | `GET /api/orders` 410 文案称“邮箱查单已关闭” | 目标文案应为“旧接口停用，请用订单号或下单邮箱+验证码走当前查单流程”；**`src/worker.js` 中的 410 文案仍是旧文案** | 文档写目标文案；**需协调人改 worker.js 410 文案**（本文档不改代码） |
+| P1-7 | “审计写入失败时操作返回 500” | 代码返回 `ok:true` + `audit_failed:true` + `warning`，业务已提交 | 文档改写为“不得改回 500，不得重复操作，立即核查 `admin_audit` 并手动补记” |
+| P3-11 | 未说明 `pay_address` 例外 | 代码仅对 `pending_payment` 订单在查单列表附带 `pay_address` | 文档新增例外说明（见 `docs/PAYMENT_FLOW.md`） |
+| P3-8 | 文档中无“名称 10px、介绍 8px”数值注释（已全库检索确认）；但外部流传的该组数值与代码不符 | 真实 CSS 见 `docs/ARCHITECTURE.md`“前端商品卡字号”表（商品卡名称 16px / 介绍 13px / 价格 24px / 按钮 14px / 箭头 18px，图区 `aspect-ratio: 4/3`，全视口同一值） | 文档新增真实值对照表，不改设计 |
+| 其他 | `docs/SECURITY.md` 称“`/pay` 无验证码” | 代码 `/pay` 已调 `verifyCaptcha`（图形验证码 + 独立限流） | 文档已更正 |
+| 残余（代码侧，未改） | 前端查单页文案仍称“邮箱不能作为查询凭证”（`src/frontend.html` 查单页） | 后端已支持邮箱双查，前端 `doQueryList` 亦接受邮箱关键词；该文案与行为矛盾 | **需协调人安排代码侧修正前端文案**（本文档不改代码） |
+
+`docs/PR_REVIEW.md`、`docs/CODE_REVIEW_2026-10-17.md` 为历史记录，本次未改写；其中与本附录冲突的旧表述以本附录为准。
+
+### 修改内容
+
+- `docs/SECURITY.md`：查单双查口径 + 隐私风险 + 响应最小化 + 邮件 OTP 未实现 + 410 目标文案（附代码待办）；审计失败 `ok:true` + `audit_failed:true`；`/pay` 验证码更正。
+- `docs/ARCHITECTURE.md`：查单与凭证章节改写为双查口径；新增前端商品卡字号真实值对照表（P3-8）。
+- `docs/RUNBOOK.md`：审计失败行改写（不得重复操作、核查并手动补记）；新增 410 排查行。
+- `docs/PAYMENT_FLOW.md`：新增“查单列表 pay_address 例外（P3-11）”。
+- `README.md`：查询页、`/query` API 表、本地校验安全专项三处“邮箱不是查询凭证”改写为双查口径。
+- 本附录：审查发现、修改内容、BLOCKED 项、PR 状态、核验口径。
+
+### 仍 BLOCKED / 未验证（未声称完成）
+
+- **P1-11 真实上游幂等仍 BLOCKED**：`Idempotency-Key` 重放语义无真实服务商证据；绝不调用真实 ProdSeller 接口，未验证。
+- **双链真实付款未验证（NOT VERIFIED）**：OKX|X Layer 与 Binance|BEP20 均无真实转账证据；真实链上小额验收、真实收款地址配置仍待执行。
+- **ProdSeller 自动采购关闭**：`prodseller_enabled` 门禁默认关闭，未提供证据前不得开启；真实幂等继续 BLOCKED。
+- 支付只保留 OKX|X Layer + Binance|BEP20；TRC20 / ERC20 / 站内转账代码已删，旧订单不自动认账。
+
+### PR 状态
+
+- **PR #1：已合并**（本地 `git log` 可见合并提交 `7a71ca4` “Merge pull request #1”）。
+- **PR #2：仍 OPEN 未合并**（2026-10-18 核实：`gh pr view 2` 状态 OPEN，head `b90f692`，https://github.com/Newbee06/zhixuan-shop/pull/2 ，主题“移动端适配：Hero 压缩 + 合集标题一行”；严禁动 PR #2）。
+- **本次新 PR：PR #3 OPEN 未合并**（https://github.com/Newbee06/zhixuan-shop/pull/3 ，分支 `fix/review-findings-2026-10-18`，HEAD `08db7a8`，主题“2026-10-18 全面审查整改（P1×7 + P2×16 + P3×23，46 项）”；不许自动合并）。
+
+### 核验口径（代码验证 vs 本地 Mock vs 真实 Staging，三者不得混同）
+
+| 层级 | 含义 | 本次状态 |
+|---|---|---|
+| 代码验证 | 实际阅读 `src/worker.js` / `src/frontend.html` 核对行为与文案 | ✅ 本次已做（文档结论的唯一依据） |
+| 本地 Mock | 本地测试用 mock fetch 模拟 ProdSeller / EVM RPC，未调任何真实接口 | ✅ 全部通过（exit 0）：mock ALL DONE；stock 17/17；security 104/104；concurrency 116/116；release-readiness 91/91；payment-whitelist ALL PASS；app-icons 112/112；review-fixes 272/272；review-p1-backend 139/139；review-config 53/53；d1-local D1 LOCAL TEST ALL OK（旧库→v16/新库/重复/失败恢复/v16 索引 6/6）；浏览器 CI 102/102；旧浏览器脚本 52/52；review-frontend 64/64。命令：`node tests/<name>.mjs` / `bash tests/d1-local-test.sh`。 |
+| 真实 Staging | 已部署的 Staging Worker + 独立 Staging D1 + 真实浏览器/API 验收，仍不发起真实链上转账 | ✅ CI run [39101195597](https://github.com/Newbee06/zhixuan-shop/actions/runs/39101195597) 五 Job 全绿（回归/浏览器/浏览器 review/D1 迁移/静态）。Staging 已部署：Worker `zhixuan-shop-staging`（https://zhixuan-shop-staging.f-00a.workers.dev），Version ID `96c09853-7705-4bae-8a81-ea4f66196dcd`，D1 `zhixuan-shop-staging-db`（`4fb3878b-02bf-4cac-b833-716c050242e6`），迁移 v16，6 个 v16 索引齐全，`GET /api/orders` 410 新文案已验证，首页 200，`/api/config` 正确（站名智选、dummy 收款地址）。⚠️ **Staging 浏览器验收待完成**（由父级用 live browser + 已保存管理员会话做，本 PR 不含该结果，不得声称已通过）。最新 SHA `08db7a8`，PR #3 见上。 |
+
+**P1-11 真实上游沙箱仍 BLOCKED；双链真实收款 NOT VERIFIED（未真实转账）。**

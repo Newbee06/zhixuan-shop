@@ -103,9 +103,9 @@ code = code.replace('export default {', 'globalThis.__W = {');
 const fn = new Function(code + '\nreturn globalThis.__W;');
 const worker = fn();
 function makeCtx() { const c = { pending: [] }; c.waitUntil = (pr) => { c.pending.push(pr); }; c.drain = async () => { while (c.pending.length) { const batch = c.pending.splice(0); await Promise.all(batch.map((x) => x.catch(() => {}))); } }; return c; }
-async function call(method, p, body, cookie) {
+async function call(method, p, body, cookie, extraHeaders) {
   const ctx = makeCtx();
-  const headers = { 'content-type': 'application/json', 'X-Admin-API': '1' };
+  const headers = { 'content-type': 'application/json', 'X-Admin-API': '1', ...(extraHeaders || {}) };
   if (cookie) headers.Cookie = cookie;
   const req = new Request('http://test' + p, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const res = await worker.fetch(req, env, ctx);
@@ -122,9 +122,12 @@ function mkCaptcha(code){
   db.prepare("INSERT INTO captcha_codes (id, code_hash, expires_at, attempts) VALUES (?,?,?,0)").run(id, h, exp);
   return id;
 }
-async function orderCall(body, cookie){
+let orderIpSeq = 0;
+async function orderCall(body, cookie, ip){
   const cid = mkCaptcha('AB12');
-  return call('POST', '/api/orders', { query_password: 'mock-test-pw', ...body, captcha_id: cid, captcha_code: 'AB12' }, cookie);
+  // P3-5：限流在验证码消费之前且计入全部尝试；每个独立下单用例用独立 IP，避免用例间限流互相干扰。
+  orderIpSeq++;
+  return call('POST', '/api/orders', { query_password: 'mock-test-pw', ...body, captcha_id: cid, captcha_code: 'AB12' }, cookie, { 'CF-Connecting-IP': ip || ('203.0.113.' + orderIpSeq) });
 }
 function assert(cond, msg) { if (!cond) { console.error('FAIL: ' + msg); process.exitCode = 1; throw new Error(msg); } console.log('PASS: ' + msg); }
 function q(sql, ...a) { return db.prepare(sql).get(...a); }
@@ -202,11 +205,13 @@ r = await orderCall({ product_id: up100.id, quantity: 1, customer_fields: { cont
 assert(r.json.ok, 'G upstream BEP20 order created');
 let oG = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
 r = await call('POST', '/api/admin/orders/' + oG.id + '/confirm-payment', {}, cookie);
+assert(!r.json.ok && /原因/.test(r.json.error || ''), 'G confirm-payment without reason rejected: ' + JSON.stringify(r.json));
+r = await call('POST', '/api/admin/orders/' + oG.id + '/confirm-payment', { reason: 'G admin manual confirm (mock upstream)' }, cookie);
 assert(r.json.ok, 'G admin confirm-payment ok: ' + JSON.stringify(r.json));
 oG = q('SELECT * FROM orders WHERE id=?', oG.id);
 assert(oG.status === 'completed' && oG.delivery_content === 'UP-KEY-ABC', 'G admin confirm -> ProdSeller delivered, got ' + oG.status);
 // Test C: activation paid -> poll -> delivered
-r = await orderCall({ product_id: up200.id, quantity: 1, customer_fields: { contact_email: 'buyer4@test.example', activation_email: 'act@test.example', activation_email_confirm: 'act@test.example' }, contact: 'buyer4@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
+r = await orderCall({ product_id: up200.id, quantity: 1, customer_fields: { contact_email: 'buyer4@test.example', activation_email: 'act@test.example', activation_email_confirm: 'act@test.example' }, contact: 'buyer4@test.example', pay_method: 'Binance', pay_chain: 'BEP20', activation_confirm: true });
 assert(r.json.ok, 'C activation order created: ' + JSON.stringify(r.json));
 const ctxC1 = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxC1); await ctxC1.drain();
 let oC = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
@@ -244,16 +249,16 @@ assert(upstreamCalls.every((c) => c.idem && c.idem.startsWith('AIS')), 'Idempote
 r = await call('GET', '/api/captcha');
 assert(r.json.ok && r.json.captcha_id && r.json.svg.includes('<svg'), 'captcha GET returns svg');
 assert(q('SELECT * FROM captcha_codes WHERE id=?', r.json.captcha_id), 'captcha row stored (hash only, no plaintext)');
-r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
+r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'BEP20', query_password: 'mock-test-pw' });
 assert(!r.json.ok && r.json.error.includes('验证码'), 'order without captcha rejected: ' + JSON.stringify(r.json));
 const badCap = mkCaptcha('ZZ99');
-r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'BEP20', captcha_id: badCap, captcha_code: 'WRONG' });
+r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'BEP20', query_password: 'mock-test-pw', captcha_id: badCap, captcha_code: 'WRONG' });
 assert(!r.json.ok && r.json.error.includes('验证码错误'), 'wrong captcha rejected: ' + JSON.stringify(r.json));
 assert(q('SELECT attempts FROM captcha_codes WHERE id=?', badCap).attempts === 1, 'wrong attempt counted');
 const goodCap = mkCaptcha('AB12');
 r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'BEP20', query_password: 'mock-test-pw', captcha_id: goodCap, captcha_code: 'AB12' });
 assert(r.json.ok, 'order with correct captcha created: ' + JSON.stringify(r.json));
-r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer@test.example', delivery_email: 'buyer@test.example' }, contact: 'buyer@test.example', pay_method: 'Binance', pay_chain: 'BEP20', captcha_id: goodCap, captcha_code: 'AB12' });
+r = await call('POST', '/api/orders', { product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer2@test.example', delivery_email: 'buyer2@test.example' }, contact: 'buyer2@test.example', pay_method: 'Binance', pay_chain: 'BEP20', query_password: 'mock-test-pw', captcha_id: goodCap, captcha_code: 'AB12' }, null, { 'CF-Connecting-IP': '203.0.113.99' });
 assert(!r.json.ok && r.json.error.includes('验证码'), 'used captcha cannot be replayed: ' + JSON.stringify(r.json));
 // Duplicate pending order: same contact, one pending only
 r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'dup@test.example', delivery_email: 'dup@test.example' }, contact: 'dup@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
@@ -267,7 +272,7 @@ assert(r.json.ok, 'dup order cancelled: ' + JSON.stringify(r.json));
 r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'dup@test.example', delivery_email: 'dup@test.example' }, contact: 'dup@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
 assert(r.json.ok, 'dup contact can order again after cancel: ' + JSON.stringify(r.json));
 for (let i = 0; i < 10; i++) db.prepare("INSERT INTO order_rate (ip, created_at) VALUES ('unknown', datetime('now'))").run();
-r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer-rate@test.example', delivery_email: 'buyer-rate@test.example' }, contact: 'buyer-rate@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
+r = await orderCall({ product_id: selfProd.id, quantity: 1, customer_fields: { contact_email: 'buyer-rate@test.example', delivery_email: 'buyer-rate@test.example' }, contact: 'buyer-rate@test.example', pay_method: 'Binance', pay_chain: 'BEP20' }, undefined, 'unknown');
 assert(!r.json.ok && r.json.error.includes('频繁'), 'rate limit blocks 11th order: ' + JSON.stringify(r.json));
 // image_data validation (admin PUT)
 r = await call('GET', '/api/admin/products', null, cookie);

@@ -4,3 +4,13 @@ node_modules/
 tests/_stock-worker-tmp.mjs
 # 本地浏览器验收截图，不进仓库
 acceptance/
+# 密钥与凭证：绝不跟踪（P3-10）。真实密钥/PAT/CF Token/私钥只经安全入口 transient 使用，用完即丢。
+.env
+.env.local
+.env.*.local
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx

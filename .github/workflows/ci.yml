@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [feat/admin-overhaul-security]
+    branches: [fix/review-findings-2026-10-18]
   workflow_dispatch:
 
 # 默认只读。除非有经证实的必要需求，不授予写权限。
@@ -50,14 +50,49 @@ jobs:
           done
           [ -s schema.sql ] || { echo "FAIL: schema.sql empty"; exit 1; }
           echo "schema.sql OK"
-      - name: No hard-coded secrets in tracked files
+      - name: No hard-coded secrets in tracked files or uncommitted diff
         run: |
           set -e
-          # 只扫高置信度的真实密钥模式（不把虚构测试数据、资源 ID 当密钥）。
-          if git grep -nE 'github_pat_[A-Za-z0-9_]{20,}|sk-proj-[A-Za-z0-9_-]{10,}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN (RSA )?PRIVATE KEY-----' -- .; then
-            echo "FAIL: possible hard-coded secret found"; exit 1
+          # 模式表（名称 + ERE），镜像于 tests/review-config-test.mjs，改一处须同步另一处。
+          # 只输出 文件:行号:类型，绝不输出匹配行内容（避免把秘密打进 CI 日志）；命中即失败，不为消误报关扫描。
+          # 覆盖：GitHub PAT（细粒度 github_pat_ + 经典 ghp_/gho_/ghu_/ghs_/ghr_）、Cloudflare API Token（赋值上下文）、
+          # 常见 API Key（OpenAI sk-proj-/Anthropic sk-ant-/Stripe live sk_live_/rk_live_/Slack xox/AWS AKIA/Google AIza/GitLab glpat-）、私钥/PEM。
+          # 不误报：公开合约地址（0x + 40 hex，无上述前缀，不匹配）、YOUR_/test_/example 占位（低于长度阈值）、测试 dummy 数据。
+          # 覆盖面：仓库已跟踪文件（git grep）+ 未提交 diff（git diff HEAD 的新增行，本地运行与 PR 均可覆盖近期改动）。
+          HITS_FILE="$(mktemp)"
+          trap 'rm -f "$HITS_FILE"' EXIT
+          scan_one() {
+            local name="$1" re="$2"
+            git grep -nE -e "$re" -- . 2>/dev/null | cut -d: -f1,2 | sed "s/$/:$name/" >> "$HITS_FILE" || true
+            git diff HEAD 2>/dev/null | grep '^+' | grep -v '^+++' | grep -nE -- "$re" | cut -d: -f1 | sed "s/^/uncommitted-diff:/;s/$/:$name/" >> "$HITS_FILE" || true
+          }
+          scan_one 'github-pat-fine-grained' 'github_pat_[A-Za-z0-9_]{20,}'
+          scan_one 'github-pat-classic' 'gh[pousr]_[A-Za-z0-9]{36,}'
+          scan_one "cloudflare-api-token-assignment" "(CLOUDFLARE_API_TOKEN|CF_API_TOKEN|CLOUDFLARE_API_KEY)[ ]*[=:][ ]*['\"]?[A-Za-z0-9_-]{20,}"
+          scan_one 'openai-project-key' 'sk-proj-[A-Za-z0-9_-]{10,}'
+          scan_one 'anthropic-key' 'sk-ant-[A-Za-z0-9_-]{10,}'
+          scan_one 'stripe-live-key' '[sr]k_live_[A-Za-z0-9]{10,}'
+          scan_one 'slack-token' 'xox[baprs]-[A-Za-z0-9-]{10,}'
+          scan_one 'aws-access-key' 'AKIA[0-9A-Z]{16}'
+          scan_one 'google-api-key' 'AIza[0-9A-Za-z_-]{35}'
+          scan_one 'gitlab-pat' 'glpat-[A-Za-z0-9_-]{20}'
+          scan_one 'private-key' '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'
+          if [ -s "$HITS_FILE" ]; then
+            echo "FAIL: possible hard-coded secret found (file:line:type only, content redacted):"
+            cat "$HITS_FILE"
+            exit 1
           fi
           echo "No hard-coded secrets found"
+          # 不应跟踪的 .env/密钥文件：.env.example 模板除外（.gitignore 用 !.env.example 放行）。
+          if git ls-files | grep -E '\.env$|\.env\.local$|\.env\..+' | grep -v '^\.env\.example$'; then
+            echo "FAIL: .env file is tracked (must be untracked; see .gitignore)"
+            exit 1
+          fi
+          if git ls-files | grep -E '\.pem$|\.key$|\.p12$|\.pfx$'; then
+            echo "FAIL: private key / certificate file is tracked (must be untracked; see .gitignore)"
+            exit 1
+          fi
+          echo "No tracked .env / key files"
       - name: No remote/prod write commands in CI or tests
         run: |
           set -e
@@ -67,6 +102,17 @@ jobs:
             echo "FAIL: remote/prod write command found in CI or tests"; exit 1
           fi
           echo "No remote/prod write commands in CI or tests"
+      - name: Generated test artifact never tracked (P3-12)
+        run: |
+          set -e
+          # tests/_stock-worker-tmp.mjs 是 stock-test.mjs 每次运行时由 src/worker.js 重新生成的
+          # 临时产物（ESM 导入中转），不是源码：必须未被跟踪且在 .gitignore 中，防再次误提交。
+          if git ls-files | grep -q '^tests/_stock-worker-tmp\.mjs$'; then
+            echo "FAIL: tests/_stock-worker-tmp.mjs is tracked (generated artifact, must stay untracked)"
+            exit 1
+          fi
+          grep -q '^tests/_stock-worker-tmp\.mjs$' .gitignore || { echo "FAIL: .gitignore missing tests/_stock-worker-tmp.mjs"; exit 1; }
+          echo "Generated test artifact untracked + gitignored OK"
       - name: Job summary
         if: always()
         run: |
@@ -100,14 +146,18 @@ jobs:
         run: node tests/payment-whitelist-test.mjs
       - name: App icons test (light/dark icon library, app_icon_key, title auto-match, picker)
         run: node tests/app-icons-test.mjs
-      - name: Code review fixes test (83 review findings, 226 assertions)
+      - name: Code review fixes test (83 review findings, 272 assertions)
         run: node tests/review-fixes-test.mjs
+      - name: Review P1 backend test (P1-1/P1-2/P1-3/P2-1/P2-2/P2-3/P2-7/P2-10/P3-1..P3-7 + extra boundaries)
+        run: node tests/review-p1-backend-test.mjs
+      - name: Review config test (CI secret scan patterns, .gitignore, untracked secrets)
+        run: node tests/review-config-test.mjs
       - name: Job summary
         if: always()
         run: |
           {
             echo "## Business regression — ${{ job.status }}"
-            echo "- mock-test / stock-test / security-test / concurrency-test / release-readiness-test / payment-whitelist-test / app-icons-test: see logs for counts"
+            echo "- mock-test / stock-test / security-test / concurrency-test / release-readiness-test / payment-whitelist-test / app-icons-test / review-fixes-test / review-p1-backend-test / review-config-test: see logs for counts"
           } >> "$GITHUB_STEP_SUMMARY"
 
   migration:
@@ -129,7 +179,7 @@ jobs:
         run: |
           {
             echo "## D1 migration — ${{ job.status }}"
-            echo "- old DB → v8, duplicate upstream_orders dedup, unique index, idempotency, failure recovery, fresh DB: see logs"
+            echo "- old DB → v16, duplicate upstream_orders dedup, unique index, v16 indexes, idempotency, failure recovery, fresh DB: see logs"
             echo "- Local only (--local). No production D1 touched."
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -178,4 +228,53 @@ jobs:
             echo "## Browser acceptance — ${{ job.status }}"
             echo "- Real Playwright Chromium against local wrangler dev (--local), fictional data only."
             echo "- Viewports 1440/390/360, dark mode, admin menus, exception/refund flow, console errors: see logs."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  browser-review:
+    name: Browser review-frontend (Playwright)
+    # 独立 Job（与 browser 隔离）：review-frontend-test 需要全新库（默认管理员密码 admin），
+    # browser-acceptance-ci 会把管理员密码改成 browser-ci-setup-temp-123，两者不可共用同一库。
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - name: Install locked CI tooling (playwright + wrangler)
+        run: npm ci
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Start wrangler dev (--local) and run review-frontend tests (same step, so the server stays alive)
+        run: |
+          set -e
+          rm -rf .wrangler/state
+          npx wrangler d1 execute aisou-lite-db --local --file=schema.sql
+          npx wrangler dev --local --port 8791 > /tmp/wrangler-dev-review.log 2>&1 &
+          DEV_PID=$!
+          trap "kill $DEV_PID 2>/dev/null; true" EXIT
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:8791/api/config" 2>/dev/null | grep -q 200; then echo "WORKER UP"; break; fi
+            sleep 2
+          done
+          curl -s "http://127.0.0.1:8791/api/config" | head -c 300; echo
+          node tests/review-frontend-test.mjs
+          kill $DEV_PID 2>/dev/null; trap - EXIT; true
+        env:
+          BASE: http://127.0.0.1:8791
+      - name: Upload wrangler dev log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrangler-dev-review-log
+          path: /tmp/wrangler-dev-review.log
+          retention-days: 7
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Browser review-frontend — ${{ job.status }}"
+            echo "- Real Playwright Chromium against local wrangler dev (--local), fictional data only."
+            echo "- Turnstile lifecycle, countdown, required-field validation, dark mode computed styles, card masking: see logs."
           } >> "$GITHUB_STEP_SUMMARY"

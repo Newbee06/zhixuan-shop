@@ -54,8 +54,30 @@ pending_payment ──管理员取消──▶ cancelled（仅未付款且未认
 ## 查单与凭证（摘要，详见 docs/SECURITY.md）
 
 - 下单必填查询密码（6–64 位），服务端只存随机 16 字节 salt + PBKDF2(100k) 哈希。
-- 查单仅按订单号（+ 图形验证码）→ 概要列表；卡密按单走 `/secret` 验密码。
-- 邮箱不是查询凭证。旧订单（系统凭证 / 旧明文密码 / v14 无 salt 哈希）各有兼容路径，v14 无 salt 哈希仅走管理员流程。
+- 查单（`POST /api/orders/query`，图形验证码 + IP 限流 30 次/10 分钟，结果上限 10 条）：**订单号/邮箱双查**。关键词含 `@` 按邮箱精确匹配（大小写不敏感，不部分匹配），匹配键为订单号 OR `LOWER(contact)` OR `LOWER(customer_fields.contact_email)`；`activation_email` 不是查询键。列表仅含订单概要，卡密按单走 `/secret` 验密码。
+- **邮箱 + 图形验证码 ≠ 所有权证明**；邮件 OTP 未实现。知邮箱可枚举订单概要（隐私风险，见 SECURITY.md）。
+- 旧订单（系统凭证 / 旧明文密码 / v14 无 salt 哈希）各有兼容路径，v14 无 salt 哈希仅走管理员流程。
+- 旧接口 `GET /api/orders` → 410，文案“旧接口停用，请用订单号或下单邮箱+验证码走当前查单流程”（已落地，2026-10-18 整改集成）。
+- 审计写入失败：业务已提交则 `ok:true` + `audit_failed:true`，不得改回 500，不得重复操作，须立即核查 `admin_audit` 并手动补记。
+
+## 前端商品卡字号（以 src/frontend.html 为准，P3-8）
+
+下表为文档核对时从 `src/frontend.html` 实际 CSS 抄录的真实值；文档中流传过的“名称 10px、介绍 8px”以及“Hero 标题 10px / 眉题 8px / 视觉 scale(0.37)”等数值**与代码不符，不得引用**。不为通过注释改设计：如需改字号，须另走代码变更流程。
+
+| 元素 | 选择器 | 字号 | 视口说明 |
+|---|---|---|---|
+| 商品卡名称 | `.pcard-title` | 16px | 全视口同一值，无移动端覆盖 |
+| 商品卡介绍 | `.pcard-desc` | 13px | 全视口同一值，无移动端覆盖 |
+| 价格标签 | `.pcard-price-label` | 11px | 全视口同一值 |
+| 价格 | `.pcard-price` | 24px | 全视口同一值 |
+| 购买按钮 | `.pcard-btn` | 14px | 全视口同一值 |
+| 卡片右上角箭头 | `.pcard-arrow` | 18px | 全视口同一值 |
+| 卡片元信息（库存/分类） | `.pcard-meta` | 12px | 全视口同一值；`≤640px` 时仅隐藏 `.pcard-cat`，字号不变 |
+| 图区图标 | `.pcard-img .emoji` | 56px | 全视口同一值 |
+| 图区高宽比 | `.pcard-img` | `aspect-ratio: 4/3` | 全视口同一值 |
+| 首页主标题 | `.home-h1` | 桌面 52px；`≤640px` 时 36px | 仅 640px 断点有覆盖 |
+| 首页眉题 / 副文案 / 注脚 | `.home-eyebrow` / `.home-sub` / `.home-note` | 14px / 16px / 13px | 全视口同一值，无移动端覆盖 |
+| 合集标题 / 星标 | `.home-section-title` / `.home-section-star` | 26px / 30px | 全视口同一值，无移动端覆盖 |
 
 ## 管理端
 

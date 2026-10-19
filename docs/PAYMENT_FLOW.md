@@ -45,6 +45,13 @@
 - 采购 `Idempotency-Key = order_no`，重试不重复采购；`upstream_orders` 按 `order_id` 唯一。
 - 上游 `paid` → `pending_activation`，轮询到 `delivered` 才发货；402/409/429/500 → `pending_upstream` + 后台告警，需人工介入。
 
+## 查单列表 pay_address 例外（P3-11）
+
+- **仅未付款订单付款信息恢复**：`POST /api/orders/query` 列表中，仅 `status === 'pending_payment'` 的订单附带 `pay_address`；已付款/已完成/已取消等其他状态订单不附带。用途：成功页刷新后用订单号 + 图形验证码恢复付款信息（收款地址 + 精确应付金额），避免用户因刷新丢失收款地址而付错地址。
+- **性质**：`pay_address` 是商家公开收款地址（与 `/api/config` 公开的 `usdt_addresses` 同一类信息），**非用户钱包/秘密**。附带它不改变查单列表的最小化原则，与 P1-6 最小字段一致。
+- **不连带泄露**：附带 `pay_address` 时仍不返回 `delivery_content`、`customer_fields`、`contact`、`txid` / 完整 `tx_hash`、查询密码/哈希/盐、`claim_token`、管理备注（`admin_note` / `refund_ref` / `exception_reason` / `upstream_lock`）。完整 TX 哈希、客户字段、交付内容一律不随列表返回。
+- 下单成功响应（买家自己的新订单）同样返回该单的 `pay_address` / `wallet_address`，属当次交易信息，不属列表例外。
+
 ## 真实链上验收状态
 
 **BLOCKED / NOT VERIFIED**：除非有可核验的真实转账证据（真实 TXID + 链上查询 + 订单履约记录），否则不宣称真实链上验收完成。当前无此证据（见 docs/RELEASE_READINESS.md）。
