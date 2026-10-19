@@ -189,7 +189,8 @@ jobs:
 
   browser:
     name: Browser acceptance (Playwright)
-    runs-on: ubuntu-latest
+    # 钉死 24.04：ubuntu-latest 已滚动到 26.04，Playwright 1.55.0 不支持其上的 chromium 安装（2026-10-19 CI 失败于 install 步骤，与代码无关）。
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -242,7 +243,8 @@ jobs:
     # 独立 Job（与 browser 隔离）：review-frontend-test 需要全新库，首登走建站令牌
     # （ZHIXUAN_SETUP_TOKEN，见下方 wrangler dev --var 与 step env，两侧同值；B-P0 起不再接受默认密码）；
     # browser-acceptance-ci 会把管理员密码改成 browser-ci-setup-temp-123，两者不可共用同一库。
-    runs-on: ubuntu-latest
+    # 钉死 24.04：同上，Playwright 1.55.0 不支持 ubuntu 26.04。
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
