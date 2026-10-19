@@ -238,6 +238,19 @@ assert(lastActPost && Array.isArray(lastActPost.body.emails) && lastActPost.body
 const ctxC2 = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxC2); await ctxC2.drain();
 oC = q('SELECT * FROM orders WHERE order_no=?', orderNoC);
 assert(oC.status === 'completed' && oC.delivery_content === 'UP-ACT-KEY', 'C poll -> delivered, got ' + oC.status + '/' + oC.delivery_content);
+// Bot5 P-1：qty=1 激活单不得借 activation_emails 绕过二次确认（确认 A，上游必须收到 A，不能是 B）
+r = await orderCall({ product_id: up200.id, quantity: 1, customer_fields: { contact_email: 'buyer4p@test.example', activation_email: 'confirmed-a@test.example', activation_email_confirm: 'confirmed-a@test.example', activation_emails: ['unconfirmed-b@test.example'] }, contact: 'buyer4p@test.example', pay_method: 'Binance', pay_chain: 'BEP20', activation_confirm: true });
+assert(r.json.ok, 'P-1 qty=1 order created: ' + JSON.stringify(r.json));
+const orderNoP1 = r.json.order.order_no;
+let oP1 = q('SELECT * FROM orders WHERE order_no=?', orderNoP1);
+const cfP1 = JSON.parse(oP1.customer_fields || '{}');
+assert(cfP1.activation_email === 'confirmed-a@test.example' && cfP1.activation_emails === undefined, 'P-1 stored only confirmed email, activation_emails stripped: ' + oP1.customer_fields);
+const ctxP1 = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxP1); await ctxP1.drain();
+const p1Post = upstreamCalls.find((c) => c.idem === orderNoP1);
+assert(p1Post && p1Post.body.email === 'confirmed-a@test.example' && p1Post.body.emails === undefined && !JSON.stringify(p1Post.body).includes('unconfirmed-b'), 'P-1 upstream got confirmed A only: ' + JSON.stringify(p1Post && p1Post.body));
+// P-1 纵深：normalize 层 qty=1 即使只传 activation_emails 也不采用
+r = await orderCall({ product_id: up200.id, quantity: 1, customer_fields: { contact_email: 'buyer4q@test.example', activation_emails: ['unconfirmed-b@test.example'] }, contact: 'buyer4q@test.example', pay_method: 'Binance', pay_chain: 'BEP20', activation_confirm: true });
+assert(!r.json.ok, 'P-1 qty=1 with only activation_emails (no confirmed email) rejected: ' + JSON.stringify(r.json));
 // Test D: 402
 r = await orderCall({ product_id: p402.id, quantity: 1, customer_fields: { contact_email: 'buyer5@test.example' }, contact: 'buyer5@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
 assert(r.json.ok, 'D 402 order created');

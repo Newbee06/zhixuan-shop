@@ -972,11 +972,12 @@ function normalizeActivationEmails(customerFields, qty) {
   qty = Math.max(1, Number(qty) || 1);
   var cf = customerFields || {};
   var list = [];
-  if (Array.isArray(cf.activation_emails) && cf.activation_emails.length) {
-    list = cf.activation_emails.map(function (e) { return String(e || '').trim(); });
-  } else {
+  if (qty === 1) {
+    // P-1：qty=1 只认经二次确认的 activation_email，忽略 activation_emails，防止绕过确认。
     var one = String(cf.activation_email || '').trim();
-    if (qty === 1 && one) list = [one];
+    if (one) list = [one];
+  } else if (Array.isArray(cf.activation_emails) && cf.activation_emails.length) {
+    list = cf.activation_emails.map(function (e) { return String(e || '').trim(); });
   }
   if (list.length !== qty) return { ok: false, error: '激活类订单需要 ' + qty + ' 个激活邮箱（quantity>1 请传 activation_emails，长度必须等于 quantity）' };
   for (var i = 0; i < list.length; i++) {
@@ -2825,6 +2826,9 @@ async function handleApi(req, env, url, ctx) {
         // P2-10：两次输入必须一致——确认字段缺失也拒绝（无法验证一致性，不得放行）。
         if (!activationConfirm) return err('请再次输入激活邮箱确认（两次输入必须一致）');
         if (activationConfirm !== activationEmail) return err('两次激活邮箱不一致，请重新确认');
+        // P-1：qty=1 丢弃客户端传入的 activation_emails，落库只保留已确认的单个邮箱。
+        delete cust.activation_emails;
+        cust.activation_email = activationEmail;
       }
       // P2-10：勾选确认后端独立校验——activation_confirm 须为真（body 或 customer_fields；
       // 前端下单请求必须发送 activation_confirm:true，见前端契约）。显式 false/缺失一律拒绝。
