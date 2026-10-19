@@ -715,6 +715,8 @@ async function submitOrder(pid){
     if (!confirmed) return;
   }
   cust.activation_email = activationEmail; cust.activation_email_confirm = activationConfirm;
+  // Q-1：后端独立校验 activation_confirm，前端须随单发送（仅激活类商品，且已通过勾选 + 二次确认）。
+  if (p.requires_email_activation) cust.activation_confirm = true;
   // ---- 2) 人机验证（P1-3）：fail-closed / 本次 Widget Token / 未开启走 SVG ----
   if (tsFailClosed()){ toast('反机器人验证未配置（Site Key 缺失），请联系管理员', 'error'); return; }
   var useTurnstile = tsEnabled();
