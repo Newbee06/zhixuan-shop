@@ -629,7 +629,10 @@ async function renderProduct(id){
   }
   html += '<label>邮箱地址 *</label><input id="contact" type="email" placeholder="如 your@email.com"><div class="muted" style="margin-top:4px">用于订单联系；需要邮件交付的商品，也会使用该邮箱接收卡密或账号。</div>';
   html += '<label>查询密码 *</label><input id="query_password" type="password" placeholder="设置查询订单的密码（至少 6 位）" autocomplete="new-password" minlength="6" maxlength="64" required><div class="muted" style="margin-top:4px">查询卡密时需要输入该密码，请牢记。未设置查询密码的订单只能联系客服处理。</div>';
-  html += '<label>购买数量</label><div class="qty-row"><button class="qty-btn" onclick="changeQty(-1)">−</button><input id="qty" class="qty-input" type="number" value="1" min="1" max="99" oninput="clampQty();updateTotal()" onchange="clampQty();updateTotal()"><button class="qty-btn" onclick="changeQty(1)">+</button></div>';
+  // P-2 第一步：激活类商品锁定数量 = 1（多件需逐个激活邮箱，待接口定稿后再开多邮箱输入）。后端仍为最终权威。
+  var _qtyLocked = qtyMax() === 1;
+  html += '<label>购买数量</label><div class="qty-row"><button class="qty-btn" onclick="changeQty(-1)"' + (_qtyLocked ? ' disabled' : '') + '>−</button><input id="qty" class="qty-input" type="number" value="1" min="1" max="' + qtyMax() + '"' + (_qtyLocked ? ' readonly' : '') + ' oninput="clampQty();updateTotal()" onchange="clampQty();updateTotal()"><button class="qty-btn" onclick="changeQty(1)"' + (_qtyLocked ? ' disabled' : '') + '>+</button></div>';
+  if (_qtyLocked) html += '<div class="muted" id="qtyLockHint" style="margin-top:6px;font-size:13px">激活类商品每单限购 1 件，如需多件请分开下单。</div>';
   // 人机验证：Turnstile 按 turnstile_enabled 分支（开启且配置有效显式 render；开启但 Site Key 缺失 fail-closed 提示；关闭用 SVG）。
   if (tsFailClosed()) { html += '<label>人机验证</label>' + turnstileBoxHTML('order'); }
   else if (tsEnabled()) { html += '<label>人机验证</label><div id="turnstileBox">' + turnstileBoxHTML('order') + '</div>'; }
@@ -657,9 +660,10 @@ async function renderProduct(id){
 function selectPayOption(btn){ var all = document.querySelectorAll('#payOptions .pay-opt'); for (var i=0;i<all.length;i++) all[i].classList.remove('on'); btn.classList.add('on'); window._payMethod = btn.getAttribute('data-pm'); window._payChain = btn.getAttribute('data-pc'); }
 // 用户可见的代币名称必须与实际到账合约一致：X Layer 收 USDT0（非旧版 X Layer USDT），BEP20 收 USDT。
 function payTokenLabel(chain){ if (chain === 'X Layer') return 'USDT0 · X Layer'; if (chain === 'BEP20') return 'USDT · BEP20'; return chain || ''; }
-function changeQty(d){ var q = el('qty'); if (!q) return; var v = parseInt(q.value||'1',10) + d; if (v < 1) v = 1; if (v > 99) v = 99; q.value = v; updateTotal(); }
+function qtyMax(){ var p = window._curProduct; return (p && Number(p.requires_email_activation)) ? 1 : 99; }
+function changeQty(d){ var q = el('qty'); if (!q) return; var mx = qtyMax(); var v = parseInt(q.value||'1',10) + d; if (v < 1) v = 1; if (v > mx) v = mx; q.value = v; updateTotal(); }
 // P2-10：数量钳 1–99（初始化/变化/提交前三处都钳，不只更新总价）。
-function clampQty(){ var q = el('qty'); if (!q) return 1; var v = parseInt(q.value || '', 10); if (isNaN(v)) return 1; if (v < 1) v = 1; if (v > 99) v = 99; q.value = v; return v; }
+function clampQty(){ var q = el('qty'); if (!q) return 1; var mx = qtyMax(); var v = parseInt(q.value || '', 10); if (isNaN(v)) return 1; if (v < 1) v = 1; if (v > mx) v = mx; q.value = v; return v; }
 function updateTotal(){ var p = window._curProduct; if (!p) return; var qtyEl = el('qty'); var qty = qtyEl && qtyEl.value !== '' ? clampQty() : 1; var totalUsdt = Number(p.price_usdt||0) * qty; var t1 = el('totalPrice'); if (t1) t1.textContent = fmtCNY(totalUsdt); var t2 = el('totalUsdt'); if (t2) t2.textContent = '约 ' + totalUsdt.toFixed(2) + ' USDT'; var sq = el('stickyQty'); if (sq) sq.textContent = qty; }
 async function loadCaptcha(){
   var img = el('captchaImg'); if (!img) return;
