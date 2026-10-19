@@ -2964,7 +2964,9 @@ async function handleApi(req, env, url, ctx) {
     var no = decodeURIComponent(mOrderNo[1]);
     var ord = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ?').bind(no).first();
     if (!ord) return err('订单不存在', 404);
-    return json({ ok: true, order: sanitizeOrderForPublic(ord, 'summary') });
+    // 匿名概要不暴露内部自增 id（订单号已足够随机，客户端只用 order_no）；管理端告警等仍保留 id。
+    var pubSummary = sanitizeOrderForPublic(ord, 'summary'); delete pubSummary.id;
+    return json({ ok: true, order: pubSummary });
   }
   // POST 查单验证：凭证在请求体中。正确凭证 → 完整详情（含交付内容）；旧订单正确旧密码 → 仅概要。
   // B-P1-6：与 /secret 同口径——加图形验证码 + 按单原子记数（lookup_attempts，5 次/10 分钟），成功后清零。
@@ -4136,7 +4138,35 @@ async function handleApi(req, env, url, ctx) {
 
 import FRONTEND_HTML from './frontend.html';
 
-export default {
+// 安全响应头（staging 冒烟 S7）：所有 fetch 响应统一附加。CSP 兼容现有内联脚本/样式、onclick 处理器、
+// data: 图片（上传图、App 图标、SVG 验证码）、收款二维码（api.qrserver.com）与 Turnstile（challenges.cloudflare.com）。
+var CSP_HTML = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: https://api.qrserver.com",
+  "connect-src 'self'",
+  "frame-src https://challenges.cloudflare.com",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'"
+].join('; ');
+var CSP_API = "default-src 'none'; frame-ancestors 'none'";
+function withSecurityHeaders(resp) {
+  var r = new Response(resp.body, resp);
+  var h = r.headers;
+  var isHtml = String(h.get('content-type') || '').indexOf('text/html') === 0;
+  h.set('Content-Security-Policy', isHtml ? CSP_HTML : CSP_API);
+  h.set('X-Frame-Options', 'DENY');
+  h.set('X-Content-Type-Options', 'nosniff');
+  h.set('Referrer-Policy', 'no-referrer');
+  h.set('Strict-Transport-Security', 'max-age=31536000');
+  h.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  return r;
+}
+
+const app = {
   async fetch(req, env, ctx) {
     var url = new URL(req.url);
     if (url.pathname === '/' || url.pathname === '/index.html') {
@@ -4164,4 +4194,9 @@ export default {
     if (d.getUTCHours() === 2 && d.getUTCMinutes() === 0) { ctx.waitUntil((async function () { await cleanupExpired(env); await pollUpstreamActivations(env, ctx); })()); }
     else { ctx.waitUntil((async function () { await runPolling(env, fetch, ctx); await pollUpstreamActivations(env, ctx); })()); }
   }
+};
+
+export default {
+  async fetch(req, env, ctx) { return withSecurityHeaders(await app.fetch(req, env, ctx)); },
+  async scheduled(event, env, ctx) { return app.scheduled(event, env, ctx); }
 };

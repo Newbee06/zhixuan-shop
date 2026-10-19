@@ -356,7 +356,7 @@ for (const w of [390, 360]) {
 }
 {
   const a = await page.evaluate(() => {
-    APP_ICONS = { 'b-icon': { light: 'https://example.com/light.png', dark: 'https://example.com/dark.png' } };
+    APP_ICONS = { 'b-icon': { light: 'data:image/png;base64,TElHSFQ=', dark: 'data:image/png;base64,REFSSw==' } };
     document.documentElement.dataset.theme = 'light';
     const holder = document.createElement('div');
     holder.innerHTML = productImgHtml({ app_icon_key: 'b-icon' }, 'prod-img', 'prod-img prod-emoji');
@@ -371,7 +371,7 @@ for (const w of [390, 360]) {
     delete document.documentElement.dataset.theme;
     return { lightSrc, darkSrc, containerBg };
   });
-  check('P2-12: App 图标真实 src 随主题切换', a.lightSrc === 'https://example.com/light.png' && a.darkSrc === 'https://example.com/dark.png', JSON.stringify(a));
+  check('P2-12: App 图标真实 src 随主题切换', a.lightSrc === 'data:image/png;base64,TElHSFQ=' && a.darkSrc === 'data:image/png;base64,REFSSw==', JSON.stringify(a));
   check('P2-12: App 图标容器背景', a.containerBg === 'rgb(255, 255, 255)', JSON.stringify(a));
 }
 {
