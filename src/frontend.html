@@ -72,7 +72,7 @@ a{color:var(--accent);text-decoration:none}
 .home-visual-ring{position:absolute;border:1px solid rgba(91,123,255,.18);border-radius:50%}
 .home-pcard{position:absolute;left:50%;top:52%;transform:translate(-50%,-50%) rotate(-10deg);width:340px;height:200px;border-radius:22px;background:linear-gradient(135deg,#8ea6ff,#5b7bff 55%,#3d5afe);color:#fff;padding:20px;display:flex;flex-direction:column;justify-content:space-between;box-shadow:0 24px 50px rgba(91,123,255,.35)}
 .home-pcard-top{display:flex;justify-content:space-between;align-items:flex-start;font-size:13px}
-.home-pcard-logo{font-size:26px;font-weight:800;letter-spacing:.5px}
+.home-pcard-logo{display:inline-flex;align-items:center;gap:8px;font-size:26px;font-weight:800;letter-spacing:.5px}
 .home-pcard-note{font-size:12px;opacity:.9;max-width:110px;text-align:right;line-height:1.5}
 .home-pcard-bottom{display:flex;justify-content:space-between;align-items:flex-end;font-size:17px;font-weight:700;line-height:1.5}
 .home-pcard-arrow{font-size:24px}
@@ -81,6 +81,7 @@ a{color:var(--accent);text-decoration:none}
 .home-chip-relax{right:0;top:14%;background:#1a2e1a;color:#bef264;transform:rotate(8deg)}
 .home-chip-discover{right:6%;bottom:6%;background:#fde68a;color:#451a03;transform:rotate(6deg)}
 .home-visual-cap{position:absolute;left:50%;bottom:0;transform:translateX(-50%);color:var(--sub);font-size:13px;white-space:nowrap}
+.zx-logo{width:24px;height:24px;display:inline-block;flex:none;vertical-align:middle}.zx-logo-pcard{width:26px;height:26px}.zx-logo-footer{width:20px;height:20px}.home-features{display:flex;gap:12px;margin:0 0 16px}.home-feature{flex:1;background:var(--card2);border:1px solid var(--line);border-radius:18px;padding:14px 12px;text-align:center;font-size:15px;font-weight:700}
 .home-section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin:28px 0 16px}
 .home-section-title{font-size:26px;font-weight:800;display:flex;align-items:center;gap:10px}
 .home-section-star{color:#5b7bff;font-size:30px}
@@ -89,6 +90,7 @@ a{color:var(--accent);text-decoration:none}
 .home-back-top:hover{color:var(--text)}
 html[data-theme="dark"] .home-h1-accent,html[data-theme="dark"] .home-section-star,html[data-theme="dark"] .home-eyebrow b{color:#8ea6ff}
 @media(max-width:640px){.home-hero{flex-direction:row;gap:12px;padding:16px;align-items:flex-start}.home-hero>div:first-child{flex:1;min-width:0}.home-h1{font-size:10px}.home-eyebrow{font-size:8px;margin-bottom:10px}.home-sub{font-size:8px;margin-bottom:16px}.home-cta{font-size:10px;padding:6px 12px}.home-note{font-size:8px;margin-top:12px}.home-visual{flex:0 0 156px;height:119px;min-width:0}.home-visual-scale{width:420px;height:320px;transform:scale(0.37);transform-origin:top left}.home-section-title{font-size:20px}.home-section-star{font-size:22px}}
+@media(max-width:640px){.home-features{gap:8px;margin-bottom:12px}.home-feature{font-size:12px;padding:10px 6px;border-radius:14px}}
 .h1{font-size:26px;font-weight:800;margin:6px 0 4px}
 .h2{font-size:18px;font-weight:700;margin:0 0 10px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -141,7 +143,7 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
 .sort-sel{width:auto;min-width:215px;flex:0 0 auto;cursor:pointer}
 .filter-row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 12px}
 @media(max-width:640px){.search-row{flex-direction:column}.sort-sel{width:100%;min-width:0}}
-.footer{margin-top:28px;text-align:center}
+.footer{margin-top:28px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.footer-brand{display:flex;align-items:center;gap:8px;color:var(--sub);font-size:13px}.footer-brand-name{color:var(--text);font-weight:800;font-size:14px}.footer-query{font-size:13px;font-weight:700;white-space:nowrap}
 .breadcrumb{font-size:13px;color:var(--sub);margin:4px 0 12px}
 .breadcrumb a{color:var(--sub)}
 .detail-meta{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
@@ -294,8 +296,9 @@ html[data-theme="light"] .toast{background:#1c1c1e;color:#fff}
 <script>try{var _t=localStorage.getItem('theme');if(_t==='dark'||_t==='light'){document.documentElement.dataset.theme=_t;}}catch(e){}</script>
 </head>
 <body>
+<svg aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden"><defs><linearGradient id="zx-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#B9C6FF"/><stop offset="0.5" stop-color="#EDE9FE"/><stop offset="1" stop-color="#8B9CF9"/></linearGradient><linearGradient id="zx-glass" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF" stop-opacity="0.88"/><stop offset="1" stop-color="#FFFFFF" stop-opacity="0.32"/></linearGradient><symbol id="zx-logo" viewBox="0 0 512 512"><rect width="512" height="512" rx="128" fill="url(#zx-bg)"/><rect x="24" y="24" width="464" height="464" rx="112" fill="url(#zx-glass)" stroke="#FFFFFF" stroke-width="5" stroke-opacity="0.95"/><ellipse cx="256" cy="102" rx="185" ry="60" fill="#FFFFFF" opacity="0.7"/><path d="M 145 165 H 367 L 145 347 H 367" fill="none" stroke="#4338CA" stroke-width="66" stroke-linecap="round" stroke-linejoin="round"/></symbol></defs></svg>
 <header class="top"><div class="top-in"><a class="logo" href="#/"><span id="siteName">智选</span></a><nav class="nav"><a class="nav-icon" href="#/" title="商城" aria-label="商城"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg></a><a class="nav-icon" href="#/query" title="查询订单" aria-label="查询订单"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></a><button id="themeBtn" class="theme-btn" onclick="toggleTheme()" title="切换深浅色"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></button></nav></div></header>
-<main class="wrap"><div id="announce" class="glass muted" style="margin-bottom:14px"></div><div id="app"></div><div class="footer muted">虚拟商品一经交付不退换，下单前请仔细阅读商品说明。</div></main>
+<main class="wrap"><div id="announce" class="glass muted" style="margin-bottom:14px"></div><div id="app"></div><div class="footer"><div class="footer-brand"><svg class="zx-logo zx-logo-footer" aria-hidden="true"><use href="#zx-logo"></use></svg><span class="footer-brand-name">智选</span> <span>为数字生活，留一点轻盈。</span></div><a class="footer-query" href="#/query">查找我的订单 →</a></div></main>
 <script>
 var CFG = null;
 var PRODUCTS = [];
@@ -525,6 +528,7 @@ window.addEventListener('hashchange', route);
 function renderShop(){
   curQ = '';
   var html = homeHeroHTML();
+  html += homeFeaturesHTML();
   html += '<div class="muted" id="shopBrowse" style="margin:0 0 12px">下单后按页面收款地址付精确金额，付完成功后自动发货。</div>';
   html += '<div class="search-row"><div class="search-wrap"><span class="search-icon">' + ic('search') + '</span><input id="q" placeholder="搜索商品…" oninput="doSearch()"></div><select id="sortSel" class="sort-sel" onchange="changeSort(this.value)"><option value="featured">排序方式：精选</option><option value="price-asc">排序方式：价格从低到高</option><option value="price-desc">排序方式：价格从高到低</option><option value="name-asc">排序方式：名称：A 到 Z</option></select></div>';
   html += '<div class="filter-row"><div class="tabs" style="margin:0"><button id="pill-all" onclick="filterStock(\x27all\x27)">全部 <span id="cntAll"></span></button><button id="pill-instock" onclick="filterStock(\x27instock\x27)"><span class="stock-dot"></span> 有货 <span id="cntStock"></span></button></div><div class="muted" id="prodCount"></div></div><div id="list" class="grid shop-grid"></div>' + homeSectionHeadHTML();
@@ -533,13 +537,17 @@ function renderShop(){
   // 商城每次进入都重新拉商品（PRODUCTS 只在首次 load() 时取过一次；下单预留库存后 SPA 内导航回商城会显示过期库存计数）。失败时用旧数据渲染，不白屏。
   api('/api/products').then(function(pr){ if (pr.ok) PRODUCTS = pr.products; renderList(); }).catch(function(){ renderList(); });
 }
-// 首页 Hero（参考 prodseller 版式，文案按截图、品牌换本站的）：左文案 + 右紫色倾斜卡 + 漂浮标签。
+// 首页 Hero（glass-card-store 顶部结构 + 冻结规格标注文案；左文案 + 右紫色倾斜卡 + 漂浮标签；布局类名/CSS 保持 PR2 冻结规则，探索按钮保留）。
 function homeHeroHTML(){
-  return '<div class="home-hero"><div><div class="home-eyebrow"><b>✦</b> 您的数字化升级之旅由此开启</div><div class="home-h1">无限可能，<br><span class="home-h1-accent">更实惠的价格。</span></div><p class="home-sub">你下一个最爱的工具就在这里。探索适用于工作、创意以及其他各种用途的数字订阅服务。</p><button class="home-cta" onclick="document.getElementById(\x27shopBrowse\x27).scrollIntoView({behavior:\x27smooth\x27})">探索 <span>↗</span></button><div class="home-note">更多选择，尽在一处。</div></div><div class="home-visual"><div class="home-visual-scale"><span class="home-visual-ring" style="width:340px;height:340px;left:40px;top:-10px"></span><span class="home-visual-ring" style="width:260px;height:260px;left:80px;top:30px"></span><div class="home-chip home-chip-create">▲ <span>创造</span></div><div class="home-chip home-chip-relax">▶ <span>放松</span></div><div class="home-pcard"><div class="home-pcard-top"><span class="home-pcard-logo">智选 ↗</span><span class="home-pcard-note">一切都数字化了。</span></div><div class="home-pcard-bottom"><div>略微升级，<br>潜力却更大。</div><span class="home-pcard-arrow">↗</span></div></div><div class="home-chip home-chip-discover">✳ <span>发现</span></div><div class="home-visual-cap">好工具，大可能。</div></div></div></div>';
+  return '<div class="home-hero"><div><div class="home-eyebrow"><b>✦</b> zhixuanpro.com</div><div class="home-h1">好权益，<br><span class="home-h1-accent">即刻到手。</span></div><p class="home-sub">无限可能，更实惠的价格。</p><button class="home-cta" onclick="document.getElementById(\x27shopBrowse\x27).scrollIntoView({behavior:\x27smooth\x27})">探索 <span>↗</span></button><div class="home-note">安全支付 · 自动发货 · 订单可查</div></div><div class="home-visual"><div class="home-visual-scale"><span class="home-visual-ring" style="width:340px;height:340px;left:40px;top:-10px"></span><span class="home-visual-ring" style="width:260px;height:260px;left:80px;top:30px"></span><div class="home-chip home-chip-create">▲ <span>创造</span></div><div class="home-chip home-chip-relax">▶ <span>放松</span></div><div class="home-pcard"><div class="home-pcard-top"><span class="home-pcard-logo"><svg class="zx-logo zx-logo-pcard" aria-hidden="true"><use href="#zx-logo"></use></svg>zhi xuan Pro</span><span class="home-pcard-note">一切都数字化了。</span></div><div class="home-pcard-bottom"><div>略微升级，<br>潜力却更大。</div><span class="home-pcard-arrow">↗</span></div></div><div class="home-chip home-chip-discover">✳ <span>发现</span></div><div class="home-visual-cap">智选Pro</div></div></div></div>';
 }
-// 商品合集区标题（截图第二块；本站无收藏夹，右侧改为返回顶部）。
+// 首页特性卡（glass-card-store 顶部结构；仅标题，无小字——冻结规格 6）。
+function homeFeaturesHTML(){
+  return '<div class="home-features"><div class="home-feature">即刻交付</div><div class="home-feature">私密可查</div><div class="home-feature">精选好物</div></div>';
+}
+// 商品合集区标题（glass-card-store 结构 + 智选Pro 合集标题；右侧返回顶部）。
 function homeSectionHeadHTML(){
-  return '<div class="home-section-head"><div><div class="home-section-title"><span class="home-section-star">✳</span> 日常生活，升级版。</div><div class="home-section-sub">一个合集，囊括所有数字可能性。</div></div><button class="home-back-top" onclick="window.scrollTo({top:0,behavior:\x27smooth\x27})">返回顶部 ↑</button></div>';
+  return '<div class="home-section-head"><div><div class="home-section-title"><svg class="zx-logo" aria-hidden="true"><use href="#zx-logo"></use></svg><span>智选Pro</span><span>一个合集，囊括所有数字权益。</span></div></div><button class="home-back-top" onclick="window.scrollTo({top:0,behavior:\x27smooth\x27})">返回顶部 ↑</button></div>';
 }
 function filterStock(s){ curStock = s; renderList(); }
 function doSearch(){ curQ = el('q').value || ''; renderList(); }

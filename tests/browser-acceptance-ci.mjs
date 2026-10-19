@@ -487,7 +487,7 @@ for (const [w, h, label] of [[390, 844, '390'], [360, 740, '360']]) {
   await page.waitForTimeout(800);
   check(`mobile ${label} home: no horizontal overflow`,
     (await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)) <= 1);
-  // 移动端适配回归（冻结规格 1A/2A/3C）：合集标题一行（≤30px 高）、Hero 倾斜卡不被 Hero 裁剪。
+  // 移动端适配回归（冻结规格 1A/2A/3C）：合集标题≤两行（冻结规格 9a 长标题，单行需改 PR2 字号故不强制单行；仍禁横向溢出）、Hero 倾斜卡不被 Hero 裁剪。
   await page.waitForSelector('.home-section-title', { timeout: 10000 });
   const mobileLayout = await page.evaluate(() => {
     const title = document.querySelector('.home-section-title');
@@ -497,7 +497,7 @@ for (const [w, h, label] of [[390, 844, '390'], [360, 740, '360']]) {
     const hb = hero.getBoundingClientRect(), pb = pcard.getBoundingClientRect();
     return { titleH: Math.round(title.getBoundingClientRect().height), pcardWithin: pb.bottom <= hb.bottom + 2 };
   });
-  check(`mobile ${label} home: section title single line`, !!mobileLayout && mobileLayout.titleH <= 30, JSON.stringify(mobileLayout));
+  check(`mobile ${label} home: section title at most two lines`, !!mobileLayout && mobileLayout.titleH <= 62, JSON.stringify(mobileLayout));
   check(`mobile ${label} home: hero card not clipped`, !!mobileLayout && mobileLayout.pcardWithin, JSON.stringify(mobileLayout));
   // 放松标签不得被 Hero 右边缘裁剪（right:0 + 旋转 8° 会超出，移动端内收 10px）。
   const chipWithin = await page.evaluate(() => {
@@ -579,6 +579,34 @@ for (const w of [390, 360]) {
   // PR2 移植后：芯片不再手调移动端字号，取桌面基础 13px（视觉上由 scale(0.37) 缩小），取代移植前移动端覆盖 12px。
   check(`P2-12: 浮动卡片字号 ${w}`, h.chip === '13px', JSON.stringify(h));
 }
+// 首页顶部文案（冻结规格：glass 结构 + 标注文案）：眉题纯文本、副文案、右卡、特性卡、底部。
+{
+  await page.goto(BASE + '/', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(800);
+  const top = await page.evaluate(() => {
+    const text = document.body.innerText || '';
+    const eyebrow = document.querySelector('.home-eyebrow');
+    const footerLink = document.querySelector('.footer-query');
+    const features = Array.from(document.querySelectorAll('.home-feature')).map((el) => el.textContent.trim());
+    return {
+      eyebrowText: eyebrow ? eyebrow.textContent.trim() : '',
+      eyebrowHasLink: !!(eyebrow && eyebrow.querySelector('a')),
+      hasNew: ['zhixuanpro.com', '好权益', '即刻到手', '无限可能，更实惠的价格', '安全支付 · 自动发货 · 订单可查', 'zhi xuan Pro', '智选Pro', '即刻交付', '私密可查', '精选好物', '一个合集，囊括所有数字权益', '为数字生活，留一点轻盈', '查找我的订单 →'].every((s) => text.includes(s)),
+      hasOld: ['瞬间交付', 'YOUR DIGITAL PASS', 'CURATED DIGITAL GOODS', '日常生活，升级版', '©', '澄境', '支付确认后自动发卡', '订单中安全查看卡密', '自营库存与优质供货'].some((s) => text.includes(s)),
+      footerText: document.querySelector('.footer') ? document.querySelector('.footer').textContent : '',
+      features,
+      footerHref: footerLink ? footerLink.getAttribute('href') : '',
+    };
+  });
+  check('home copy: eyebrow plain-text zhixuanpro.com', top.eyebrowText.includes('zhixuanpro.com') && !top.eyebrowHasLink, JSON.stringify(top));
+  check('home copy: new top/footer copy present', top.hasNew === true, JSON.stringify(top));
+  check('home copy: no old/glass copy', top.hasOld === false, JSON.stringify(top));
+  check('home copy: feature cards titles only', JSON.stringify(top.features) === JSON.stringify(['即刻交付', '私密可查', '精选好物']), JSON.stringify(top));
+  check('home copy: footer query link to #/query', top.footerHref === '#/query', JSON.stringify(top));
+  // 旧声明行只禁在页脚：顶部公告（#announce）是管理员可配的种子文案，含同句声明，不属本轮删除范围。
+  check('home copy: footer has no old disclaimer', !top.footerText.includes('虚拟商品一经交付不退换'), JSON.stringify(top));
+}
+
 // 付款块倒计时每秒更新与到期变红
 {
   const c = await page.evaluate(async () => {
