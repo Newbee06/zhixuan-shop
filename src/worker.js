@@ -966,6 +966,24 @@ async function prodsellerFetch(env, settings, path, opts) {
   var data = null; try { data = JSON.parse(text); } catch (e) { data = null; }
   return { status: res.status, ok: res.ok, data: data, text: text };
 }
+function normalizeActivationEmails(customerFields, qty) {
+  // ProdSeller：qty=1 用 email；qty>1 必须 emails 长度=quantity（官方 api-docs）。
+  // 不得用单个 activation_email 复制 N 份冒充多件。
+  qty = Math.max(1, Number(qty) || 1);
+  var cf = customerFields || {};
+  var list = [];
+  if (Array.isArray(cf.activation_emails) && cf.activation_emails.length) {
+    list = cf.activation_emails.map(function (e) { return String(e || '').trim(); });
+  } else {
+    var one = String(cf.activation_email || '').trim();
+    if (qty === 1 && one) list = [one];
+  }
+  if (list.length !== qty) return { ok: false, error: '激活类订单需要 ' + qty + ' 个激活邮箱（quantity>1 请传 activation_emails，长度必须等于 quantity）' };
+  for (var i = 0; i < list.length; i++) {
+    if (!list[i] || !validEmail(list[i])) return { ok: false, error: '激活邮箱无效（第 ' + (i + 1) + ' 个）' };
+  }
+  return { ok: true, list: list };
+}
 async function prodsellerCreateOrder(env, settings, order, product, customerFields) {
   // P1-1：门禁单点。所有调用方（fulfillAfterPayment、pollUpstreamActivations、管理员重试）都经此入口，
   // 门禁关闭时一律不发起真实采购；调用方按 403/pending_upstream 处理，不重复下单。
@@ -973,10 +991,14 @@ async function prodsellerCreateOrder(env, settings, order, product, customerFiel
   // 履约调用限流（第四轮 P0）：与同步共享 300/15min 计数。超限返回 429 语义，调用方按 pending_upstream + 下次轮询重试，
   // 不得因限流而误判为上游失败或重复采购。
   if (!(await checkUpstreamRateLimit(env))) return { status: 429, ok: false, data: null, text: '', error: '上游调用限流（300/15min），下次轮询重试' };
-  var body = { productId: product.prodseller_id || product.slug, quantity: order.quantity, email: String(customerFields.contact_email || customerFields.delivery_email || order.contact || '').trim() };
+  var qty = Math.max(1, Number(order.quantity) || 1);
+  // 非激活商品不附带 email 字段（官方仅在 requiresEmailActivation 时要求）。
+  var body = { productId: product.prodseller_id || product.slug, quantity: qty };
   if (Number(product.requires_email_activation) === 1) {
-    body.email = String(customerFields.activation_email || '').trim();
-    body.emails = [String(customerFields.activation_email || '').trim()];
+    var emailsNorm = normalizeActivationEmails(customerFields, qty);
+    if (!emailsNorm.ok) return { status: 400, ok: false, data: null, text: '', error: emailsNorm.error };
+    body.email = emailsNorm.list[0];
+    if (qty > 1) body.emails = emailsNorm.list;
   }
   var r = await prodsellerFetch(env, settings, '/orders', { method: 'POST', idempotencyKey: order.order_no, body: body });
   return r;
@@ -2791,10 +2813,19 @@ async function handleApi(req, env, url, ctx) {
     if (contactEmail) cust.contact_email = contactEmail;
     if (deliveryEmail) cust.delivery_email = deliveryEmail;
     if (Number(prod.requires_email_activation) === 1) {
-      if (!activationEmail || !validEmail(activationEmail)) return err('请填写正确的激活邮箱 activation_email（这是要开通的邮箱，填错无法开通）');
-      // P2-10：两次输入必须一致——确认字段缺失也拒绝（无法验证一致性，不得放行）。
-      if (!activationConfirm) return err('请再次输入激活邮箱确认（两次输入必须一致）');
-      if (activationConfirm !== activationEmail) return err('两次激活邮箱不一致，请重新确认');
+      // qty>1：官方要求 emails 长度=quantity；接受 activation_emails 数组，并落库供履约使用。
+      if (qty > 1) {
+        var actEmailsNorm = normalizeActivationEmails(cust, qty);
+        if (!actEmailsNorm.ok) return err(actEmailsNorm.error);
+        cust.activation_emails = actEmailsNorm.list;
+        cust.activation_email = actEmailsNorm.list[0];
+        activationEmail = actEmailsNorm.list[0];
+      } else {
+        if (!activationEmail || !validEmail(activationEmail)) return err('请填写正确的激活邮箱 activation_email（这是要开通的邮箱，填错无法开通）');
+        // P2-10：两次输入必须一致——确认字段缺失也拒绝（无法验证一致性，不得放行）。
+        if (!activationConfirm) return err('请再次输入激活邮箱确认（两次输入必须一致）');
+        if (activationConfirm !== activationEmail) return err('两次激活邮箱不一致，请重新确认');
+      }
       // P2-10：勾选确认后端独立校验——activation_confirm 须为真（body 或 customer_fields；
       // 前端下单请求必须发送 activation_confirm:true，见前端契约）。显式 false/缺失一律拒绝。
       var actFlag = body.activation_confirm;
@@ -3787,8 +3818,9 @@ async function handleApi(req, env, url, ctx) {
       // 上游商品按标题自动匹配 App 图标（仅新导入时设置；冲突重导入不覆盖人工选的图标）。
       var upIconKey = matchAppIconKey(String(title || ''));
       try {
-        // 冲突时不覆盖 title/description：标题与简介已人工翻译为中文，重新导入只更新价格/库存等
-        await env.DB.prepare('INSERT INTO products (slug, title, category, price_usdt, sell_price, cost_price, source, prodseller_id, requires_email_activation, delivery_method, stock_type, description, notice, form_fields, image_emoji, app_icon_key, sort, is_active, in_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET price_usdt=excluded.price_usdt, sell_price=excluded.sell_price, cost_price=excluded.cost_price, prodseller_id=excluded.prodseller_id, requires_email_activation=excluded.requires_email_activation, in_stock=excluded.in_stock').bind(slug, title, 'recharge', sell, sell, cost, 'prodseller', String(up.id || ''), reqAct, 'both', 'manual', String(up.description || ''), '', '[]', 'box', upIconKey, 0, 1, inSt).run();
+        // 冲突时不覆盖 title/description/sell_price/price_usdt/app_icon_key：
+        // 标题与简介可能已人工翻译；售价可能已管理员自定义，重新导入只刷新成本/库存/激活标记/上游 id。
+        await env.DB.prepare('INSERT INTO products (slug, title, category, price_usdt, sell_price, cost_price, source, prodseller_id, requires_email_activation, delivery_method, stock_type, description, notice, form_fields, image_emoji, app_icon_key, sort, is_active, in_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET cost_price=excluded.cost_price, prodseller_id=excluded.prodseller_id, requires_email_activation=excluded.requires_email_activation, in_stock=excluded.in_stock').bind(slug, title, 'recharge', sell, sell, cost, 'prodseller', String(up.id || ''), reqAct, 'both', 'manual', String(up.description || ''), '', '[]', 'box', upIconKey, 0, 1, inSt).run();
         imported++;
       } catch (e) {}
     }

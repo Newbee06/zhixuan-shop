@@ -174,6 +174,13 @@ const up200 = q('SELECT * FROM products WHERE prodseller_id=?', 'PS-200');
 assert(up100.sell_price === 12, 'PS-100 sell = 10*1.2 = ' + up100.sell_price);
 assert(up200.sell_price === 24, 'PS-200 sell = 20*1.2 = ' + up200.sell_price);
 assert(up200.requires_email_activation === 1, 'PS-200 requires activation');
+// Bot2 FAIL①：重新 import 不得覆盖管理员自定义售价
+db.prepare("UPDATE products SET sell_price=99, price_usdt=99 WHERE prodseller_id=?").run('PS-100');
+r = await call('POST', '/api/admin/upstream/import', { items: [{ id: 'PS-100' }] }, cookie);
+assert(r.json.ok, 're-import PS-100 ok');
+const up100re = q('SELECT * FROM products WHERE prodseller_id=?', 'PS-100');
+assert(Number(up100re.sell_price) === 99 && Number(up100re.price_usdt) === 99, 're-import preserves admin sell_price, got ' + up100re.sell_price + '/' + up100re.price_usdt);
+assert(Number(up100re.cost_price) === 10, 're-import still refreshes cost_price');
 // 402 / 409 products
 await call('POST', '/api/admin/products', { slug: 'ps-402', title: 'P402', category: 'recharge', price_usdt: 5, sell_price: 5, source: 'prodseller', prodseller_id: 'PS-402', delivery_method: 'both', stock_type: 'manual', form_fields: [] }, cookie);
 await call('POST', '/api/admin/products', { slug: 'ps-409', title: 'P409', category: 'recharge', price_usdt: 5, sell_price: 5, source: 'prodseller', prodseller_id: 'PS-409', delivery_method: 'both', stock_type: 'manual', form_fields: [] }, cookie);
@@ -218,8 +225,18 @@ let oC = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
 assert(oC.status === 'pending_activation', 'C after payment -> pending_activation, got ' + oC.status);
 assert(sentEmails.length === 0, 'C email removed: no activation email, onsite only');
 assert(oC.delivery_content === '', 'C no delivery before deliveredKey');
+const orderNoC = r.json.order.order_no;
+// Bot2 FAIL②：激活类 quantity>1 必须 activation_emails 长度=quantity；履约 body.emails 同步
+r = await orderCall({ product_id: up200.id, quantity: 2, customer_fields: { contact_email: 'buyer4b@test.example', activation_email: 'only-one@test.example', activation_email_confirm: 'only-one@test.example' }, contact: 'buyer4b@test.example', pay_method: 'Binance', pay_chain: 'BEP20', activation_confirm: true });
+assert(!r.json.ok && /activation_emails|quantity/i.test(r.json.error || ''), 'C2 qty=2 without activation_emails rejected: ' + JSON.stringify(r.json));
+r = await orderCall({ product_id: up200.id, quantity: 2, customer_fields: { contact_email: 'buyer4c@test.example', activation_emails: ['act1@test.example', 'act2@test.example'] }, contact: 'buyer4c@test.example', pay_method: 'Binance', pay_chain: 'BEP20', activation_confirm: true });
+assert(r.json.ok, 'C2 qty=2 with activation_emails accepted: ' + JSON.stringify(r.json));
+const ctxC2a = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxC2a); await ctxC2a.drain();
+const lastActPost = [...upstreamCalls].reverse().find((c) => c.body && c.body.productId === 'PS-200' && Number(c.body.quantity) === 2);
+assert(lastActPost && Array.isArray(lastActPost.body.emails) && lastActPost.body.emails.length === 2 && lastActPost.body.emails[0] === 'act1@test.example' && lastActPost.body.emails[1] === 'act2@test.example', 'C2 upstream POST emails length=2: ' + JSON.stringify(lastActPost && lastActPost.body));
+// 继续完成原 Test C 的第二次轮询（delivered）
 const ctxC2 = makeCtx(); await worker.scheduled({ cron: '*/1 * * * *' }, env, ctxC2); await ctxC2.drain();
-oC = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+oC = q('SELECT * FROM orders WHERE order_no=?', orderNoC);
 assert(oC.status === 'completed' && oC.delivery_content === 'UP-ACT-KEY', 'C poll -> delivered, got ' + oC.status + '/' + oC.delivery_content);
 // Test D: 402
 r = await orderCall({ product_id: p402.id, quantity: 1, customer_fields: { contact_email: 'buyer5@test.example' }, contact: 'buyer5@test.example', pay_method: 'Binance', pay_chain: 'BEP20' });
