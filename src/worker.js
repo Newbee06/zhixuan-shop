@@ -1288,6 +1288,55 @@ async function getTokenDecimals(fetchFn, rpcUrl, contract) {
   return null;
 }
 function isValidEvmAddress(s) { return /^0x[0-9a-fA-F]{40}$/.test(String(s || '')); }
+// ---- 收款方式配置（后台可配 + 每链独立开关，冻结规格 1A/2A/3A/4A/5A/6/7A）----
+// 存储：复用 settings 键值表（pay_xlayer_address / pay_xlayer_enabled / pay_bep20_address / pay_bep20_enabled），不新增 D1 表结构迁移。
+// 旧 usdt_addresses JSON 自动迁移：新字段缺失时从旧 JSON 取地址；开关默认 = 旧地址合法则开、否则关（保持现有行为，升级不突然关闭收款）。
+// 迁移为纯读取派生（GET 不写库，幂等）；管理员经新表单保存后新字段为准（新字段存在时优先于旧 JSON）。
+// 订单创建时快照 pay_method/pay_chain/pay_address（orders 表已有字段）；已有待付款订单的付款块与轮询均用订单自身快照，不受开关后续变化影响。
+function maskPayAddress(addr) { var s = String(addr || '').trim(); if (!s) return '(空)'; if (s.length <= 12) return s.slice(0, 4) + '...'; return s.slice(0, 6) + '...' + s.slice(-4); }
+function resolvePayConfig(settings) {
+  settings = settings || {};
+  var oldMap = {};
+  try { oldMap = JSON.parse(settings.usdt_addresses || '{}') || {}; } catch (e) { oldMap = {}; }
+  function one(addrKey, enabledKey, oldKey) {
+    var hasAddr = Object.prototype.hasOwnProperty.call(settings, addrKey);
+    var addr = hasAddr ? String(settings[addrKey] == null ? '' : settings[addrKey]).trim() : String(oldMap[oldKey] || '').trim();
+    var valid = isValidEvmAddress(addr);
+    var hasEnabled = Object.prototype.hasOwnProperty.call(settings, enabledKey);
+    var enabled = hasEnabled ? (String(settings[enabledKey]) === '1') : valid;
+    return { address: addr, enabled: enabled, valid: valid, hasNewAddress: hasAddr, hasExplicitEnabled: hasEnabled };
+  }
+  return {
+    xlayer: one('pay_xlayer_address', 'pay_xlayer_enabled', 'OKX|X Layer'),
+    bep20: one('pay_bep20_address', 'pay_bep20_enabled', 'Binance|BEP20')
+  };
+}
+function payConfigMethods(settings) {
+  var c = resolvePayConfig(settings);
+  return [
+    { pay_method: 'OKX', pay_chain: 'X Layer', address: c.xlayer.address, enabled: c.xlayer.enabled },
+    { pay_method: 'Binance', pay_chain: 'BEP20', address: c.bep20.address, enabled: c.bep20.enabled }
+  ];
+}
+function payConfigForCombo(settings, method, chain) {
+  var c = resolvePayConfig(settings);
+  if (chain === 'X Layer') return c.xlayer;
+  if (chain === 'BEP20') return c.bep20;
+  return null;
+}
+function buildPayConfigAuditNote(oldSettings, newSettings) {
+  var o = resolvePayConfig(oldSettings || {});
+  var n = resolvePayConfig(newSettings || {});
+  var parts = [];
+  function onePayDiff(label, oo, nn) {
+    if (oo.address === nn.address && oo.enabled === nn.enabled) return;
+    parts.push(label + '：地址 ' + maskPayAddress(oo.address) + '→' + maskPayAddress(nn.address) + '，开关 ' + (oo.enabled ? '开' : '关') + '→' + (nn.enabled ? '开' : '关'));
+  }
+  onePayDiff('X Layer', o.xlayer, n.xlayer);
+  onePayDiff('BEP20', o.bep20, n.bep20);
+  if (!parts.length) return '';
+  return '收款配置变更：' + parts.join('；');
+}
 // 金额（USDT 单位，如 5.0057）→ 原始最小单位（BigInt），按实际 decimals 精确换算，避免 float 精度丢失。
 // 18 位精度时 float 无法精确表示 5.0057e18（超出 2^53），必须用字符串拆分做整数运算。
 // 科学计数法（如 1e-7）先经 toFixed 展开为定点字符串再拆分。
@@ -2598,6 +2647,7 @@ async function handleApi(req, env, url, ctx) {
       order_notice: s.order_notice || '',
       tg_link: s.tg_link || '',
       usdt_addresses: addresses,
+      pay_config: { methods: payConfigMethods(s), pay_available: payConfigMethods(s).some(function (m) { return !!m.enabled && isValidEvmAddress(m.address); }) },
       pay_tutorials: tutorials,
       pay_methods: PAY_METHODS,
       pay_chains: PAY_CHAINS,
@@ -2769,13 +2819,15 @@ async function handleApi(req, env, url, ctx) {
 
     var contact = String(body.contact || cust.contact || '').trim();
     var settings = await getAllSettings(env);
-    var addrMap = {}; try { addrMap = JSON.parse(settings.usdt_addresses || '{}'); } catch (e) { addrMap = {}; }
-    var wallet = '';
-    wallet = addrMap[body.pay_method + '|' + body.pay_chain] || '';
+    // 收款配置由后端配置下发（新字段优先，缺失时从旧 usdt_addresses JSON 迁移派生）；订单创建时快照当时的 pay_method/pay_chain/pay_address。
+    var payEntry = payConfigForCombo(settings, body.pay_method, body.pay_chain);
+    var wallet = payEntry ? String(payEntry.address || '').trim() : '';
+    // 收款开关（1A/2A）：地址有效但开关已关闭 → 拒绝，明确提示“收款暂未开放”；开关只影响新订单，已有订单用自身快照，不在此处重校验。
+    if (payEntry && payEntry.valid && !payEntry.enabled) return err('收款暂未开放：该收款方式已关闭（' + body.pay_chain + '），请稍后再试或联系管理员');
     // 第九轮：所选方式没有有效收款地址时拒绝创建订单，不得生成无收款地址却显示下单成功的订单。
     // EVM 收款地址格式：0x + 40 位十六进制。历史订单不受影响（创建时不重校验旧订单）。
-    wallet = String(wallet || '').trim();
-    if (!/^0x[0-9a-fA-F]{40}$/.test(wallet)) return err('该支付方式暂未配置有效收款地址，请联系管理员配置后再下单');
+    // 文案同时含“收款暂未开放”与“收款地址”：既满足新提示口径，也兼容旧测试对“收款地址”文案的断言。
+    if (!/^0x[0-9a-fA-F]{40}$/.test(wallet)) return err('收款暂未开放：该支付方式暂未配置有效收款地址，请联系管理员配置后再下单');
     var orderNo = genOrderNo();
     // 查询密码（P0，必填）：买家下单时自设，6-64 位。存储 = 随机 16 字节 salt + PBKDF2(10万次) 哈希（与管理员密码同一方案），绝不存明文。
     // 无 salt 的 v14 遗留哈希按 legacy 处理（仅管理员流程）。新订单不再生成系统查单凭证（query_token_hash 写空）。
@@ -3831,6 +3883,8 @@ async function handleApi(req, env, url, ctx) {
     if (key === 'cny_rate') { var cr = Number(v); if (!isFinite(cr) || cr <= 0 || cr > 1000) return 'cny_rate 必须是 0~1000 之间的汇率'; return null; }
     if (key === 'poll_enabled') { if (v !== '0' && v !== '1') return 'poll_enabled 只能是 0 或 1'; return null; }
     if (key === 'tg_link') { if (v && v.indexOf('http') !== 0) return 'tg_link 必须是 URL'; return null; }
+    if (key === 'pay_xlayer_address' || key === 'pay_bep20_address') { if (v.trim() && !isValidEvmAddress(v.trim())) return '收款地址格式无效（须为 0x + 40 位十六进制）'; return null; }
+    if (key === 'pay_xlayer_enabled' || key === 'pay_bep20_enabled') { if (v !== '0' && v !== '1') return '收款开关只能是 0 或 1'; return null; }
     if (key === 'prodseller_base_url') { if (v && v.indexOf('https://prodseller.com/') !== 0) return 'prodseller_base_url 仅允许官方域名 https://prodseller.com/（自定义端点请经环境变量 PRODSELLER_BASE_URL 配置，避免 API Key 被发往非官方地址）'; return null; }
     if (key === 'prodseller_enabled') { if (v !== '0' && v !== '1') return 'prodseller_enabled 只能是 0 或 1（默认 0 关闭；开启前须在 RELEASE_READINESS 中提供上游真实行为验证证据）'; return null; }
     if (key === 'turnstile_enabled') { if (v !== '0' && v !== '1') return 'turnstile_enabled 只能是 0 或 1'; return null; }
@@ -3849,7 +3903,9 @@ async function handleApi(req, env, url, ctx) {
     return null;
   }
   if (path === '/api/admin/settings' && method === 'GET') {
-    return json({ ok: true, settings: await getAllSettings(env) });
+    var settingsForAdmin = await getAllSettings(env);
+    // API Key 只返回“已配置/未配置”布尔值，绝不返回 Key 明文。
+    return json({ ok: true, settings: settingsForAdmin, pay_config: { methods: payConfigMethods(settingsForAdmin), pay_available: payConfigMethods(settingsForAdmin).some(function (m) { return !!m.enabled && isValidEvmAddress(m.address); }) }, prodseller_api_key_configured: !!(env && env.PRODSELLER_API_KEY) });
   }
   if (path === '/api/admin/settings' && method === 'POST') {
     var sb = await parseJsonBody(req);
@@ -3860,6 +3916,19 @@ async function handleApi(req, env, url, ctx) {
     for (var si = 0; si < keys.length; si++) {
       var vErr = validateSetting(keys[si], entries[keys[si]]);
       if (vErr) return err(vErr);
+    }
+    // 收款开关：经普通设置接口写入 pay_* 键时，同样按合并后配置校验——开启某链时必须有有效地址；审计记掩码首尾，不记全文。
+    var payKeysInBatch = keys.filter(function (k) { return k.indexOf('pay_xlayer_') === 0 || k.indexOf('pay_bep20_') === 0; });
+    var oldSettingsForPayAudit = null;
+    var payAuditNoteGeneric = '';
+    if (payKeysInBatch.length) {
+      oldSettingsForPayAudit = await getAllSettings(env);
+      var mergedForPayGeneric = Object.assign({}, oldSettingsForPayAudit);
+      for (var mpk = 0; mpk < keys.length; mpk++) mergedForPayGeneric[keys[mpk]] = String(entries[keys[mpk]] == null ? '' : entries[keys[mpk]]);
+      var resolvedMergedGeneric = resolvePayConfig(mergedForPayGeneric);
+      if (resolvedMergedGeneric.xlayer.enabled && !resolvedMergedGeneric.xlayer.valid) return err('开启收款时必须配置有效的 X Layer 收款地址（0x + 40 位十六进制），已拒绝保存');
+      if (resolvedMergedGeneric.bep20.enabled && !resolvedMergedGeneric.bep20.valid) return err('开启收款时必须配置有效的 BEP20 收款地址（0x + 40 位十六进制），已拒绝保存');
+      payAuditNoteGeneric = buildPayConfigAuditNote(oldSettingsForPayAudit, mergedForPayGeneric);
     }
     // P1-3：后台设置校验——开启 Turnstile 时若 Site Key 或 Secret 缺失，拒绝保存启用（失败关闭）。
     // 按合并后配置判定（本次提交 + 现有配置），避免分两次提交绕过校验。
@@ -3874,9 +3943,73 @@ async function handleApi(req, env, url, ctx) {
     for (var sj = 0; sj < keys.length; sj++) {
       await env.DB.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind(keys[sj], String(entries[keys[sj]] == null ? '' : entries[keys[sj]])).run();
     }
-    var auditOkS = await logAudit(env, null, 'settings_update', '', '', '修改设置：' + keys.join('、'));
+    var auditOkS = await logAudit(env, null, 'settings_update', '', '', '修改设置：' + keys.join('、') + (payAuditNoteGeneric ? '；' + payAuditNoteGeneric : ''));
     if (!auditOkS) { console.error('audit failed: settings_update'); return json({ ok: true, audit_failed: true, warning: '设置已保存，但审计记录写入失败，请立即检查 admin_audit 表并手动补记（操作：settings_update）' }); }
     return json({ ok: true });
+  }
+  // ---- 管理员：收款方式配置（每链独立开关 + 地址，冻结规格 1A/2A/5A/6）----
+  // GET /api/admin/pay-config —— 返回解析后（新字段优先、缺失时旧 JSON 迁移派生）的收款配置 + 对接 API 状态（Key 仅布尔值）。
+  if (path === '/api/admin/pay-config' && method === 'GET') {
+    var sPay = await getAllSettings(env);
+    return json({ ok: true, pay_config: { methods: payConfigMethods(sPay), pay_available: payConfigMethods(sPay).some(function (m) { return !!m.enabled && isValidEvmAddress(m.address); }) }, prodseller: { base_url: String(sPay.prodseller_base_url || PRODSELLER_DEFAULT_BASE), api_key_configured: !!(env && env.PRODSELLER_API_KEY) } });
+  }
+  // POST /api/admin/pay-config —— 地址与开关一起保存；地址非法不保存；开启某链时必须有有效地址；审计记掩码首尾，不记全文。
+  // 接受扁平字段（xlayer_address / xlayer_enabled / bep20_address / bep20_enabled）、settings 键名（pay_xlayer_address 等）与 pay_config 对象三种写法。
+  if (path === '/api/admin/pay-config' && method === 'POST') {
+    var pb = await parseJsonBody(req);
+    var rawPay = (pb && typeof pb.pay_config === 'object' && pb.pay_config) ? pb.pay_config : pb;
+    function pickPayField() {
+      for (var pi = 0; pi < arguments.length; pi++) { var kk = arguments[pi]; if (rawPay && rawPay[kk] !== undefined) return rawPay[kk]; if (pb && pb[kk] !== undefined) return pb[kk]; }
+      return undefined;
+    }
+    var xlayerAddrRaw = pickPayField('pay_xlayer_address', 'xlayer_address');
+    if (xlayerAddrRaw === undefined && rawPay && rawPay.xlayer && typeof rawPay.xlayer === 'object') xlayerAddrRaw = rawPay.xlayer.address;
+    var xlayerEnRaw = pickPayField('pay_xlayer_enabled', 'xlayer_enabled');
+    if (xlayerEnRaw === undefined && rawPay && rawPay.xlayer && typeof rawPay.xlayer === 'object') xlayerEnRaw = rawPay.xlayer.enabled;
+    var bep20AddrRaw = pickPayField('pay_bep20_address', 'bep20_address');
+    if (bep20AddrRaw === undefined && rawPay && rawPay.bep20 && typeof rawPay.bep20 === 'object') bep20AddrRaw = rawPay.bep20.address;
+    var bep20EnRaw = pickPayField('pay_bep20_enabled', 'bep20_enabled');
+    if (bep20EnRaw === undefined && rawPay && rawPay.bep20 && typeof rawPay.bep20 === 'object') bep20EnRaw = rawPay.bep20.enabled;
+    function normPayEnabled(v, label) {
+      if (v === true || v === 1 || v === '1' || v === 'true') return '1';
+      if (v === false || v === 0 || v === '0' || v === 'false') return '0';
+      return null;
+    }
+    var updates = {};
+    if (xlayerAddrRaw !== undefined) updates.pay_xlayer_address = String(xlayerAddrRaw == null ? '' : xlayerAddrRaw).trim();
+    if (xlayerEnRaw !== undefined) { var nx = normPayEnabled(xlayerEnRaw); if (nx === null) return err('X Layer 收款开关只能是 0 或 1'); updates.pay_xlayer_enabled = nx; }
+    if (bep20AddrRaw !== undefined) updates.pay_bep20_address = String(bep20AddrRaw == null ? '' : bep20AddrRaw).trim();
+    if (bep20EnRaw !== undefined) { var nb = normPayEnabled(bep20EnRaw); if (nb === null) return err('BEP20 收款开关只能是 0 或 1'); updates.pay_bep20_enabled = nb; }
+    var updateKeys = Object.keys(updates);
+    if (!updateKeys.length) return err('未提供任何收款配置字段');
+    for (var uk = 0; uk < updateKeys.length; uk++) { var uErr = validateSetting(updateKeys[uk], updates[updateKeys[uk]]); if (uErr) return err(uErr); }
+    var oldPaySettings = await getAllSettings(env);
+    var mergedPay = Object.assign({}, oldPaySettings, updates);
+    var resolvedMergedPay = resolvePayConfig(mergedPay);
+    if (resolvedMergedPay.xlayer.enabled && !resolvedMergedPay.xlayer.valid) return err('开启收款时必须配置有效的 X Layer 收款地址（0x + 40 位十六进制），已拒绝保存');
+    if (resolvedMergedPay.bep20.enabled && !resolvedMergedPay.bep20.valid) return err('开启收款时必须配置有效的 BEP20 收款地址（0x + 40 位十六进制），已拒绝保存');
+    for (var wk = 0; wk < updateKeys.length; wk++) {
+      await env.DB.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind(updateKeys[wk], String(updates[updateKeys[wk]])).run();
+    }
+    var payNote = buildPayConfigAuditNote(oldPaySettings, mergedPay) || '收款配置保存（无变更）';
+    var auditOkPay = await logAudit(env, null, 'settings_update', '', '', payNote);
+    if (!auditOkPay) { console.error('audit failed: settings_update pay-config'); return json({ ok: true, pay_config: { methods: payConfigMethods(mergedPay), pay_available: payConfigMethods(mergedPay).some(function (m) { return !!m.enabled && isValidEvmAddress(m.address); }) }, audit_failed: true, warning: '设置已保存，但审计记录写入失败，请立即检查 admin_audit 表并手动补记（操作：settings_update）' }); }
+    return json({ ok: true, pay_config: { methods: payConfigMethods(mergedPay), pay_available: payConfigMethods(mergedPay).some(function (m) { return !!m.enabled && isValidEvmAddress(m.address); }) } });
+  }
+  // POST /api/admin/prodseller/test-connection —— 测试连接（冻结规格 7A）：只调一次 ProdSeller 只读接口（/balance），绝不下单/采购。
+  // 未配置 Key 时明确提示“未配置”，不发起真实调用；已配置时返回成功/失败 + 失败原因，不泄露 Key。鉴权走上方 requireAdmin 网关；另加 IP 限流（10 次/10 分钟，防滥用刷接口）。
+  if (path === '/api/admin/prodseller/test-connection' && method === 'POST') {
+    var psConfigured = !!(env && env.PRODSELLER_API_KEY);
+    if (!psConfigured) return json({ ok: false, configured: false, error: '未配置：ProdSeller API Key 未配置（改 Key 走 CF 面板或安全流程），未发起真实调用' }, 400);
+    var testIp = getClientIp(req);
+    var testWin = new Date(Date.now() - 10 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+    try { await env.DB.prepare('DELETE FROM pay_rate WHERE created_at < ?').bind(testWin).run(); } catch (e) {}
+    var testIns = await env.DB.prepare('INSERT INTO pay_rate (key, created_at) SELECT ?, ? WHERE (SELECT COUNT(*) FROM pay_rate WHERE key = ?) < 10').bind('prodseller_test:' + testIp, nowISO(), 'prodseller_test:' + testIp).run().catch(function () { return null; });
+    if (!testIns || !testIns.meta || testIns.meta.changes !== 1) return json({ ok: false, configured: true, error: '测试连接过于频繁，请 10 分钟后再试' }, 429);
+    var settingsT = await getAllSettings(env);
+    var tr = await prodsellerFetch(env, settingsT, '/balance', { method: 'GET' });
+    if (!tr.ok) return json({ ok: false, configured: true, error: '上游连接失败 HTTP ' + tr.status + (tr.error ? '：' + tr.error : '') + '（未触发采购）' }, 502);
+    return json({ ok: true, configured: true, balance: tr.data });
   }
   if (path === '/api/admin/cleanup' && method === 'POST') {
     await cleanupExpired(env);

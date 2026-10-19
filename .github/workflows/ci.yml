@@ -152,6 +152,8 @@ jobs:
         run: node tests/review-p1-backend-test.mjs
       - name: TXID race deterministic test (P1-1 claim_token + lease-first, P1-2 global dedup, consumed-TXID protection)
         run: node tests/txid-race-deterministic-test.mjs
+      - name: Pay config test (per-chain switches, old-JSON migration, address validation, ProdSeller test-connection)
+        run: node tests/pay-config-test.mjs
       - name: Review config test (CI secret scan patterns, .gitignore, untracked secrets)
         run: node tests/review-config-test.mjs
       - name: Job summary

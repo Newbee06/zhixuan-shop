@@ -573,14 +573,35 @@ function renderList(){
   var pc = el('prodCount');
   if (pc) pc.textContent = list.length + ' 种产品';
 }
+// 收款方式由后端配置下发（CFG.pay_config.methods，含每链开关）；前端绝不硬编码收款地址、开关默认值与上游 API 地址/Key。
+// 无 pay_config 时回退双链全开（兼容旧后端）；后端返回 methods 且全部关闭时返回空数组，付款页显示“收款暂未开放”。
+function enabledPayOptions(){
+  var ms = (typeof CFG !== 'undefined' && CFG && CFG.pay_config && CFG.pay_config.methods) || null;
+  if (!ms || !ms.length) return [{ pay_method: 'OKX', pay_chain: 'X Layer', enabled: true }, { pay_method: 'Binance', pay_chain: 'BEP20', enabled: true }];
+  return ms.filter(function(m){ return !!m.enabled; });
+}
+function payOptionButtonHTML(m, isOn){
+  var cls = 'pill pay-opt' + (isOn ? ' on' : '');
+  if (m.pay_chain === 'X Layer') return '<button type="button" class="' + cls + '" data-pm="OKX" data-pc="X Layer" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="2.5" y="13" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="13" width="8.5" height="8.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>USDT0 \u00b7 X Layer</button>';
+  if (m.pay_chain === 'BEP20') return '<button type="button" class="' + cls + '" data-pm="Binance" data-pc="BEP20" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.6 22.4 12 12 22.4 1.6 12Z" fill="#F0B90B"/><path d="M12 7.2 16.8 12 12 16.8 7.2 12Z" fill="#fff"/></svg>USDT \u00b7 BEP20</button>';
+  return '';
+}
+function payOptionsHTML(){
+  var opts = enabledPayOptions();
+  if (!opts.length) return '<div class="warn-box"><b>' + ic('warn') + ' 收款暂未开放</b><p class="muted" style="margin:6px 0 0">收款暂未开放，请稍后再试或联系管理员。</p></div>';
+  var h = '';
+  for (var i = 0; i < opts.length; i++) h += payOptionButtonHTML(opts[i], i === 0);
+  return h;
+}
 async function renderProduct(id){
   var r = await api('/api/products/' + id);
   if (!r.ok){ el('app').innerHTML = '<div class="muted">商品不存在 · <a href="#/">回商城</a></div>'; return; }
   var p = r.product;
   window._curProduct = p;
-  window._payMethod = 'OKX';
-  window._payChain = 'X Layer';
-  var payOpts = '<button type="button" class="pill pay-opt on" data-pm="OKX" data-pc="X Layer" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="2.5" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="2.5" y="13" width="8.5" height="8.5" rx="1.5" fill="currentColor"/><rect x="13" y="13" width="8.5" height="8.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="2"/></svg>USDT0 · X Layer</button><button type="button" class="pill pay-opt" data-pm="Binance" data-pc="BEP20" onclick="selectPayOption(this)"><svg class="pay-logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 1.6 22.4 12 12 22.4 1.6 12Z" fill="#F0B90B"/><path d="M12 7.2 16.8 12 12 16.8 7.2 12Z" fill="#fff"/></svg>USDT · BEP20</button>';
+  var _enabledPay = enabledPayOptions();
+  window._payMethod = _enabledPay.length ? _enabledPay[0].pay_method : '';
+  window._payChain = _enabledPay.length ? _enabledPay[0].pay_chain : '';
+  var payOpts = payOptionsHTML();
   var fh = '';
   for (var i = 0; i < p.form_fields.length; i++){ var f = p.form_fields[i]; if (isLegacyContactField(f)) continue; fh += '<label>' + escH(f.label) + (f.required ? ' *' : '') + '</label><input data-k="' + escH(f.key) + '" data-label="' + escH(f.label) + '"' + (f.required ? ' data-required="1"' : '') + ' placeholder="' + escH(f.placeholder || '') + '">'; }
   var inSt = Number(p.in_stock == null ? 1 : p.in_stock);
@@ -616,7 +637,7 @@ async function renderProduct(id){
   html += '<div class="pay-card"><div class="pay-card-title">' + ic('cart') + ' 付款</div><div class="pills pay-options" id="payOptions">' + payOpts + '</div></div>';
   html += actHint;
   html += '<div class="total-box"><span>合计 <span id="stickyQty">1</span> 件</span><span><b id="totalPrice" style="font-size:20px">' + fmtCNY(p.price_usdt) + '</b> <span class="muted" id="totalUsdt">约 ' + Number(p.price_usdt||0).toFixed(2) + ' USDT</span></span></div>';
-  html += '<div style="margin-top:14px">' + (inSt === 0 ? '<button class="btn block" disabled style="background:rgba(127,127,127,.3);cursor:not-allowed">缺货 · 补货中</button>' : '<button class="btn block" data-pid="' + p.id + '" onclick="submitOrder(this.dataset.pid)">立即购买</button>') + '</div>';
+  html += '<div style="margin-top:14px">' + (inSt === 0 ? '<button class="btn block" disabled style="background:rgba(127,127,127,.3);cursor:not-allowed">缺货 · 补货中</button>' : (!_enabledPay.length ? '<button class="btn block" disabled style="background:rgba(127,127,127,.3);cursor:not-allowed">收款暂未开放</button>' : '<button class="btn block" data-pid="' + p.id + '" onclick="submitOrder(this.dataset.pid)">立即购买</button>')) + '</div>';
   html += '</div></div>';
   // Below: detail blocks full width (intro + usage + order notice)
   var useTxt = p.notice || '按交付内容里的说明使用即可。如交付内容包含兑换链接或操作步骤，按步骤完成；遇到问题先在查单页核对订单状态。';
@@ -653,6 +674,12 @@ function validateDynamicFields(){ var ins = document.querySelectorAll('[data-k]'
 async function submitOrder(pid){
   // 数量提交前钳 1–99（P2-10）。
   var qty = clampQty();
+  // 收款开关（1A/2A）：双关时拒绝下单并明确提示；所选方式已关闭时同样拒绝（后端为最终权威校验，前端先拦截省一次请求）。
+  var _payOptsNow = enabledPayOptions();
+  if (!_payOptsNow.length){ toast('收款暂未开放，请稍后再试或联系管理员', 'error'); return; }
+  var _selOk = false;
+  for (var _si = 0; _si < _payOptsNow.length; _si++){ if (_payOptsNow[_si].pay_method === (window._payMethod || '') && _payOptsNow[_si].pay_chain === (window._payChain || '')) _selOk = true; }
+  if (!_selOk){ toast('收款暂未开放：该收款方式已关闭，请选择其他收款方式', 'error'); return; }
   // ---- 1) 全部字段校验在发请求之前完成 ----
   var fieldErr = validateDynamicFields();
   if (fieldErr){ toast(fieldErr, 'error'); return; }
@@ -1684,21 +1711,61 @@ async function renderAdminSettings(){
   var sr = await api('/api/admin/settings');
   if (!sr.ok){ el('adminBody').innerHTML = '<div class="adm-empty">加载失败：' + escH(sr.error) + '</div>'; return; }
   var sv = sr.settings || {};
+  var payMethods = (sr.pay_config && sr.pay_config.methods) || [];
+  function payEntry(chain){ for (var i = 0; i < payMethods.length; i++){ if (payMethods[i].pay_chain === chain) return payMethods[i]; } return { address: '', enabled: false }; }
+  var payX = payEntry('X Layer');
+  var payB = payEntry('BEP20');
+  var keyConfigured = !!sr.prodseller_api_key_configured;
   var h = '<div class="admin-page"><div class="admin-page-head"><h2>系统设置</h2></div>';
   h += '<p class="muted">JSON 配置保存前会校验结构与字段，错误时会指出具体字段，不会静默保存无效配置。未修改的配置不会因界面未展示字段而被清空。敏感密钥请走 Secrets，不要写进设置。</p>';
   h += '<div class="adm-card"><h3>基础设置</h3>' + adminSettingInput(sv, 'site_name', '站点名称', '前台显示的站名') + adminSettingField(sv, 'announcement', '公告', 2, '前台顶部公告') + adminSettingField(sv, 'order_notice', '下单须知', 3, '显示在商品详情页') + adminSettingInput(sv, 'tg_link', '客服 / TG 链接', '必须是 http(s) 开头的 URL') + '</div>';
-  h += '<div class="adm-card"><h3>收款设置</h3>' + adminSettingField(sv, 'usdt_addresses', '收款地址 JSON', 4, '键必须是“支付方式|链”格式，仅支持 OKX|X Layer、Binance|BEP20，如 {"OKX|X Layer":"0x…","Binance|BEP20":"0x…"}；旧键保留在库但新订单不再使用') + adminSettingInput(sv, 'binance_uid', '币安 UID', '历史订单恢复用，新订单不再支持币安 UID 站内转账') + adminSettingField(sv, 'pay_tutorials', '支付教程 JSON', 2, '键是支付方式，值是教程 URL') + '</div>';
+  h += '<div class="adm-card"><h3>收款设置</h3><p class="muted">每链独立开关；地址与开关一起保存，保存时写审计日志（地址记掩码首尾，不记全文）。两个都关闭时付款页显示“收款暂未开放”，商品不可下单；开关只影响新订单，已有待付款订单仍按创建时的收款方式显示。</p>'
+    + '<div class="adm-field"><label>X Layer（OKX）收款地址（完整地址）</label><input id="payXlayerAddress" value="' + escH(payX.address || '') + '" placeholder="0x + 40 位十六进制"><div class="hint">买家按此地址转账；非法地址不保存。</div></div>'
+    + '<div class="adm-field"><label><input type="checkbox" id="payXlayerEnabled" style="width:auto"' + (payX.enabled ? ' checked' : '') + '> 开启 X Layer 收款</label></div>'
+    + '<div class="adm-field"><label>BEP20（Binance）收款地址（完整地址）</label><input id="payBep20Address" value="' + escH(payB.address || '') + '" placeholder="0x + 40 位十六进制"><div class="hint">买家按此地址转账；非法地址不保存。</div></div>'
+    + '<div class="adm-field"><label><input type="checkbox" id="payBep20Enabled" style="width:auto"' + (payB.enabled ? ' checked' : '') + '> 开启 BEP20 收款</label></div>'
+    + '<div><button class="btn" id="savePayConfigBtn" onclick="adminSavePayConfig()">保存收款设置</button></div>'
+    + adminSettingInput(sv, 'binance_uid', '币安 UID', '历史订单恢复用，新订单不再支持币安 UID 站内转账') + adminSettingField(sv, 'pay_tutorials', '支付教程 JSON', 2, '键是支付方式，值是教程 URL') + '</div>';
   h += '<div class="adm-card"><h3>链上到账轮询</h3>' + adminSettingInput(sv, 'poll_enabled', '轮询开关', '1 开 / 0 关（关了只走手动 TXID / 管理员确认）') + adminSettingField(sv, 'rpc_urls', 'RPC 地址 JSON', 3, '键是链，值是 URL 数组，如 {"X Layer":["https://xlayerrpc.okx.com"],"BEP20":["https://bsc-dataseed.binance.org"]}') + adminSettingField(sv, 'usdt_contracts', 'USDT 合约 JSON', 3, '键是链，值是合约地址；X Layer 默认 USDT0，BEP20 默认 Binance-Peg USDT（18 位精度）') + adminSettingField(sv, 'chain_confirmations', '确认数 JSON', 2, '键是链，值是确认数，如 {"X Layer":1,"BEP20":15}；未达确认数不入账、不履约') + '</div>';
-  h += '<div class="adm-card"><h3>上游与汇率</h3>' + adminSettingInput(sv, 'prodseller_base_url', '上游 Base URL', 'Env 优先于此设置') + adminSettingInput(sv, 'upstream_markup', '上游加价倍率', '导入售价 = cost × markup + fixed，默认 1.2', 'number') + adminSettingInput(sv, 'upstream_fixed', '上游固定加价', '默认 0', 'number') + adminSettingInput(sv, 'cny_rate', 'CNY 汇率', '前台 CNY 展示汇率，当前 7.2', 'number') + '</div>';
+  h += '<div class="adm-card"><h3>对接商品 API</h3>'
+    + adminSettingInput(sv, 'prodseller_base_url', '上游 Base URL', '存 D1 settings；Env 优先于此设置')
+    + '<div class="adm-field"><label>API Key 状态</label><div class="muted">' + (keyConfigured ? '已配置' : '未配置') + '</div><div class="hint">改 Key 走 CF 面板或安全流程；后台只显示“已配置/未配置”，绝不显示 Key 明文。</div></div>'
+    + '<div><button class="btn ghost" id="testProdSellerBtn" onclick="adminTestProdSeller()">测试连接</button></div><div id="prodsellerTestRes" style="margin-top:8px"></div>'
+    + '<p class="muted">测试连接只调一次 ProdSeller 只读接口（查余额），绝不下单；返回成功/失败 + 失败原因，不泄露 Key。</p></div>';
+  h += '<div class="adm-card"><h3>上游与汇率</h3>' + adminSettingInput(sv, 'upstream_markup', '上游加价倍率', '导入售价 = cost × markup + fixed，默认 1.2', 'number') + adminSettingInput(sv, 'upstream_fixed', '上游固定加价', '默认 0', 'number') + adminSettingInput(sv, 'cny_rate', 'CNY 汇率', '前台 CNY 展示汇率，当前 7.2', 'number') + '</div>';
   h += '<div><button class="btn" id="saveSettingsBtn" onclick="adminSaveSettings()">保存设置</button></div></div>';
   el('adminBody').innerHTML = h;
+}
+async function adminSavePayConfig(){
+  var addrX = el('payXlayerAddress') ? el('payXlayerAddress').value.trim() : '';
+  var enX = el('payXlayerEnabled') ? (el('payXlayerEnabled').checked ? '1' : '0') : '0';
+  var addrB = el('payBep20Address') ? el('payBep20Address').value.trim() : '';
+  var enB = el('payBep20Enabled') ? (el('payBep20Enabled').checked ? '1' : '0') : '0';
+  var evmRe = /^0x[0-9a-fA-F]{40}$/;
+  if (addrX && !evmRe.test(addrX)){ toast('X Layer 收款地址格式无效（须为 0x + 40 位十六进制）', 'error'); return; }
+  if (addrB && !evmRe.test(addrB)){ toast('BEP20 收款地址格式无效（须为 0x + 40 位十六进制）', 'error'); return; }
+  var btn = el('savePayConfigBtn'); setBtnLoading(btn, true);
+  var r = await api('/api/admin/pay-config', 'POST', { xlayer_address: addrX, xlayer_enabled: enX, bep20_address: addrB, bep20_enabled: enB });
+  setBtnLoading(btn, false);
+  if (!r.ok){ toast(r.error || '保存失败', 'error'); return; }
+  toast('收款设置已保存', 'success');
+  renderAdminSettings();
+}
+async function adminTestProdSeller(){
+  var btn = el('testProdSellerBtn'); setBtnLoading(btn, true);
+  var r = await api('/api/admin/prodseller/test-connection', 'POST', {});
+  setBtnLoading(btn, false);
+  var box = el('prodsellerTestRes');
+  if (!box) return;
+  if (!r.ok){ box.innerHTML = '<div class="warn-box">测试失败：' + escH(r.error || '连接失败') + '</div>'; return; }
+  box.innerHTML = '<div class="muted">测试成功：已连接 ProdSeller，余额：' + escH(JSON.stringify(r.balance == null ? '' : r.balance)) + '</div>';
 }
 async function adminSaveSettings(){
   var obj = {};
   var tas = document.querySelectorAll('[data-sk]');
   for (var i = 0; i < tas.length; i++) obj[tas[i].getAttribute('data-sk')] = tas[i].value;
   // 前端先做一层 JSON 校验，错误时指出字段，不发请求
-  var jsonKeys = ['usdt_addresses', 'pay_tutorials', 'rpc_urls', 'usdt_contracts', 'chain_confirmations'];
+  var jsonKeys = ['pay_tutorials', 'rpc_urls', 'usdt_contracts', 'chain_confirmations'];
   for (var j = 0; j < jsonKeys.length; j++){
     var k = jsonKeys[j];
     if (obj[k] !== undefined) { try { var parsed = JSON.parse(obj[k] || '{}'); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('x'); } catch (e) { toast('设置 ' + k + ' 不是合法 JSON 对象', 'error'); return; } }
