@@ -279,6 +279,20 @@ let oT = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
 assert(oT.status === 'cancelled', 'timeout -> cancelled, got ' + oT.status);
 // Idempotency-Key check: all upstream POSTs used order_no
 assert(upstreamCalls.every((c) => c.idem && c.idem.startsWith('AIS')), 'Idempotency-Key = order_no on all upstream POSTs');
+// Bot5 S7：安全响应头——HTML / API / 404 全部带齐；HTML CSP 兼容内联脚本、data: 图片、二维码与 Turnstile
+for (const [pth, isHtml] of [['/', true], ['/api/config', false], ['/no-such-path', false]]) {
+  const shCtx = makeCtx();
+  const shRes = await worker.fetch(new Request('http://test' + pth), env, shCtx); await shCtx.drain();
+  const hh = shRes.headers;
+  const csp = hh.get('content-security-policy') || '';
+  assert(hh.get('x-frame-options') === 'DENY' && hh.get('x-content-type-options') === 'nosniff' && hh.get('referrer-policy') === 'no-referrer' && /max-age=\d+/.test(hh.get('strict-transport-security') || '') && /frame-ancestors 'none'/.test(csp), 'S7 security headers present on ' + pth + ' (status ' + shRes.status + ')');
+  if (isHtml) {
+    assert(/script-src[^;]*'unsafe-inline'[^;]*https:\/\/challenges\.cloudflare\.com/.test(csp) && /img-src[^;]*data:[^;]*https:\/\/api\.qrserver\.com/.test(csp) && /frame-src[^;]*https:\/\/challenges\.cloudflare\.com/.test(csp) && /object-src 'none'/.test(csp), 'S7 HTML CSP compatible with inline scripts / data: images / QR / Turnstile: ' + csp);
+    assert(/text\/html/.test(hh.get('content-type') || '') && hh.get('cache-control') === 'no-store', 'S7 HTML keeps original content-type and cache-control');
+  } else {
+    assert(csp === "default-src 'none'; frame-ancestors 'none'", 'S7 non-HTML strict CSP on ' + pth);
+  }
+}
 // Captcha tests
 r = await call('GET', '/api/captcha');
 assert(r.json.ok && r.json.captcha_id && r.json.svg.includes('<svg'), 'captcha GET returns svg');

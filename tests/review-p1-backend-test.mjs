@@ -775,6 +775,8 @@ await t.call('POST', '/api/admin/products', { title: '手动商品-P2-2', catego
   check('P3-7: /secret wrong-length password -> 401 generic', r.status === 401 && r.json && !r.json.ok, JSON.stringify(r.json));
   r = await t.call('POST', '/api/orders/' + ordC.order_no + '/secret', { password: 'TestPass123' });
   check('P3-7: /secret correct password -> ok', r.json && r.json.ok === true && r.json.delivery_content === 'P37-CARD-1', JSON.stringify(r.json));
+  r = await t.call('GET', '/api/orders/' + ordC.order_no);
+  check('Q-low: anonymous GET summary has no internal id / delivery', r.status === 200 && r.json.order && !('id' in r.json.order) && !r.json.order.delivery_content && r.json.order.order_no === ordC.order_no, JSON.stringify(r.json));
 }
 
 // ================= P2-7：管理端卡密列表掩码 + reveal =================
