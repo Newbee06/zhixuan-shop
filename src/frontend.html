@@ -371,9 +371,10 @@ async function api(p, m, b){
     if (res.status === 401) {
       // P3-22：管理端会话过期/撤销时及时显登录界面（不含登录/自检接口自身，避免递归）。
       // 403 不走此分支：权限不足/需改密由调用方按文案提示，不当作未登录。
-      if (p.indexOf('/api/admin/') === 0 && p.indexOf('/api/admin/login') !== 0 && p.indexOf('/api/admin/me') !== 0 && typeof location !== 'undefined' && location.hash === '#/admin' && !window._adminUnauthRedirecting) {
+      // 后台入口是 pathname /fuyan（兼容旧 #/admin、#/fuyan、/admin）；401 时停在该登录页，地址栏规范为 /fuyan。
+      if (p.indexOf('/api/admin/') === 0 && p.indexOf('/api/admin/login') !== 0 && p.indexOf('/api/admin/me') !== 0 && adminEntryActive() && !window._adminUnauthRedirecting) {
         window._adminUnauthRedirecting = true;
-        setTimeout(function(){ window._adminUnauthRedirecting = false; try { renderAdmin(); } catch (e) {} }, 0);
+        setTimeout(function(){ window._adminUnauthRedirecting = false; try { showAdminUrl(); renderAdmin(); } catch (e) {} }, 0);
       }
       return { ok: false, error: (j && j.error) || '未登录或凭证已过期', _http: 401, _unauth: true };
     }
@@ -564,8 +565,78 @@ function resetTurnstile(scope){ TS.tokens[scope] = ''; if (window.turnstile && t
 function clearTurnstileWidgets(){ TS.widgets = {}; TS.tokens = {}; TS.poll = 0; }
 // 兼容旧全局回调（历史 .cf-turnstile 声明式用法已移除，保留空壳防旧内联回调报错）。
 function onTurnstileDone(token){ TS.tokens['order'] = token || ''; }
-function route(){ stopCountdown(); clearTurnstileWidgets(); var h = location.hash || '#/'; if (h.indexOf('#/product/') === 0) { renderProduct(h.split('/')[2]); } else if (h.indexOf('#/success/') === 0) { renderSuccess(h.split('/')[2]); } else if (h === '#/query') { renderQuery(); } else if (h === '#/admin') { renderAdmin(); } else { renderShop(); } }
+function rawPath(){
+  var p = (typeof location !== 'undefined' && location.pathname) ? location.pathname : '/';
+  return p || '/';
+}
+function storePath(){
+  var p = rawPath();
+  if (p.length > 1 && p.charAt(p.length - 1) === '/') p = p.slice(0, -1);
+  return p || '/';
+}
+function isAdminPathname(p){ return p === '/fuyan' || p === '/admin'; }
+function isAdminHash(h){ return h === '#/fuyan' || h === '#/admin'; }
+function adminEntryActive(){
+  if (typeof location === 'undefined') return false;
+  return isAdminPathname(storePath()) || isAdminHash(location.hash || '');
+}
+function historySet(url, mode){
+  try {
+    if (mode === 'push') history.pushState(null, '', url);
+    else history.replaceState(null, '', url);
+    return true;
+  } catch (e) { return false; }
+}
+// 进入后台时把地址栏规范成 pathname /fuyan（无 hash）。旧入口 #/admin、/admin 用 replace 跳过来。
+function showAdminUrl(){
+  if (typeof location === 'undefined') return;
+  if (rawPath() === '/fuyan' && !location.hash) return;
+  if (!historySet('/fuyan', 'replace')) {
+    try { location.replace('/fuyan'); } catch (e) {}
+  }
+}
+// 离开后台回商城：地址恢复为 /（history API），再按当前地址渲染。
+function leaveAdmin(){
+  if (!historySet('/', 'push')) { location.href = '/'; return; }
+  route();
+}
+function route(){
+  stopCountdown();
+  clearTurnstileWidgets();
+  var p = storePath();
+  var h = location.hash || '';
+  // pathname /fuyan 优先于 hash。/admin、#/admin、#/fuyan 都规范到 /fuyan 再进后台。
+  if (p === '/fuyan' || p === '/admin' || h === '#/fuyan' || h === '#/admin') {
+    showAdminUrl();
+    renderAdmin();
+    return;
+  }
+  if (h.indexOf('#/product/') === 0) { renderProduct(h.split('/')[2]); }
+  else if (h.indexOf('#/success/') === 0) { renderSuccess(h.split('/')[2]); }
+  else if (h === '#/query') { renderQuery(); }
+  else { renderShop(); }
+}
 window.addEventListener('hashchange', route);
+window.addEventListener('popstate', route);
+// 人已在 /fuyan（或尚未跳走的 /admin）时，顶栏等 hash 链接只改 hash、pathname 仍会压过 hash。
+// 点商城/查询等链接时改回 / 或 /#/…，商品页 hash 路由保持原样。
+document.addEventListener('click', function(ev){
+  if (!isAdminPathname(storePath())) return;
+  var t = ev.target;
+  var a = null;
+  while (t && t !== document) {
+    if (t.tagName === 'A') { a = t; break; }
+    t = t.parentNode;
+  }
+  if (!a) return;
+  var href = a.getAttribute('href') || '';
+  if (!href || href.charAt(0) !== '#') return;
+  ev.preventDefault();
+  if (href === '#/fuyan' || href === '#/admin') { showAdminUrl(); renderAdmin(); return; }
+  var target = (href === '#/' || href === '#') ? '/' : ('/' + href);
+  if (!historySet(target, 'push')) { location.href = target; return; }
+  route();
+});
 function renderShop(){
   curQ = '';
   var html = homeHeroHTML();
@@ -1063,7 +1134,11 @@ async function adminChangePw(){
   if (!r.ok){ toast(r.error, 'error'); return; }
   toast('改密成功', 'success'); renderAdmin();
 }
-async function adminLogout(){ await api('/api/admin/logout', 'POST', {}); location.hash = '#/'; location.reload(); }
+async function adminLogout(){
+  await api('/api/admin/logout', 'POST', {});
+  if (!historySet('/', 'replace')) { location.href = '/'; return; }
+  location.reload();
+}
 function statusPill(s){
   var cls = 'gray';
   if (s === 'pending_payment') cls = 'orange';
@@ -1106,7 +1181,7 @@ async function renderAdminHome(){
   var html = '<div class="admin-layout"><div class="admin-backdrop" onclick="adminToggleSide(false)"></div>';
   html += '<aside class="admin-side"><div class="admin-side-head"><b>管理后台</b><button class="admin-side-close" onclick="adminToggleSide(false)">✕</button></div>';
   html += adminNavHTML();
-  html += '<div class="admin-side-foot"><button class="btn small ghost" onclick="adminLogout()">退出登录</button><a href="#/" class="muted">← 返回商城</a></div></aside>';
+  html += '<div class="admin-side-foot"><button class="btn small ghost" onclick="adminLogout()">退出登录</button><a href="/" class="muted" onclick="event.preventDefault();leaveAdmin()">← 返回商城</a></div></aside>';
   html += '<div class="admin-main"><div class="admin-topbar"><button class="admin-burger" onclick="adminToggleSide(true)">☰</button><div class="h2" id="adminTitle" style="margin:0">数据总览</div></div>';
   html += '<div id="adminBody"></div></div></div>';
   el('app').innerHTML = html; adminTab(window._adminTab);
