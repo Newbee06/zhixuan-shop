@@ -62,6 +62,10 @@ async function mockFetch(url, opts = {}) {
   if (u.includes('mock-xlayer') || u.includes('mock-bsc')) {
     const evmBody = opts.body ? JSON.parse(opts.body) : null;
     const EVM_DEC = { '0x779ded0c9e1022225f8e0630b35a9b54be713736': 6, '0x55d398326f99059ff775485246999027b3197955': 18 };
+    if (evmBody && evmBody.method === 'eth_chainId') {
+      const id = u.includes('mock-bsc') ? '0x38' : '0xc4';
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: id }), { status: 200 });
+    }
     if (evmBody && evmBody.method === 'eth_call') {
       const to = String((evmBody.params && evmBody.params[0] && evmBody.params[0].to) || '').toLowerCase();
       const dec = EVM_DEC[to];

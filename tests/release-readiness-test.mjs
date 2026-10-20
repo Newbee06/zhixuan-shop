@@ -38,6 +38,10 @@ async function mockFetch(url, opts = {}) {
     if (evmFailNext > 0) { evmFailNext--; throw new Error('mock RPC timeout'); }
     const body = JSON.parse(opts.body || '{}');
     // eth_call 读合约 decimals（新 Worker 需实际精度核验）：X Layer 测试合约与 ERC20 为 6 位，BEP20 为 18 位
+    if (body.method === 'eth_chainId') {
+      const id = u.includes('bsc') ? '0x38' : (u.includes('xlayer') ? '0xc4' : '0x1');
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: id }), { status: 200 });
+    }
     if (body.method === 'eth_call') {
       const to = String((body.params && body.params[0] && body.params[0].to) || '').toLowerCase();
       const dec = to === '0x55d398326f99059ff775485246999027b3197955' ? 18 : 6;

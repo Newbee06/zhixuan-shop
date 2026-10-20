@@ -5,6 +5,8 @@
 //  4. X Layer 使用核实的 USDT0 合约，旧合约不被接受；5. 错合约/粉尘伪造/错地址/错金额不履约；
 //  6. BEP20 仅接受正确合约且按 18 位精度核验；7. 未达确认数不发货；8. RPC 故障不误判成功；
 //  9. 重复扫描不重复发卡；10. 游标失败后恢复不漏账（按地址独立游标）；11. 历史订单/旧数据不被破坏。
+// 13. eth_chainId 不符：不认账、不推进游标；下一节点 chainId 正确才认账。/pay 同语义。
+// 14. RPC 超时（AbortSignal，约 12s）：该节点作废；全部超时不认账、不推进游标；下一 URL 可认账。
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -64,14 +66,55 @@ let evmState = {
   decimals: { [USDT0_XLAYER.toLowerCase()]: 6, [OLD_XLAYER.toLowerCase()]: 6, [BEP20_USDT.toLowerCase()]: 18, [WRONG_CONTRACT.toLowerCase()]: 6 },
   failAll: false,
   receipt: null,
+  // chainIds: { 'mock-xlayer': 196, 'mock-bad': 1 }；缺省按主机：BSC=56，其余 EVM mock=196。
+  chainIds: null,
+  // hang: null | 'once' | 'always'。mock-slow 在 AbortSignal 中止前不返回（验证 rpcCall 12s 超时）。
+  hang: null,
+  hung: false,
+  abortAt: 0,
+  calls: [],
 };
+function chainIdForUrl(u) {
+  const overrides = evmState.chainIds || {};
+  const keys = Object.keys(overrides);
+  for (let i = 0; i < keys.length; i++) if (u.includes(keys[i])) return overrides[keys[i]];
+  if (u.includes('mock-bsc')) return 56;
+  return 196;
+}
+async function hangIfSlow(u, opts, body) {
+  if (!u.includes('mock-slow') || !evmState.hang) return;
+  evmState.calls.push({ url: u, method: body.method, hung: true });
+  if (evmState.hang === 'once' && evmState.hung) {
+    const err = new Error('The operation was aborted');
+    err.name = 'AbortError';
+    throw err;
+  }
+  const sig = opts && opts.signal;
+  if (!sig) throw new Error('rpcCall did not pass AbortSignal');
+  await new Promise((resolve, reject) => {
+    const killer = setTimeout(() => reject(new Error('AbortSignal did not abort within 20s')), 20000);
+    const fail = () => {
+      clearTimeout(killer);
+      evmState.hung = true;
+      evmState.abortAt = Date.now();
+      const err = new Error('The operation was aborted');
+      err.name = 'AbortError';
+      reject(err);
+    };
+    if (sig.aborted) fail();
+    else sig.addEventListener('abort', fail, { once: true });
+  });
+}
 async function mockFetch(url, opts = {}) {
   const u = String(url);
   const method = (opts.method || 'GET').toUpperCase();
   if (u.includes('api.resend.com')) return new Response(JSON.stringify({ id: 'mock-mail' }), { status: 200 });
-  if (u.includes('mock-xlayer') || u.includes('mock-bsc')) {
+  if (u.includes('mock-xlayer') || u.includes('mock-bsc') || u.includes('mock-slow') || u.includes('mock-bad')) {
     if (evmState.failAll) throw new Error('mock RPC down');
     const body = JSON.parse(opts.body || '{}');
+    await hangIfSlow(u, opts, body);
+    if (!u.includes('mock-slow') || !evmState.hang) evmState.calls.push({ url: u, method: body.method, hung: false });
+    if (body.method === 'eth_chainId') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + Number(chainIdForUrl(u)).toString(16) }), { status: 200 });
     if (body.method === 'eth_blockNumber') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + evmState.latestBlock.toString(16) }), { status: 200 });
     if (body.method === 'eth_call') {
       const to = String((body.params && body.params[0] && body.params[0].to) || '').toLowerCase();
@@ -146,7 +189,14 @@ async function newOrder(payMethod, payChain, contact) {
   db.prepare('DELETE FROM order_rate').run();
   return orderCall({ product_id: cardProd.id, quantity: 1, customer_fields: { contact_email: c, delivery_email: c }, contact: c, pay_method: payMethod, pay_chain: payChain });
 }
-function resetEvm() { evmState.latestBlock = 10000; evmState.logs = []; evmState.failAll = false; evmState.receipt = null; }
+function resetEvm() { evmState.latestBlock = 10000; evmState.logs = []; evmState.failAll = false; evmState.receipt = null; evmState.chainIds = null; evmState.hang = null; evmState.hung = false; evmState.abortAt = 0; evmState.calls = []; }
+async function payCall(orderNo, txid) {
+  const cid = mkCaptcha('AB12');
+  return call('POST', '/api/orders/' + orderNo + '/pay', { txid: txid, captcha_id: cid, captcha_code: 'AB12' });
+}
+function setCursor(chain, block) {
+  db.prepare("INSERT INTO scan_cursors (chain, last_block, updated_at) VALUES (?, ?, ?) ON CONFLICT(chain) DO UPDATE SET last_block=excluded.last_block").run(chain, block, '2026-01-01 00:00:00');
+}
 
 // ===== 1. 两种白名单组合可正常创建订单 =====
 {
@@ -402,5 +452,127 @@ function resetEvm() { evmState.latestBlock = 10000; evmState.logs = []; evmState
   assert(front.includes('USDT · BEP20'), '12. frontend shows USDT · BEP20');
   assert(front.includes('X Layer 收款为 USDT0'), '12. frontend warns X Layer receives USDT0');
   assert(!front.includes('币安 UID 站内转账填订单 ID'), '12. frontend no longer references BinanceUID in TXID hint');
+}
+// ===== 13. eth_chainId 不符：fail-closed（不认账、不推进游标）；换对的节点才认账 =====
+{
+  resetEvm();
+  setSetting('usdt_addresses', JSON.stringify({ 'OKX|X Layer': ADDR_OKX, 'Binance|BEP20': ADDR_BIN }));
+  setSetting('rpc_urls', JSON.stringify({ 'X Layer': ['https://mock-xlayer'], 'BEP20': ['https://mock-bsc'] }));
+  db.prepare("UPDATE orders SET last_checked_at='2020-01-01 00:00:00' WHERE status='pending_payment'").run();
+  for (let i = 0; i < 8; i++) db.prepare('INSERT INTO cards (product_id, code) VALUES (?, ?)').run(cardProd.id, 'WL-RPC-' + i);
+  r = await newOrder('OKX', 'X Layer');
+  assert(r.json && r.json.ok, '13. X Layer order created');
+  const ord = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const cursorKey = 'X Layer|' + ADDR_OKX.toLowerCase();
+  // 付款落在逐单 200 区块回溯之外、游标之内：只有扫描路径能认账。chainId 失败则扫描不得推进游标。
+  setCursor(cursorKey, 9900);
+  evmState.chainIds = { 'mock-xlayer': 56 };
+  evmState.latestBlock = 10200;
+  evmState.logs = [evmLog({ contract: USDT0_XLAYER, to: ADDR_OKX, valueRaw: amountToRaw(ord.actual_amount, 6), blockNumber: 9950, txHash: 'a1'.repeat(32), logIndex: 0 })];
+  await runPoll();
+  let o = q('SELECT * FROM orders WHERE id=?', ord.id);
+  assert(o.status === 'pending_payment', '13a. X Layer chainId 56 does not credit: ' + o.status);
+  assert(!o.last_checked_at, '13a. chainId mismatch is all-RPC-failed: last_checked_at not set');
+  let cur = q('SELECT last_block FROM scan_cursors WHERE chain=?', cursorKey);
+  assert(cur && Number(cur.last_block) === 9900, '13a. wrong chainId does not advance cursor: ' + JSON.stringify(cur));
+  assert(!q('SELECT id FROM payments WHERE order_id=?', ord.id), '13a. no payment ledger row');
+  assert(!q('SELECT tx_hash FROM txid_claims WHERE order_id=?', ord.id), '13a. no txid claim');
+  assert(evmState.calls.some((c) => c.url.includes('mock-xlayer') && c.method === 'eth_chainId'), '13a. eth_chainId was queried');
+  assert(!evmState.calls.some((c) => c.url.includes('mock-xlayer') && c.method === 'eth_getLogs'), '13a. rejected node is not used for eth_getLogs');
+
+  evmState.calls = [];
+  evmState.chainIds = { 'mock-bad': 1 };
+  evmState.logs = [evmLog({ contract: USDT0_XLAYER, to: ADDR_OKX, valueRaw: amountToRaw(ord.actual_amount, 6), blockNumber: 9950, txHash: 'a1'.repeat(32), logIndex: 0 })];
+  evmState.latestBlock = 10200;
+  setSetting('rpc_urls', JSON.stringify({ 'X Layer': ['https://mock-bad', 'https://mock-xlayer'], 'BEP20': ['https://mock-bsc'] }));
+  await runPoll();
+  o = q('SELECT * FROM orders WHERE id=?', ord.id);
+  assert(o.status === 'completed', '13b. next node with chainId 196 credits: ' + o.status);
+  assert(!evmState.calls.some((c) => c.url.includes('mock-bad') && c.method === 'eth_getLogs'), '13b. wrong-chain node skipped before eth_getLogs');
+  assert(evmState.calls.some((c) => c.url.includes('mock-xlayer') && c.method === 'eth_getLogs'), '13b. chainId 196 node used for logs');
+  cur = q('SELECT last_block FROM scan_cursors WHERE chain=?', cursorKey);
+  assert(cur && Number(cur.last_block) > 9900, '13b. cursor advances only after a matching chainId node succeeds: ' + JSON.stringify(cur));
+
+  resetEvm();
+  setSetting('rpc_urls', JSON.stringify({ 'X Layer': ['https://mock-xlayer'], 'BEP20': ['https://mock-bsc'] }));
+  db.prepare("UPDATE orders SET last_checked_at='2020-01-01 00:00:00' WHERE status='pending_payment'").run();
+  r = await newOrder('Binance', 'BEP20');
+  assert(r.json && r.json.ok, '13c. BEP20 order created');
+  const ordB = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const cursorB = 'BEP20|' + ADDR_BIN.toLowerCase();
+  setCursor(cursorB, 9900);
+  evmState.chainIds = { 'mock-bsc': 196 };
+  evmState.latestBlock = 10200;
+  evmState.logs = [evmLog({ contract: BEP20_USDT, to: ADDR_BIN, valueRaw: amountToRaw(ordB.actual_amount, 18), blockNumber: 9950, txHash: 'c3'.repeat(32), logIndex: 0 })];
+  await runPoll();
+  const oB = q('SELECT * FROM orders WHERE id=?', ordB.id);
+  assert(oB.status === 'pending_payment', '13c. BEP20 chainId 196 does not credit: ' + oB.status);
+  const curB = q('SELECT last_block FROM scan_cursors WHERE chain=?', cursorB);
+  assert(curB && Number(curB.last_block) === 9900, '13c. wrong BEP20 chainId does not advance cursor: ' + JSON.stringify(curB));
+  assert(!q('SELECT id FROM payments WHERE order_id=?', ordB.id), '13c. no payment ledger row');
+  assert(!evmState.calls.some((c) => c.url.includes('mock-bsc') && c.method === 'eth_getLogs'), '13c. rejected BEP20 node is not used for eth_getLogs');
+
+  resetEvm();
+  setSetting('rpc_urls', JSON.stringify({ 'X Layer': ['https://mock-xlayer'], 'BEP20': ['https://mock-bsc'] }));
+  r = await newOrder('OKX', 'X Layer');
+  assert(r.json && r.json.ok, '13d. TXID order created');
+  const ordT = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const txid = '9'.repeat(64);
+  evmState.latestBlock = 10000;
+  evmState.logs = [];
+  evmState.chainIds = { 'mock-xlayer': 56 };
+  evmState.receipt = { status: '0x1', blockNumber: '0x' + (9990).toString(16), logs: [evmLog({ contract: USDT0_XLAYER, to: ADDR_OKX, valueRaw: amountToRaw(ordT.actual_amount, 6), blockNumber: 9990, txHash: txid, logIndex: 0 })] };
+  r = await payCall(ordT.order_no, txid);
+  assert(r.json && r.json.ok === true && r.json.auto === false, '13d. wrong chainId /pay does not credit: ' + JSON.stringify(r.json));
+  assert(q('SELECT status FROM orders WHERE id=?', ordT.id).status === 'pending_payment', '13d. order stays pending_payment');
+  assert(!q('SELECT tx_hash FROM txid_claims WHERE tx_hash=?', txid), '13d. wrong chainId does not claim txid');
+  assert(!q('SELECT id FROM payments WHERE tx_hash=?', txid), '13d. wrong chainId writes no payment row');
+  evmState.chainIds = null;
+  r = await payCall(ordT.order_no, txid);
+  assert(r.json && r.json.ok === true && r.json.auto === true, '13d. chainId 196 /pay credits: ' + JSON.stringify(r.json));
+  assert(q('SELECT status FROM orders WHERE id=?', ordT.id).status === 'completed', '13d. order completed after matching chainId');
+}
+// ===== 14. RPC 超时：该节点失败并换下一 URL；全部超时不认账、不推进游标 =====
+{
+  resetEvm();
+  setSetting('rpc_urls', JSON.stringify({ 'X Layer': ['https://mock-slow'], 'BEP20': ['https://mock-bsc'] }));
+  db.prepare("UPDATE orders SET last_checked_at='2020-01-01 00:00:00' WHERE status='pending_payment'").run();
+  r = await newOrder('OKX', 'X Layer');
+  assert(r.json && r.json.ok, '14. timeout order created');
+  const ord = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
+  const cursorKey = 'X Layer|' + ADDR_OKX.toLowerCase();
+  setCursor(cursorKey, 9700);
+  evmState.hang = 'once';
+  evmState.latestBlock = 10200;
+  evmState.logs = [evmLog({ contract: USDT0_XLAYER, to: ADDR_OKX, valueRaw: amountToRaw(ord.actual_amount, 6), blockNumber: 9750, txHash: 'b2'.repeat(32), logIndex: 0 })];
+  const t0 = Date.now();
+  await runPoll();
+  const dt = evmState.abortAt - t0;
+  assert(evmState.hung === true, '14a. slow node aborted on AbortSignal');
+  assert(dt >= 11000, '14a. abort waited for the 12s RPC timeout, dt=' + dt);
+  let o = q('SELECT * FROM orders WHERE id=?', ord.id);
+  assert(o.status === 'pending_payment', '14a. timeout does not credit: ' + o.status);
+  assert(!o.last_checked_at, '14a. timeout is all-RPC-failed: last_checked_at not set');
+  let cur = q('SELECT last_block FROM scan_cursors WHERE chain=?', cursorKey);
+  assert(cur && Number(cur.last_block) === 9700, '14a. timeout does not advance cursor: ' + JSON.stringify(cur));
+  assert(!q('SELECT id FROM payments WHERE order_id=?', ord.id), '14a. timeout writes no payment row');
+  const slowCalls = evmState.calls.filter((c) => String(c.url).includes('mock-slow'));
+  assert(slowCalls[0] && slowCalls[0].method === 'eth_chainId', '14a. timed-out call is eth_chainId before credit checks: ' + JSON.stringify(slowCalls[0]));
+
+  evmState.hang = 'once';
+  evmState.hung = false;
+  evmState.abortAt = 0;
+  evmState.calls = [];
+  setSetting('rpc_urls', JSON.stringify({ 'X Layer': ['https://mock-slow', 'https://mock-xlayer'], 'BEP20': ['https://mock-bsc'] }));
+  const t1 = Date.now();
+  await runPoll();
+  const dt2 = evmState.abortAt - t1;
+  assert(evmState.hung === true && dt2 >= 11000, '14b. first node times out before failover, dt=' + dt2);
+  o = q('SELECT * FROM orders WHERE id=?', ord.id);
+  assert(o.status === 'completed', '14b. next URL after timeout credits: ' + o.status);
+  assert(evmState.calls.some((c) => c.url.includes('mock-xlayer') && c.method === 'eth_getLogs'), '14b. second node scanned logs');
+  cur = q('SELECT last_block FROM scan_cursors WHERE chain=?', cursorKey);
+  assert(cur && Number(cur.last_block) > 9700, '14b. cursor advances after the live node succeeds: ' + JSON.stringify(cur));
+  setSetting('rpc_urls', JSON.stringify({ 'X Layer': ['https://mock-xlayer'], 'BEP20': ['https://mock-bsc'] }));
 }
 console.log('payment-whitelist-test: ALL PASS');
