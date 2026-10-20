@@ -92,6 +92,111 @@ a{color:var(--accent);text-decoration:none}
 .home-back-top:hover{color:var(--text)}
 html[data-theme="dark"] .home-h1-accent,html[data-theme="dark"] .home-section-star,html[data-theme="dark"] .home-eyebrow b{color:#8ea6ff}
 @media(max-width:640px){.home-hero{flex-direction:row;gap:12px;padding:16px;align-items:flex-start}.home-hero>div:first-child{flex:1;min-width:0}.home-h1{font-size:10px}.home-eyebrow{font-size:8px;margin-bottom:10px}.home-sub{font-size:8px;margin-bottom:16px}.home-cta{font-size:10px;padding:6px 12px}.home-note{font-size:8px;margin-top:12px}.home-visual{flex:0 0 156px;height:119px;min-width:0}.home-visual-scale{width:420px;height:320px;transform:scale(0.37);transform-origin:top left}.home-section-title{font-size:20px}.home-section-star{font-size:22px}}
+/* 首页顶部/底部动效（参考 glass-card-store：card-in .55s 入场、.18–.25s 悬停反馈、玻璃高光、透视倾斜）。只动 transform/translate/opacity，不改布局。 */
+.home-hero{--zx-ease:cubic-bezier(.22,.61,.36,1)}
+.home-visual-scale{perspective:800px}
+.home-pcard{transform:translate(-50%,-50%) translateY(var(--zx-lift,0px)) rotateX(var(--zx-rx,0deg)) rotateY(var(--zx-ry,0deg)) rotate(-10deg);transition:transform .25s var(--zx-ease,ease),box-shadow .25s;box-shadow:0 24px 50px rgba(91,123,255,.35),inset 0 1px rgba(255,255,255,.45);will-change:transform}
+.home-pcard::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:radial-gradient(circle at var(--zx-gx,25%) var(--zx-gy,15%),rgba(255,255,255,.22),rgba(255,255,255,0) 55%);opacity:.9;transition:opacity .25s}
+.home-chip{box-shadow:0 10px 24px rgba(0,0,0,.12),inset 0 1px rgba(255,255,255,.5);transition:transform .25s var(--zx-ease,ease)}
+.home-chip-create{transform:translate3d(calc(var(--zx-px,0px)*1.4),calc(var(--zx-py,0px)*1.4),0) rotate(-6deg)}
+.home-chip-relax{transform:translate3d(calc(var(--zx-px,0px)*-1),calc(var(--zx-py,0px)*-1),0) rotate(8deg)}
+.home-chip-discover{transform:translate3d(calc(var(--zx-px,0px)*.8),calc(var(--zx-py,0px)*.8),0) rotate(6deg)}
+.home-cta{transition:transform .18s var(--zx-ease,ease),box-shadow .18s,background .18s}
+.home-cta:hover{transform:translateY(-2px);box-shadow:0 13px 25px rgba(91,123,255,.32),inset 0 1px rgba(255,255,255,.3)}
+.home-cta:active{transform:translateY(0) scale(.98);transition-duration:.08s}
+.home-back-top{transition:color .2s,transform .18s var(--zx-ease,ease)}
+.home-back-top:hover{transform:translateY(-1px)}
+.home-back-top:active{transform:scale(.97)}
+@keyframes zx-card-in{0%{opacity:0;translate:0 9px}to{opacity:1;translate:0 0}}
+@keyframes zx-fade-in{0%{opacity:0}to{opacity:1}}
+@keyframes zx-float{0%,100%{translate:0 0}50%{translate:0 -6px}}
+@keyframes zx-breathe{0%,100%{opacity:1;scale:1}50%{opacity:.6;scale:1.015}}
+@media (prefers-reduced-motion:no-preference){
+.zx-motion .home-hero>div:first-child>*{animation:zx-card-in .55s var(--zx-ease) both}
+.zx-motion .home-hero>div:first-child>:nth-child(2){animation-delay:.06s}
+.zx-motion .home-hero>div:first-child>:nth-child(3){animation-delay:.12s}
+.zx-motion .home-hero>div:first-child>:nth-child(4){animation-delay:.18s}
+.zx-motion .home-hero>div:first-child>:nth-child(5){animation-delay:.24s}
+.zx-motion .home-pcard{animation:zx-card-in .55s var(--zx-ease) .1s both}
+.zx-motion .home-chip{animation:zx-card-in .55s var(--zx-ease) both,zx-float 6s ease-in-out infinite}
+.zx-motion .home-chip-create{animation-delay:.22s,.8s}
+.zx-motion .home-chip-relax{animation-delay:.3s,2.2s}
+.zx-motion .home-chip-discover{animation-delay:.38s,3.6s}
+.zx-motion .home-visual-ring{animation:zx-fade-in .55s ease both,zx-breathe 8s ease-in-out .6s infinite}
+.zx-motion .home-visual-ring+.home-visual-ring{animation-delay:.1s,4.6s}
+.zx-motion .home-visual-cap{animation:zx-fade-in .55s ease .45s both}
+.zx-motion.zx-paused .home-hero *{animation-play-state:paused}
+.zx-reveal{opacity:0;translate:0 9px;transition:opacity .55s var(--zx-ease,ease),translate .55s cubic-bezier(.22,.61,.36,1)}
+.zx-reveal.zx-in{opacity:1;translate:0 0}
+}
+@media (prefers-reduced-motion:reduce){.home-pcard,.home-chip,.home-cta,.home-back-top{transition:none!important}.home-cta:hover,.home-back-top:hover,.home-cta:active,.home-back-top:active{transform:none}}
+/* 首页顶部/底部琉璃视觉 v2（参考 glass-card-store）：淡紫晨光底 + 漂移光斑、白色磨砂玻璃卡、玻璃圆盘、玻璃胶囊标签、靛蓝渐变字与按钮、底部玻璃面板。只改视觉，不改 DOM 位置与布局。 */
+.home-hero{background:linear-gradient(160deg,#f7f8ff 0%,#eef0ff 48%,#f1f8f6 100%);border:1px solid rgba(255,255,255,.9);box-shadow:0 30px 80px -30px rgba(92,99,214,.28),inset 0 1px 0 rgba(255,255,255,.95);isolation:isolate}
+.home-hero::before,.home-hero::after{content:"";position:absolute;z-index:-1;border-radius:50%;pointer-events:none;filter:blur(10px)}
+.home-hero::before{width:520px;height:520px;left:-160px;bottom:-260px;background:radial-gradient(circle,rgba(167,160,255,.45),rgba(167,160,255,0) 65%)}
+.home-hero::after{width:560px;height:560px;right:-180px;top:-220px;background:radial-gradient(circle,rgba(150,226,206,.38),rgba(150,226,206,0) 65%)}
+.home-eyebrow{color:#565b85;font-weight:600;letter-spacing:.18em}
+.home-eyebrow b{color:#5157d2}
+.home-h1{color:#2d3352;letter-spacing:-.02em}
+.home-h1-accent{color:#6d72e8;background:linear-gradient(100deg,#9a8cff 0%,#6b74ee 45%,#5a63e2 100%);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.home-sub{color:#565b80}
+.home-cta{background:linear-gradient(135deg,#5a61e0 0%,#4b51d4 55%,#3f44c4 100%);border-radius:16px;box-shadow:0 14px 30px -8px rgba(99,102,241,.55),inset 0 1px 0 rgba(255,255,255,.45),inset 0 -1px 0 rgba(40,40,140,.2);position:relative;overflow:hidden}
+.home-cta:hover{background:linear-gradient(135deg,#5259d8 0%,#444acb 55%,#383cba 100%)}
+.home-cta::after{content:"";position:absolute;top:0;bottom:0;left:-60%;width:40%;background:linear-gradient(100deg,rgba(255,255,255,0),rgba(255,255,255,.45),rgba(255,255,255,0));transform:translateX(0) skewX(-18deg);pointer-events:none;opacity:0}
+.home-note{color:#4c5178;display:flex;align-items:center;gap:8px}
+.home-note::before{content:"✓";display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:7px;background:linear-gradient(135deg,#e3f8ee,#cdeedf);color:#1f6b49;font-size:11px;font-weight:800;box-shadow:inset 0 1px 0 #fff}
+.home-visual-ring{border:1px solid rgba(255,255,255,.95);background:radial-gradient(circle at 32% 28%,rgba(255,255,255,.95),rgba(240,242,255,.55) 45%,rgba(214,218,255,.35) 100%);box-shadow:0 30px 60px -20px rgba(92,99,214,.32),inset 0 2px 6px rgba(255,255,255,.9),inset 0 -14px 30px rgba(160,166,240,.18);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+.home-visual-ring+.home-visual-ring{background:none;box-shadow:inset 0 0 0 1px rgba(150,156,230,.22);border:1px dashed rgba(140,146,232,.35);backdrop-filter:none;-webkit-backdrop-filter:none}
+.home-visual-ring+.home-visual-ring::after{content:"✳";position:absolute;left:22%;top:20%;font-size:46px;color:#7d84ee;opacity:.85}
+.home-pcard{background:linear-gradient(145deg,rgba(255,255,255,.92) 0%,rgba(244,245,255,.72) 55%,rgba(226,229,255,.6) 100%);color:#2d3352;border:1px solid rgba(255,255,255,.95);backdrop-filter:blur(20px) saturate(160%);-webkit-backdrop-filter:blur(20px) saturate(160%);overflow:hidden;box-shadow:0 34px 60px -22px rgba(80,88,200,.38),0 2px 0 rgba(255,255,255,.9) inset,0 -10px 24px rgba(170,176,245,.18) inset}
+.home-pcard::before{content:"";position:absolute;top:-40%;bottom:-40%;left:-70%;width:45%;background:linear-gradient(100deg,rgba(255,255,255,0),rgba(255,255,255,.7),rgba(255,255,255,0));transform:rotate(12deg);pointer-events:none;opacity:0}
+.home-pcard-logo{background:linear-gradient(100deg,#8f86ff,#5a63e2);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.home-pcard-note{color:#565b80;letter-spacing:.06em;opacity:1}
+.home-pcard-bottom{color:#3a4064}
+.home-pcard-arrow{display:inline-flex;align-items:center;justify-content:center;width:46px;height:46px;border-radius:15px;background:linear-gradient(135deg,#c9c6ff,#8f95f5);color:#fff;font-size:22px;box-shadow:0 10px 20px -6px rgba(99,102,241,.55),inset 0 1px 0 rgba(255,255,255,.6)}
+.home-chip{background:linear-gradient(145deg,rgba(255,255,255,.92),rgba(240,242,255,.7))!important;color:#4a5078!important;border:1px solid rgba(255,255,255,.95);border-radius:999px;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:0 16px 30px -12px rgba(80,88,200,.35),inset 0 1px 0 #fff}
+.home-chip-create{color:#4a51d4!important}
+.home-chip-relax{color:#1b7353!important}
+.home-chip-discover{color:#a8501a!important}
+.home-chip span{color:#3a4066}
+.home-visual-cap{color:#4c5178;letter-spacing:.3em}
+/* 底部：玻璃面板 */
+.home-section-head{position:relative;overflow:hidden;isolation:isolate;padding:28px 32px;border-radius:28px;background:linear-gradient(150deg,rgba(255,255,255,.9),rgba(240,242,255,.7) 60%,rgba(236,248,244,.7));border:1px solid rgba(255,255,255,.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);box-shadow:0 30px 70px -34px rgba(92,99,214,.35),inset 0 1px 0 #fff;align-items:center}
+.home-section-head::before{content:"";position:absolute;z-index:-1;width:420px;height:420px;right:-140px;top:-220px;border-radius:50%;background:radial-gradient(circle,rgba(167,160,255,.35),rgba(167,160,255,0) 65%);pointer-events:none}
+.home-section-title{color:#2d3352}
+.home-section-star{color:#7c83f0;text-shadow:0 6px 16px rgba(124,131,240,.45)}
+.home-section-sub{color:#565b80}
+.home-back-top{padding:9px 16px;border-radius:999px;background:linear-gradient(145deg,rgba(255,255,255,.95),rgba(236,238,255,.8));border:1px solid rgba(255,255,255,.95);color:#4148c8;font-weight:600;box-shadow:0 10px 22px -10px rgba(80,88,200,.45),inset 0 1px 0 #fff}
+.home-back-top:hover{color:#363cb4}
+main>.footer{margin-top:20px;padding:16px 20px;border-top:1px solid rgba(140,146,232,.18);color:#5c6080;font-size:12px;letter-spacing:.04em}
+@media(max-width:640px){.home-section-head{padding:14px 12px;border-radius:20px;gap:8px}.home-section-title{gap:6px}.home-back-top{padding:7px 12px;font-size:13px}.home-hero::before{width:300px;height:300px;left:-120px;bottom:-160px}.home-hero::after{width:300px;height:300px;right:-120px;top:-140px}.home-eyebrow{letter-spacing:.1em}.home-note::before{width:12px;height:12px;border-radius:4px;font-size:7px}.home-note{gap:5px}}
+/* 深色模式：保持可读 */
+html[data-theme="dark"] .home-hero,html[data-theme="dark"] .home-section-head{background:linear-gradient(160deg,rgba(40,42,66,.9),rgba(28,30,48,.9));border-color:rgba(255,255,255,.12);box-shadow:0 30px 80px -30px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.08)}
+html[data-theme="dark"] .home-h1,html[data-theme="dark"] .home-section-title,html[data-theme="dark"] .home-pcard-bottom,html[data-theme="dark"] .home-chip span{color:#eef0ff}
+html[data-theme="dark"] .home-sub,html[data-theme="dark"] .home-section-sub{color:#a9adcc}
+html[data-theme="dark"] .home-pcard,html[data-theme="dark"] .home-chip,html[data-theme="dark"] .home-back-top{background:linear-gradient(145deg,rgba(70,74,110,.75),rgba(44,46,72,.6))!important;border-color:rgba(255,255,255,.16)}
+html[data-theme="dark"] .home-visual-ring:first-child{background:radial-gradient(circle at 32% 28%,rgba(120,126,200,.35),rgba(60,64,110,.25) 60%);border-color:rgba(255,255,255,.14)}
+@media (prefers-color-scheme:dark){html:not([data-theme]) .home-hero,html:not([data-theme]) .home-section-head{background:linear-gradient(160deg,rgba(40,42,66,.9),rgba(28,30,48,.9));border-color:rgba(255,255,255,.12)}html:not([data-theme]) .home-h1,html:not([data-theme]) .home-section-title,html:not([data-theme]) .home-pcard-bottom,html:not([data-theme]) .home-chip span{color:#eef0ff}html:not([data-theme]) .home-sub,html:not([data-theme]) .home-section-sub{color:#a9adcc}html:not([data-theme]) .home-pcard,html:not([data-theme]) .home-chip,html:not([data-theme]) .home-back-top{background:linear-gradient(145deg,rgba(70,74,110,.75),rgba(44,46,72,.6))!important;border-color:rgba(255,255,255,.16)}}
+/* 深色模式小字对比度 ≥4.5:1 */
+html[data-theme="dark"] .home-eyebrow{color:#c3c6e6}html[data-theme="dark"] .home-eyebrow b,html[data-theme="dark"] .home-chip-create{color:#b8bcff!important}html[data-theme="dark"] .home-note,html[data-theme="dark"] .home-pcard-note,html[data-theme="dark"] .home-visual-cap,html[data-theme="dark"] .home-sub,html[data-theme="dark"] .home-section-sub{color:#d6d8f2}html[data-theme="dark"] .home-note::before{background:rgba(63,174,127,.25);color:#9be8c6}html[data-theme="dark"] .home-chip-relax{color:#86e3c0!important}html[data-theme="dark"] .home-chip-discover{color:#ffc39c!important}html[data-theme="dark"] .home-back-top{color:#d0d3ff}html[data-theme="dark"] .home-back-top:hover{color:#fff}
+html[data-theme="dark"] main>.footer{color:#a9adcc}
+@media (prefers-color-scheme:dark){html:not([data-theme]) .home-eyebrow{color:#c3c6e6}html:not([data-theme]) .home-eyebrow b,html:not([data-theme]) .home-chip-create{color:#b8bcff!important}html:not([data-theme]) .home-note,html:not([data-theme]) .home-pcard-note,html:not([data-theme]) .home-visual-cap,html:not([data-theme]) .home-sub,html:not([data-theme]) .home-section-sub{color:#d6d8f2}html:not([data-theme]) .home-note::before{background:rgba(63,174,127,.25);color:#9be8c6}html:not([data-theme]) .home-chip-relax{color:#86e3c0!important}html:not([data-theme]) .home-chip-discover{color:#ffc39c!important}html:not([data-theme]) .home-back-top{color:#d0d3ff}html:not([data-theme]) .home-back-top:hover{color:#fff}html:not([data-theme]) main>.footer{color:#a9adcc}}
+/* 琉璃动效：光斑漂移、圆盘虚线环缓慢旋转、卡片悬浮 + 高光扫过、按钮流光 */
+@keyframes zx-drift-a{0%,100%{transform:translate3d(0,0,0) scale(1)}50%{transform:translate3d(60px,-40px,0) scale(1.08)}}
+@keyframes zx-drift-b{0%,100%{transform:translate3d(0,0,0) scale(1)}50%{transform:translate3d(-50px,40px,0) scale(1.1)}}
+@keyframes zx-spin{to{rotate:360deg}}
+@keyframes zx-card-float{0%,100%{translate:0 0}50%{translate:0 -8px}}
+@keyframes zx-sheen{0%,70%{opacity:0;transform:translateX(0) rotate(12deg)}75%{opacity:1}100%{opacity:0;transform:translateX(560%) rotate(12deg)}}
+@keyframes zx-cta-sheen{0%,80%{opacity:0;transform:translateX(0) skewX(-18deg)}85%{opacity:1}100%{opacity:0;transform:translateX(420%) skewX(-18deg)}}
+@media (prefers-reduced-motion:no-preference){
+.zx-motion .home-hero::before{animation:zx-drift-a 16s ease-in-out infinite}
+.zx-motion .home-hero::after{animation:zx-drift-b 18s ease-in-out infinite}
+.zx-motion .home-visual-ring+.home-visual-ring{animation:zx-fade-in .55s ease .1s both,zx-spin 40s linear infinite}
+.zx-motion .home-pcard{animation:zx-card-in .7s var(--zx-ease) .1s both,zx-card-float 7s ease-in-out .9s infinite}
+.zx-motion .home-pcard::before{animation:zx-sheen 6s ease-in-out 1.2s infinite}
+.zx-motion .home-cta::after{animation:zx-cta-sheen 5s ease-in-out 1.5s infinite}
+.zx-motion.zx-paused .home-hero::before,.zx-motion.zx-paused .home-hero::after,.zx-motion.zx-paused .home-pcard::before,.zx-motion.zx-paused .home-cta::after{animation-play-state:paused}
+}
 .h1{font-size:26px;font-weight:800;margin:6px 0 4px}
 .h2{font-size:18px;font-weight:700;margin:0 0 10px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -573,9 +678,44 @@ function renderShop(){
   html += '<div class="search-row"><div class="search-wrap"><span class="search-icon">' + ic('search') + '</span><input id="q" placeholder="搜索商品…" oninput="doSearch()"></div><select id="sortSel" class="sort-sel" onchange="changeSort(this.value)"><option value="featured">排序方式：精选</option><option value="price-asc">排序方式：价格从低到高</option><option value="price-desc">排序方式：价格从高到低</option><option value="name-asc">排序方式：名称：A 到 Z</option></select></div>';
   html += '<div class="filter-row"><div class="tabs" style="margin:0"><button id="pill-all" onclick="filterStock(\x27all\x27)">全部 <span id="cntAll"></span></button><button id="pill-instock" onclick="filterStock(\x27instock\x27)"><span class="stock-dot"></span> 有货 <span id="cntStock"></span></button></div><div class="muted" id="prodCount"></div></div><div id="list" class="grid shop-grid"></div>' + homeSectionHeadHTML();
   el('app').innerHTML = html;
+  initHomeMotion();
   var ss = el('sortSel'); if (ss) ss.value = curSort;
   // 商城每次进入都重新拉商品（PRODUCTS 只在首次 load() 时取过一次；下单预留库存后 SPA 内导航回商城会显示过期库存计数）。失败时用旧数据渲染，不白屏。
   api('/api/products').then(function(pr){ if (pr.ok) PRODUCTS = pr.products; renderList(); }).catch(function(){ renderList(); });
+}
+// 首页动效：入场（CSS）、指针透视倾斜/视差（仅细指针，按需 rAF，不常驻循环）、离屏/隐藏暂停、底部滚动显现。减少动态效果时全部跳过。
+var ZX_MOTION = { io: null, raf: 0 };
+function initHomeMotion(){
+  var app = el('app'), hero = app && app.querySelector('.home-hero');
+  if (!hero || !window.matchMedia || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  app.classList.add('zx-motion');
+  if (ZX_MOTION.io) { ZX_MOTION.io.disconnect(); ZX_MOTION.io = null; }
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function(es){ es.forEach(function(e){
+      if (e.target === hero) { app.classList.toggle('zx-paused', !e.isIntersecting); }
+      else if (e.isIntersecting) { e.target.classList.add('zx-in'); io.unobserve(e.target); }
+    }); }, { threshold: 0.05 });
+    io.observe(hero);
+    [app.querySelector('.home-section-head'), document.querySelector('main > .footer')].forEach(function(t){ if (t && !t.classList.contains('zx-in')) { t.classList.add('zx-reveal'); io.observe(t); } });
+    ZX_MOTION.io = io;
+  }
+  if (!matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+  var card = hero.querySelector('.home-pcard'), vis = hero.querySelector('.home-visual');
+  if (!card || !vis) return;
+  var tx = 0, ty = 0, over = false;
+  function paint(){ ZX_MOTION.raf = 0;
+    card.style.setProperty('--zx-rx', (over ? -ty * 8 : 0).toFixed(2) + 'deg');
+    card.style.setProperty('--zx-ry', (over ? tx * 10 : 0).toFixed(2) + 'deg');
+    card.style.setProperty('--zx-lift', over ? '-5px' : '0px');
+    card.style.setProperty('--zx-gx', (50 + tx * 50).toFixed(1) + '%');
+    card.style.setProperty('--zx-gy', (50 + ty * 50).toFixed(1) + '%');
+    vis.style.setProperty('--zx-px', (over ? tx * 6 : 0).toFixed(2) + 'px');
+    vis.style.setProperty('--zx-py', (over ? ty * 6 : 0).toFixed(2) + 'px');
+  }
+  function queue(){ if (!ZX_MOTION.raf && !document.hidden) ZX_MOTION.raf = requestAnimationFrame(paint); }
+  hero.addEventListener('pointermove', function(e){ var r = vis.getBoundingClientRect(); if (!r.width) return;
+    tx = Math.max(-1, Math.min(1, (e.clientX - r.left) / r.width * 2 - 1)); ty = Math.max(-1, Math.min(1, (e.clientY - r.top) / r.height * 2 - 1)); over = true; queue(); });
+  hero.addEventListener('pointerleave', function(){ over = false; tx = ty = 0; queue(); });
 }
 // 首页 Hero（参考 prodseller 版式，文案按截图、品牌换本站的）：左文案 + 右紫色倾斜卡 + 漂浮标签。
 function homeHeroHTML(){
