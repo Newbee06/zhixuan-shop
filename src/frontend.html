@@ -89,6 +89,44 @@ a{color:var(--accent);text-decoration:none}
 .home-back-top:hover{color:var(--text)}
 html[data-theme="dark"] .home-h1-accent,html[data-theme="dark"] .home-section-star,html[data-theme="dark"] .home-eyebrow b{color:#8ea6ff}
 @media(max-width:640px){.home-hero{flex-direction:row;gap:12px;padding:16px;align-items:flex-start}.home-hero>div:first-child{flex:1;min-width:0}.home-h1{font-size:10px}.home-eyebrow{font-size:8px;margin-bottom:10px}.home-sub{font-size:8px;margin-bottom:16px}.home-cta{font-size:10px;padding:6px 12px}.home-note{font-size:8px;margin-top:12px}.home-visual{flex:0 0 156px;height:119px;min-width:0}.home-visual-scale{width:420px;height:320px;transform:scale(0.37);transform-origin:top left}.home-section-title{font-size:20px}.home-section-star{font-size:22px}}
+/* 首页顶部/底部动效（参考 glass-card-store：card-in .55s 入场、.18–.25s 悬停反馈、玻璃高光、透视倾斜）。只动 transform/translate/opacity，不改布局。 */
+.home-hero{--zx-ease:cubic-bezier(.22,.61,.36,1)}
+.home-visual-scale{perspective:800px}
+.home-pcard{transform:translate(-50%,-50%) translateY(var(--zx-lift,0px)) rotateX(var(--zx-rx,0deg)) rotateY(var(--zx-ry,0deg)) rotate(-10deg);transition:transform .25s var(--zx-ease,ease),box-shadow .25s;box-shadow:0 24px 50px rgba(91,123,255,.35),inset 0 1px rgba(255,255,255,.45);will-change:transform}
+.home-pcard::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;background:radial-gradient(circle at var(--zx-gx,25%) var(--zx-gy,15%),rgba(255,255,255,.22),rgba(255,255,255,0) 55%);opacity:.9;transition:opacity .25s}
+.home-chip{box-shadow:0 10px 24px rgba(0,0,0,.12),inset 0 1px rgba(255,255,255,.5);transition:transform .25s var(--zx-ease,ease)}
+.home-chip-create{transform:translate3d(calc(var(--zx-px,0px)*1.4),calc(var(--zx-py,0px)*1.4),0) rotate(-6deg)}
+.home-chip-relax{transform:translate3d(calc(var(--zx-px,0px)*-1),calc(var(--zx-py,0px)*-1),0) rotate(8deg)}
+.home-chip-discover{transform:translate3d(calc(var(--zx-px,0px)*.8),calc(var(--zx-py,0px)*.8),0) rotate(6deg)}
+.home-cta{transition:transform .18s var(--zx-ease,ease),box-shadow .18s,background .18s}
+.home-cta:hover{transform:translateY(-2px);box-shadow:0 13px 25px rgba(91,123,255,.32),inset 0 1px rgba(255,255,255,.3)}
+.home-cta:active{transform:translateY(0) scale(.98);transition-duration:.08s}
+.home-back-top{transition:color .2s,transform .18s var(--zx-ease,ease)}
+.home-back-top:hover{transform:translateY(-1px)}
+.home-back-top:active{transform:scale(.97)}
+@keyframes zx-card-in{0%{opacity:0;translate:0 9px}to{opacity:1;translate:0 0}}
+@keyframes zx-fade-in{0%{opacity:0}to{opacity:1}}
+@keyframes zx-float{0%,100%{translate:0 0}50%{translate:0 -6px}}
+@keyframes zx-breathe{0%,100%{opacity:1;scale:1}50%{opacity:.6;scale:1.015}}
+@media (prefers-reduced-motion:no-preference){
+.zx-motion .home-hero>div:first-child>*{animation:zx-card-in .55s var(--zx-ease) both}
+.zx-motion .home-hero>div:first-child>:nth-child(2){animation-delay:.06s}
+.zx-motion .home-hero>div:first-child>:nth-child(3){animation-delay:.12s}
+.zx-motion .home-hero>div:first-child>:nth-child(4){animation-delay:.18s}
+.zx-motion .home-hero>div:first-child>:nth-child(5){animation-delay:.24s}
+.zx-motion .home-pcard{animation:zx-card-in .55s var(--zx-ease) .1s both}
+.zx-motion .home-chip{animation:zx-card-in .55s var(--zx-ease) both,zx-float 6s ease-in-out infinite}
+.zx-motion .home-chip-create{animation-delay:.22s,.8s}
+.zx-motion .home-chip-relax{animation-delay:.3s,2.2s}
+.zx-motion .home-chip-discover{animation-delay:.38s,3.6s}
+.zx-motion .home-visual-ring{animation:zx-fade-in .55s ease both,zx-breathe 8s ease-in-out .6s infinite}
+.zx-motion .home-visual-ring+.home-visual-ring{animation-delay:.1s,4.6s}
+.zx-motion .home-visual-cap{animation:zx-fade-in .55s ease .45s both}
+.zx-motion.zx-paused .home-hero *{animation-play-state:paused}
+.zx-reveal{opacity:0;translate:0 9px;transition:opacity .55s var(--zx-ease,ease),translate .55s cubic-bezier(.22,.61,.36,1)}
+.zx-reveal.zx-in{opacity:1;translate:0 0}
+}
+@media (prefers-reduced-motion:reduce){.home-pcard,.home-chip,.home-cta,.home-back-top{transition:none!important}.home-cta:hover,.home-back-top:hover,.home-cta:active,.home-back-top:active{transform:none}}
 .h1{font-size:26px;font-weight:800;margin:6px 0 4px}
 .h2{font-size:18px;font-weight:700;margin:0 0 10px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -570,9 +608,44 @@ function renderShop(){
   html += '<div class="search-row"><div class="search-wrap"><span class="search-icon">' + ic('search') + '</span><input id="q" placeholder="搜索商品…" oninput="doSearch()"></div><select id="sortSel" class="sort-sel" onchange="changeSort(this.value)"><option value="featured">排序方式：精选</option><option value="price-asc">排序方式：价格从低到高</option><option value="price-desc">排序方式：价格从高到低</option><option value="name-asc">排序方式：名称：A 到 Z</option></select></div>';
   html += '<div class="filter-row"><div class="tabs" style="margin:0"><button id="pill-all" onclick="filterStock(\x27all\x27)">全部 <span id="cntAll"></span></button><button id="pill-instock" onclick="filterStock(\x27instock\x27)"><span class="stock-dot"></span> 有货 <span id="cntStock"></span></button></div><div class="muted" id="prodCount"></div></div><div id="list" class="grid shop-grid"></div>' + homeSectionHeadHTML();
   el('app').innerHTML = html;
+  initHomeMotion();
   var ss = el('sortSel'); if (ss) ss.value = curSort;
   // 商城每次进入都重新拉商品（PRODUCTS 只在首次 load() 时取过一次；下单预留库存后 SPA 内导航回商城会显示过期库存计数）。失败时用旧数据渲染，不白屏。
   api('/api/products').then(function(pr){ if (pr.ok) PRODUCTS = pr.products; renderList(); }).catch(function(){ renderList(); });
+}
+// 首页动效：入场（CSS）、指针透视倾斜/视差（仅细指针，按需 rAF，不常驻循环）、离屏/隐藏暂停、底部滚动显现。减少动态效果时全部跳过。
+var ZX_MOTION = { io: null, raf: 0 };
+function initHomeMotion(){
+  var app = el('app'), hero = app && app.querySelector('.home-hero');
+  if (!hero || !window.matchMedia || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  app.classList.add('zx-motion');
+  if (ZX_MOTION.io) { ZX_MOTION.io.disconnect(); ZX_MOTION.io = null; }
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function(es){ es.forEach(function(e){
+      if (e.target === hero) { app.classList.toggle('zx-paused', !e.isIntersecting); }
+      else if (e.isIntersecting) { e.target.classList.add('zx-in'); io.unobserve(e.target); }
+    }); }, { threshold: 0.05 });
+    io.observe(hero);
+    [app.querySelector('.home-section-head'), document.querySelector('main > .footer')].forEach(function(t){ if (t && !t.classList.contains('zx-in')) { t.classList.add('zx-reveal'); io.observe(t); } });
+    ZX_MOTION.io = io;
+  }
+  if (!matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+  var card = hero.querySelector('.home-pcard'), vis = hero.querySelector('.home-visual');
+  if (!card || !vis) return;
+  var tx = 0, ty = 0, over = false;
+  function paint(){ ZX_MOTION.raf = 0;
+    card.style.setProperty('--zx-rx', (over ? -ty * 8 : 0).toFixed(2) + 'deg');
+    card.style.setProperty('--zx-ry', (over ? tx * 10 : 0).toFixed(2) + 'deg');
+    card.style.setProperty('--zx-lift', over ? '-5px' : '0px');
+    card.style.setProperty('--zx-gx', (50 + tx * 50).toFixed(1) + '%');
+    card.style.setProperty('--zx-gy', (50 + ty * 50).toFixed(1) + '%');
+    vis.style.setProperty('--zx-px', (over ? tx * 6 : 0).toFixed(2) + 'px');
+    vis.style.setProperty('--zx-py', (over ? ty * 6 : 0).toFixed(2) + 'px');
+  }
+  function queue(){ if (!ZX_MOTION.raf && !document.hidden) ZX_MOTION.raf = requestAnimationFrame(paint); }
+  hero.addEventListener('pointermove', function(e){ var r = vis.getBoundingClientRect(); if (!r.width) return;
+    tx = Math.max(-1, Math.min(1, (e.clientX - r.left) / r.width * 2 - 1)); ty = Math.max(-1, Math.min(1, (e.clientY - r.top) / r.height * 2 - 1)); over = true; queue(); });
+  hero.addEventListener('pointerleave', function(){ over = false; tx = ty = 0; queue(); });
 }
 // 首页 Hero（参考 prodseller 版式，文案按截图、品牌换本站的）：左文案 + 右紫色倾斜卡 + 漂浮标签。
 function homeHeroHTML(){
