@@ -4169,8 +4169,14 @@ function withSecurityHeaders(resp) {
 const app = {
   async fetch(req, env, ctx) {
     var url = new URL(req.url);
-    if (url.pathname === '/' || url.pathname === '/index.html') {
+    // 管理入口页：/fuyan 与首页同一份 SPA HTML。只做精确 pathname 匹配，不截获 /fuyan/* 子路径。
+    // 管理界面是否打开仍由前端 hash（#/admin）决定；本处不改 SPA 路由。
+    if (url.pathname === '/' || url.pathname === '/index.html' || url.pathname === '/fuyan' || url.pathname === '/fuyan/') {
       return new Response(FRONTEND_HTML, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+    }
+    // 旧入口 /admin、/admin/ 临时跳到 /fuyan，并保留 query。不匹配 /admin/*，因此 /api/admin/* 仍进 handleApi。
+    if (url.pathname === '/admin' || url.pathname === '/admin/') {
+      return new Response(null, { status: 302, headers: { Location: '/fuyan' + url.search, 'cache-control': 'no-store' } });
     }
     if (url.pathname.indexOf('/api/') === 0) {
       try { return await handleApi(req, env, url, ctx); } catch (e) {
