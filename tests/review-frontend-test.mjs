@@ -513,6 +513,50 @@ await page.setViewportSize({ width: 1440, height: 900 });
   check('P2-12: 正常地址显地址盒/二维码/复制', pay.goodHasAddr && pay.goodHasQr && pay.goodHasCopy, JSON.stringify(pay));
 }
 
+// ===== 本地 QR：解码结果必须等于 pay_address；CSP/源码不再引用 qrserver =====
+{
+  const qrRound = await page.evaluate(() => {
+    const addr = '0x1111111111111111111111111111111111111111';
+    const url = payQrDataUrl(addr);
+    if (!url || url.indexOf('data:image/') !== 0) return { ok: false, reason: 'no-data-url', url: String(url || '').slice(0, 32) };
+    const lib = payQrLib();
+    // 重新走 encode→canvas→decode（与 payQrDataUrl 相同路径已在函数内校验）；再读 img 像素二次解码
+    const img = new Image();
+    // data URL 同步解码：用 Offscreen 路径不可用时退回 canvas draw 后 getImageData
+    return new Promise((resolve) => {
+      img.onload = function () {
+        try {
+          const c = document.createElement('canvas');
+          c.width = img.naturalWidth || img.width;
+          c.height = img.naturalHeight || img.height;
+          const ctx = c.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          const id = ctx.getImageData(0, 0, c.width, c.height);
+          const decoded = lib.decodeQR({ data: id.data, width: c.width, height: c.height });
+          const box = document.createElement('div');
+          box.innerHTML = payBlockHTML({ actual_amount: 1, total_usdt: 1, order_no: 'QR-DEC', pay_method: 'OKX', pay_chain: 'X Layer', pay_address: addr, expires_at: new Date(Date.now() + 600000).toISOString() }, 'qrdec');
+          const plain = (box.querySelector('#addrBox-qrdec') || {}).textContent || '';
+          resolve({
+            ok: decoded === addr,
+            decoded: decoded,
+            hasPlainAddr: plain.replace(/\s/g, '').indexOf(addr) !== -1,
+            imgOk: !!box.querySelector('img[data-pay-qr="ok"]'),
+            noQrserver: typeof payQrDataUrl === 'function' && String(payBlockHTML).indexOf('qrserver') === -1
+          });
+        } catch (e) {
+          resolve({ ok: false, reason: String(e && e.message || e) });
+        }
+      };
+      img.onerror = function () { resolve({ ok: false, reason: 'img-error' }); };
+      img.src = url;
+    });
+  });
+  check('local-qr: decode(img) === pay_address', qrRound && qrRound.ok === true, JSON.stringify(qrRound));
+  check('local-qr: plaintext address shown beside QR', qrRound && qrRound.hasPlainAddr === true, JSON.stringify(qrRound));
+  check('local-qr: payBlock uses verified data: img', qrRound && qrRound.imgOk === true, JSON.stringify(qrRound));
+}
+
+
 // ===== 10. P3-17 App 图标 key 安全转义 =====
 {
   const esc = await page.evaluate(() => {

@@ -31,7 +31,7 @@
 - TRC20 / ERC20 / 站内转账代码已删除，无任何外部调用路径。
 - TXID 认领安全（v17 + v18）：租约-first（先原子获取订单租约，再碰认领表；无租约不触碰认领）；认领令牌化（每次新认领 `randomHex(32)` 的 `claim_token`）；无回滚删除入口，已消费认领永久保留（遗留空令牌行同样永不被自动删除）；同订单接管收养认领（重绑 `order_lease_token`，`source` 不改写）；失败路径不删认领行。认领查询异常 fail-closed（查不到 ≠ 无认领）；Schema 迁移不完整时不许降级写入。链上认领与账本写入的安全顺序为认领 → 账本 → 副作用（见 `docs/PAYMENT_FLOW.md`）；账本与认领归属不一致时先恢复旧账本，再处理新付款。
 - 人工与链上共享同一 `txid_claims` 全局原子认领（`tx_hash` 主键决定胜负），`source` 区分 `'chain_verified'` / `'manual_confirmed'`；`manual_confirmed` 仅表示管理员系统外核对后人工确认，不构成链上证据，不伪造回执/区块高度/确认数。人工账本写入失败时 fail-closed：仅重读确认已有同订单 + 同 TXID + 同状态 `manual_confirmed` 行才可幂等继续，否则释放本请求租约、认领保留、返回失败。
-- 收款二维码走第三方 qrserver.com（前端调 `api.qrserver.com` 生成，收款地址以查询参数传给第三方）；收款地址本就是公开收款信息，接受现状。
+- 收款二维码由前端本地生成（vendored `@paulmillr/qr`，ecc=high）：编码内容为收款地址字符串；生成后用同一库解码校验，仅当解码结果与订单收款地址一致时才展示；支付页同时明文展示收款地址便于核对。不再请求 `api.qrserver.com`，CSP `img-src` 亦不放行该域名。
 
 ## 管理端鉴权
 

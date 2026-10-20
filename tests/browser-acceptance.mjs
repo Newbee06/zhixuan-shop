@@ -119,7 +119,7 @@ await page.fill('#recoverCaptchaCode', recCap);
 await page.click('button:has-text("恢复支付信息")');
 await page.waitForTimeout(1500);
 const recoveredHtml = await page.content();
-check('recover flow: pay address restored', recoveredHtml.includes('收款地址') && recoveredHtml.includes('0x2222222222222222222222222222222222222222'));
+check('recover flow: pay address restored', recoveredHtml.includes('收款地址') && recoveredHtml.includes('data-full-addr="0x2222222222222222222222222222222222222222"'));
 check('recover flow: /pay captcha input shown', await page.evaluate(() => !!document.getElementById('payCaptchaCode')));
 
 // ===== 4. 查单页：订单号 + 验证码 → 列表；密码取卡密（未付款提示）；错误密码提示；邮箱不能查；URL 无凭证 =====
@@ -387,6 +387,39 @@ for (const w of [390, 360]) {
   check('P2-12: 空地址隐藏地址盒/二维码并显暂停', pb.emptyHidden === true, JSON.stringify(pb));
   check('P2-12: 正常地址显地址盒/二维码/复制', pb.goodShown === true, JSON.stringify(pb));
 }
+
+// 本地 QR：解码结果 == pay_address；明文地址一并展示
+{
+  const qr = await page.evaluate(() => {
+    const addr = '0x2222222222222222222222222222222222222222';
+    const url = payQrDataUrl(addr);
+    if (!url || url.indexOf('data:image/') !== 0) return { ok: false, reason: 'no-data-url' };
+    const lib = payQrLib();
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = function () {
+        try {
+          const c = document.createElement('canvas');
+          c.width = img.naturalWidth || img.width;
+          c.height = img.naturalHeight || img.height;
+          const ctx = c.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          const id = ctx.getImageData(0, 0, c.width, c.height);
+          const decoded = lib.decodeQR({ data: id.data, width: c.width, height: c.height });
+          const box = document.createElement('div');
+          box.innerHTML = payBlockHTML({ actual_amount: 2, total_usdt: 2, order_no: 'CI-QR', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: addr, expires_at: new Date(Date.now() + 600000).toISOString() }, 'ciqr');
+          const plain = ((box.querySelector('#addrBox-ciqr') || {}).textContent || '').replace(/\s/g, '');
+          resolve({ ok: decoded === addr, decoded, plainHas: plain.indexOf(addr) !== -1, dataQr: !!box.querySelector('img[data-pay-qr="ok"]') });
+        } catch (e) { resolve({ ok: false, reason: String(e && e.message || e) }); }
+      };
+      img.onerror = () => resolve({ ok: false, reason: 'img-error' });
+      img.src = url;
+    });
+  });
+  check('local-qr: decode === pay_address', qr && qr.ok === true, JSON.stringify(qr));
+  check('local-qr: plaintext address visible', qr && qr.plainHas === true, JSON.stringify(qr));
+}
+
 {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(BASE + '/#/product/1', { waitUntil: 'networkidle' });
