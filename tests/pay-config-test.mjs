@@ -57,6 +57,10 @@ async function mockFetch(url, opts = {}) {
   if (u.includes('prodseller.com/v1/orders/') && method === 'GET') return new Response(JSON.stringify({ error: 'not found' }), { status: 404 });
   if (u.includes('mock-xlayer') || u.includes('mock-bsc')) {
     const body = opts.body ? JSON.parse(opts.body) : null;
+    if (body && body.method === 'eth_chainId') {
+      const id = u.includes('mock-bsc') ? '0x38' : '0xc4';
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: id }), { status: 200 });
+    }
     if (body && body.method === 'eth_blockNumber') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + evmState.latestBlock.toString(16) }), { status: 200 });
     if (body && body.method === 'eth_call') {
       const to = String((body.params && body.params[0] && body.params[0].to) || '').toLowerCase();
