@@ -53,6 +53,7 @@ async function mockFetch(url, opts = {}) {
   }
   if (u.includes('bsc-dataseed')) {
     const body = JSON.parse(opts.body || '{}');
+    if (body.method === 'eth_chainId') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x38' }), { status: 200 });
     if (body.method === 'eth_call') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + (18).toString(16).padStart(64, '0') }), { status: 200 });
     if (body.method === 'eth_blockNumber') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + (1000).toString(16) }), { status: 200 });
     if (body.method === 'eth_getLogs') {
