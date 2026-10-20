@@ -175,8 +175,8 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
 .detail-img{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;min-height:380px;font-size:120px;background:var(--card2);border-radius:var(--radius);text-align:center;padding:24px;position:relative}
 @media(max-width:720px){.detail-img{min-height:240px;font-size:88px}}
 .detail-img-cap{font-size:17px;font-weight:700;line-height:1.5;max-width:100%}
-.detail-tabs{display:flex;gap:18px;border-bottom:1px solid rgba(127,127,127,.2);margin-bottom:14px}
-.detail-tabs span{font-size:16px;font-weight:700;padding:10px 2px;border-bottom:3px solid var(--accent);margin-bottom:-1px}
+.detail-blocks{margin-top:32px;max-width:840px;min-width:0}
+.detail-sheet-title{font-size:28px;line-height:1.15;font-weight:700;letter-spacing:-.03em;margin:0 0 8px;color:var(--text)}
 .buy-box{position:sticky;top:64px}
 @media(max-width:720px){.buy-box{position:static}}
 .buy-price{font-size:32px;font-weight:800;color:var(--red);margin:6px 0 2px}
@@ -189,13 +189,41 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
 .pill{padding:8px 12px;border-radius:999px;border:1.5px solid rgba(127,127,127,.3);background:var(--card2);cursor:pointer;font-size:13px;color:var(--text)}
 .pill.on{border-color:var(--accent);background:rgba(36,107,213,.12);color:var(--accent);font-weight:700}
 .pill .rec{font-size:11px;background:var(--red);color:#fff;border-radius:999px;padding:1px 6px;margin-left:4px;vertical-align:1px}
-.detail-blocks{margin-top:18px}
-.detail-block{border-left:4px solid var(--accent);background:var(--card);border-radius:0 16px 16px 0;padding:14px 16px;margin:12px 0}
+.detail-block{background:var(--card2);border:1px solid var(--line);border-radius:20px;padding:22px 24px;margin:12px 0;box-shadow:var(--zx-shadow-sm);min-width:0}
 .detail-block.green{border-color:var(--green)}
 .detail-block.orange{border-color:var(--orange)}
 .detail-block.red{border-color:var(--red)}
-.detail-block h3{margin:0 0 8px;font-size:15px}
-.detail-block p{margin:0;font-size:14px;line-height:1.7;color:var(--text);white-space:pre-wrap}
+.detail-block-title,.detail-block h3{display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:17px;line-height:1.35;font-weight:600;letter-spacing:-.015em;min-width:0;overflow-wrap:anywhere}
+.detail-block-title .ic,.detail-block h3 .ic{width:1.15em;height:1.15em}
+.detail-rich{min-width:0;max-width:100%;overflow-wrap:anywhere;word-break:break-word}
+.detail-rich p{margin:0 0 12px;font-size:17px;line-height:1.7;color:var(--text)}
+.detail-rich p:last-child{margin-bottom:0}
+.detail-rich h4{margin:18px 0 8px;font-size:13px;line-height:1.4;font-weight:600;letter-spacing:.02em;color:var(--sub)}
+.detail-rich h4:first-child{margin-top:0}
+.detail-list{list-style:none;margin:0 0 12px;padding:0}
+.detail-list:last-child{margin-bottom:0}
+.detail-list li{position:relative;margin:0;padding:7px 0 7px 16px;font-size:16px;line-height:1.65;color:var(--text)}
+.detail-list li:before{content:"";position:absolute;left:0;top:.72em;width:6px;height:6px;border-radius:50%;background:var(--zx-accent)}
+.detail-list li.has-mark{padding-left:0}
+.detail-list li.has-mark:before{content:none}
+ol.detail-list{list-style:decimal;padding-left:1.35em}
+ol.detail-list li{padding-left:.35em}
+ol.detail-list li:before{content:none}
+.detail-spec{width:100%;border-collapse:collapse;margin:2px 0 4px}
+.detail-spec th,.detail-spec td{text-align:left;vertical-align:top;padding:13px 12px 13px 0;border-bottom:1px solid var(--line);font-size:15px;line-height:1.5;font-weight:500;overflow-wrap:anywhere;word-break:break-word}
+.detail-spec th{color:var(--sub);width:34%;padding-right:16px}
+.detail-spec td{color:var(--text);font-weight:600}
+.detail-spec tr:last-child th,.detail-spec tr:last-child td{border-bottom:0}
+.detail-photo,.detail-rich img{max-width:100%;width:auto;height:auto;display:block;margin:14px 0;border-radius:16px;object-fit:contain;background:rgba(127,127,127,.08)}
+@media(max-width:640px){
+  .detail-blocks{margin-top:22px;max-width:none}
+  .detail-sheet-title{font-size:22px}
+  .detail-block{padding:16px;border-radius:18px;margin:10px 0}
+  .detail-rich p{font-size:16px;line-height:1.7}
+  .detail-list li{font-size:15px;line-height:1.65}
+  .detail-spec th,.detail-spec td{font-size:14px;padding:11px 8px 11px 0}
+  .detail-spec th{width:38%}
+}
 .warn-box{background:rgba(36,107,213,.08);border:1px solid rgba(36,107,213,.22);border-radius:18px;padding:12px;color:var(--text)}
 @media(max-width:640px){.btn.small{padding:10px 16px;font-size:14px}}
 .admin-layout{display:flex;gap:16px;align-items:flex-start}
@@ -327,8 +355,12 @@ html:not([data-theme="dark"]) .glass.pcard{background:#fff;box-shadow:var(--zx-s
 #announce.glass{background:rgba(36,107,213,.10);border:1px solid rgba(36,107,213,.22);border-radius:18px;box-shadow:none;color:var(--text)}
 .footer{margin-top:36px;padding:14px 20px;border-radius:var(--zx-radius-pill);background:var(--card);border:1px solid var(--line);backdrop-filter:blur(var(--zx-glass-blur));-webkit-backdrop-filter:blur(var(--zx-glass-blur));max-width:680px;margin-left:auto;margin-right:auto}
 .buy-price{color:var(--zx-accent)}
-.detail-block{background:var(--card2);border:1px solid var(--line);border-left:4px solid var(--zx-accent);border-radius:0 20px 20px 0}
-.detail-tabs{border-bottom-color:var(--line)}
+html:not([data-theme="dark"]) .detail-block{background:#fff}
+html:not([data-theme="dark"]) .detail-sheet-title,html:not([data-theme="dark"]) .detail-block-title,html:not([data-theme="dark"]) .detail-block h3{color:var(--zx-text-strong)}
+@media (prefers-color-scheme:dark){html:not([data-theme]) .detail-block{box-shadow:none;background:rgba(44,44,46,.72)}html:not([data-theme]) .detail-sheet-title,html:not([data-theme]) .detail-block-title,html:not([data-theme]) .detail-block h3{color:#f5f5f7}html:not([data-theme]) .detail-photo,html:not([data-theme]) .detail-rich img{background:#1c1c1e}}
+html[data-theme="dark"] .detail-block{box-shadow:none;background:rgba(44,44,46,.72)}
+html[data-theme="dark"] .detail-sheet-title,html[data-theme="dark"] .detail-block-title,html[data-theme="dark"] .detail-block h3{color:#f5f5f7}
+html[data-theme="dark"] .detail-photo,html[data-theme="dark"] .detail-rich img{background:#1c1c1e}
 .pay-shell.glass{border-radius:var(--zx-radius-xl);box-shadow:var(--zx-shadow-lg)}
 html:not([data-theme="dark"]) .detail-img,html:not([data-theme="dark"]) .buy-box,html:not([data-theme="dark"]) .pay-shell.glass{background:#fff;box-shadow:var(--zx-shadow-md)}
 @media (prefers-color-scheme:dark){html:not([data-theme]) .detail-img,html:not([data-theme]) .buy-box,html:not([data-theme]) .pay-shell.glass{background:var(--card2);box-shadow:0 16px 40px rgba(0,0,0,.45)}}
@@ -780,6 +812,115 @@ function payOptionsHTML(){
   for (var i = 0; i < opts.length; i++) h += payOptionButtonHTML(opts[i], i === 0);
   return h;
 }
+// 宝贝详情只把纯文本排成段落 / 列表 / 规格表。用户原文一律走 escH，不解析 HTML，避免新的注入面。
+// 图片只认单独一行的 https 图片地址（或 ![说明](https://…)），扩展名限定，属性值再转义。
+function detailSafeImgUrl(s){
+  if (!s || s.length > 800) return false;
+  if (!/^https:\/\/[^ \t\r\n"'<>\\]+$/i.test(s)) return false;
+  if (/[\u0000-\u001f]/.test(s)) return false;
+  return /\.(png|jpe?g|gif|webp|avif)(\?[^#]*)?$/i.test(s.split('#')[0]);
+}
+function detailImgFromLine(line){
+  var t = String(line || '').trim();
+  var alt = '', url = t;
+  var md = t.match(/^!\[([^\]]*)\]\(([^)\s]+)\)\s*$/);
+  if (md){ alt = md[1]; url = md[2]; }
+  if (!detailSafeImgUrl(url)) return null;
+  return { src: url, alt: alt };
+}
+function detailLi(line){
+  var t = String(line).trim();
+  var num = t.match(/^\d{1,2}[\.、\)]\s+(.+)$/);
+  if (num) return { text: num[1].trim(), ordered: true, marked: false };
+  var m = t.match(/^(?:[-*•·]\s+|>\s+)(.+)$/);
+  if (m) return { text: m[1].trim(), ordered: false, marked: false };
+  var cp = t.codePointAt(0);
+  if (cp == null) return null;
+  var isText = (cp >= 48 && cp <= 57) || (cp >= 65 && cp <= 90) || (cp >= 97 && cp <= 122) || (cp >= 0x4e00 && cp <= 0x9fff);
+  if (isText) return null;
+  if ('（(【[「"\'“‘'.indexOf(String.fromCodePoint(cp)) >= 0) return null;
+  if (!/[\u4e00-\u9fffA-Za-z0-9]/.test(t)) return null;
+  return { text: t, ordered: false, marked: true };
+}
+function detailKv(line){
+  var t = String(line).trim();
+  if (t.indexOf('://') >= 0) return null;
+  var m = t.match(/^(.{1,18}?)[：:]\s*(\S.*)$/);
+  if (!m) return null;
+  var k = m[1].trim(), v = m[2].trim();
+  if (!k || !v || k.length > 16) return null;
+  if (/[。！？.!?/]/.test(k)) return null;
+  if ((k.match(/\s/g) || []).length > 2) return null;
+  return { k: k, v: v, raw: t };
+}
+function detailRichHTML(text){
+  var raw = String(text == null ? '' : text).replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\\n/g, '\n');
+  if (!raw.trim()) return '';
+  var lines = raw.split('\n');
+  var blocks = [];
+  var cur = null;
+  function push(kind, payload){
+    if (cur && cur.kind === kind && (kind === 'li' || kind === 'kv' || kind === 'p')){ cur.items.push(payload); return; }
+    cur = { kind: kind, items: [payload] };
+    blocks.push(cur);
+  }
+  for (var i = 0; i < lines.length; i++){
+    var t = lines[i].trim();
+    if (!t){ if (cur && cur.kind === 'p') cur = null; continue; }
+    var img = detailImgFromLine(t);
+    if (img){ push('img', img); cur = null; continue; }
+    if (/^[━─=\-—_]{3,}$/.test(t)){ cur = null; continue; }
+    if (/^.{1,24}[：:]\s*$/.test(t)){ push('h', t.replace(/[：:]\s*$/, '')); cur = null; continue; }
+    var li = detailLi(t);
+    if (li){ push('li', li); continue; }
+    var kv = detailKv(t);
+    if (kv){ push('kv', kv); continue; }
+    push('p', t);
+  }
+  var html = '';
+  for (var b = 0; b < blocks.length; b++){
+    var block = blocks[b];
+    if (block.kind === 'kv' && block.items.length < 2){
+      for (var k = 0; k < block.items.length; k++) html += '<p>' + escH(block.items[k].raw) + '</p>';
+      continue;
+    }
+    if (block.kind === 'li' && block.items.length < 2){ html += '<p>' + escH(block.items[0].text) + '</p>'; continue; }
+    if (block.kind === 'p') html += '<p>' + block.items.map(function(s){ return escH(s); }).join('<br>') + '</p>';
+    else if (block.kind === 'h') html += '<h4>' + escH(block.items[0]) + '</h4>';
+    else if (block.kind === 'li'){
+      var ordered = block.items.every(function(it){ return it.ordered; });
+      html += ordered ? '<ol class="detail-list">' : '<ul class="detail-list">';
+      for (var j = 0; j < block.items.length; j++){
+        var it = block.items[j];
+        html += '<li' + (it.marked ? ' class="has-mark"' : '') + '>' + escH(it.text) + '</li>';
+      }
+      html += ordered ? '</ol>' : '</ul>';
+    } else if (block.kind === 'kv'){
+      html += '<table class="detail-spec"><tbody>';
+      for (var j2 = 0; j2 < block.items.length; j2++) html += '<tr><th scope="row">' + escH(block.items[j2].k) + '</th><td>' + escH(block.items[j2].v) + '</td></tr>';
+      html += '</tbody></table>';
+    } else if (block.kind === 'img'){
+      html += '<img class="detail-photo" alt="' + escH(block.items[0].alt || '') + '" src="' + escH(block.items[0].src) + '">';
+    }
+  }
+  return html;
+}
+function detailMetaHTML(p){
+  var rows = [];
+  var cat = catLabel(p.category);
+  if (cat) rows.push(['分类', cat]);
+  if (p.stock_type === 'card') rows.push(['发货', '付款后自动发卡密']);
+  else if (p.stock_type === 'manual') rows.push(['发货', '人工发货']);
+  if (Number(p.requires_email_activation)) rows.push(['激活', '需填写开通邮箱']);
+  if (!rows.length) return '';
+  var h = '<table class="detail-spec"><tbody>';
+  for (var i = 0; i < rows.length; i++) h += '<tr><th scope="row">' + escH(rows[i][0]) + '</th><td>' + escH(rows[i][1]) + '</td></tr>';
+  return h + '</tbody></table>';
+}
+function detailCardHTML(titleInner, bodyHTML){
+  if (!bodyHTML) return '';
+  return '<section class="detail-block"><h3 class="detail-block-title">' + titleInner + '</h3><div class="detail-rich">' + bodyHTML + '</div></section>';
+}
 async function renderProduct(id){
   var r = await api('/api/products/' + id);
   if (!r.ok){ el('app').innerHTML = '<div class="muted">商品不存在 · <a href="#/">回商城</a></div>'; return; }
@@ -827,14 +968,14 @@ async function renderProduct(id){
   html += '<div class="total-box"><span>合计 <span id="stickyQty">1</span> 件</span><span><b id="totalPrice" style="font-size:20px">' + fmtCNY(p.price_usdt) + '</b> <span class="muted" id="totalUsdt">约 ' + Number(p.price_usdt||0).toFixed(2) + ' USDT</span></span></div>';
   html += '<div style="margin-top:14px">' + (inSt === 0 ? '<button class="btn block" disabled style="background:rgba(127,127,127,.3);cursor:not-allowed">缺货 · 补货中</button>' : ((!_enabledPay.length || !payAvailable()) ? '<button class="btn block" disabled aria-disabled="true" title="' + PAY_OFF_MSG + '" style="background:rgba(127,127,127,.3);cursor:not-allowed">收款暂未开放</button><p class="muted" id="payOffReason" style="margin:8px 0 0;text-align:center">' + PAY_OFF_MSG + '</p>' : '<button class="btn block" data-pid="' + p.id + '" onclick="submitOrder(this.dataset.pid)">立即购买</button>')) + '</div>';
   html += '</div></div>';
-  // Below: detail blocks full width (intro + usage + order notice)
+  // 宝贝详情：标题、说明、规格都来自现有字段；正文只做转义后的排版，不改数据。
   var useTxt = p.notice || '按交付内容里的说明使用即可。如交付内容包含兑换链接或操作步骤，按步骤完成；遇到问题先在查单页核对订单状态。';
-  var noticeItems = (CFG && CFG.order_notice ? String(CFG.order_notice) : '').split(/\\n|\r?\n/).map(function(s){ return s.trim(); }).filter(function(s){ return s; });
-  var noticeHtml = noticeItems.map(function(s){ return '<div style="margin-bottom:6px">' + escH(s) + '</div>'; }).join('');
-  html += '<div class="detail-blocks"><div class="detail-tabs"><span>宝贝详情</span></div>';
-  html += '<div class="detail-block"><h3>' + escH(p.title) + '</h3><p>' + escH(p.description) + '</p></div>';
-  html += '<div class="detail-block"><h3>' + ic('book') + ' 使用说明</h3><p>' + escH(useTxt) + '</p></div>';
-  if (noticeHtml) html += '<div class="detail-block"><h3>' + ic('clipboard') + ' 下单须知</h3>' + noticeHtml + '</div>';
+  var noticeRaw = (CFG && CFG.order_notice) ? String(CFG.order_notice) : '';
+  html += '<div class="detail-blocks"><h2 class="detail-sheet-title">宝贝详情</h2>';
+  if (String(p.description || '').trim()) html += detailCardHTML(escH(p.title), detailRichHTML(p.description));
+  html += detailCardHTML(ic('book') + ' 使用说明', detailRichHTML(useTxt));
+  html += detailCardHTML('规格', detailMetaHTML(p));
+  html += detailCardHTML(ic('clipboard') + ' 下单须知', detailRichHTML(noticeRaw));
   html += '</div>';
   html += relHtml;
   html += '<div style="margin-top:14px"><a class="btn ghost small" href="#/">← 返回商城</a> <a class="btn ghost small" href="#/query">查询订单</a></div>';
