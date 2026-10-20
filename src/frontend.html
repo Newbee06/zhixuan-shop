@@ -2263,6 +2263,7 @@ async function adminSaveSettings(){
   var r = await api('/api/admin/settings', 'POST', { settings: obj });
   setBtnLoading(btn, false);
   if (!r.ok){ toast(r.error, 'error'); return; }
+  await loadPricingTemplatesFlag();
   toast('已保存', 'success');
 }
 // ---- 操作审计 ----
@@ -2356,7 +2357,7 @@ function pricingAdvancedHTML(list){
     h += '<div class="adm-table-wrap"><table class="adm-table"><thead><tr><th>名称</th><th>倍率</th><th>固定</th><th>下限</th><th>上限</th><th>状态</th><th></th></tr></thead><tbody>';
     for (var i = 0; i < list.length; i++){
       var t = list[i];
-      h += '<tr><td data-label="名称">' + escH(t.name) + '</td><td data-label="倍率">' + t.markup + '</td><td data-label="固定">' + t.fixed + '</td><td data-label="下限">' + (t.price_floor == null ? '—' : t.price_floor) + '</td><td data-label="上限">' + (t.price_ceiling == null ? '—' : t.price_ceiling) + '</td><td data-label="状态">' + (Number(t.is_active) ? '<span class="spill green">启用</span>' : '<span class="spill gray">停用</span>') + '</td><td data-label=""><button class="btn small ghost" data-id="' + t.id + '" onclick="adminPricingForm(this.dataset.id)">编辑</button>' + (Number(t.is_active) ? ' <button class="btn small" data-id="' + t.id + '" onclick="adminPricingOff(this.dataset.id)">停用</button>' : '') + '</td></tr>';
+      h += '<tr><td data-label="名称">' + escH(t.name) + '</td><td data-label="倍率">' + escH(t.markup) + '</td><td data-label="固定">' + escH(t.fixed) + '</td><td data-label="下限">' + (t.price_floor == null ? '—' : escH(t.price_floor)) + '</td><td data-label="上限">' + (t.price_ceiling == null ? '—' : escH(t.price_ceiling)) + '</td><td data-label="状态">' + (Number(t.is_active) ? '<span class="spill green">启用</span>' : '<span class="spill gray">停用</span>') + '</td><td data-label=""><button class="btn small ghost" data-id="' + escH(t.id) + '" onclick="adminPricingForm(this.dataset.id)">编辑</button>' + (Number(t.is_active) ? ' <button class="btn small" data-id="' + escH(t.id) + '" onclick="adminPricingOff(this.dataset.id)">停用</button>' : '') + '</td></tr>';
     }
     h += '</tbody></table></div>';
   }
