@@ -55,6 +55,8 @@
 
 状态：`submitted`（用户提交）→ `discovered`（轮询发现，观察类）→ `verified`（链上核验通过并取得全局消费权后记账）→ `confirmed`（达到确认数）→ `posted`（已入账，履约已触发）。异常：`duplicate`（同一事件已入账 / TXID 已属他单的观察行）、`mismatch`（金额不符，需人工对账）、`unmatched`（无法归属）、`manual_confirmed`（人工确认，含无链上 TXID 时的对账行）、`overpaid_pending`（第二笔真实付款待人工对账/退款，`reconcile_status`，不重复发货）。管理员可对账（`reconcile`）：`mismatch/unmatched/duplicate` → `reconciled`；`verified/overpaid_pending` 超额行 → `reconciled`，且本订单无其他超额行时清 `payment_state`。`posted` / `reconciled` / `manual_confirmed` 为终态，任何路径不得降级、不得重复对账。
 
+管理端列表 `GET /api/admin/payments`（`requireAdmin`）：既有 `status`、`order_id`、`page`、`page_size`；一期另加精确筛选 `order_no`、`tx_hash`、`chain`、`reconcile_status`，以及 `from` / `to`（按 `payments.created_at`，纯日期含当天）。每行除 `p.*` 与 `order_no` 外，只读带上订单对照 `actual_amount`、`pay_method`、`pay_chain`、`order_status`（`orders.status`）、`payment_state`、`order_tx_hash`（`orders.tx_hash`）、`pending_tx_hash`。响应字段 `contract` 为只读派生：`settings.usdt_contracts[chain] || DEFAULT_USDT_CONTRACTS[chain]`（X Layer USDT0 `0x779Ded0c9e1022225f8E0630b35a9b54bE713736`，BEP20 `0x55d398326f99059fF775485246999027B3197955`），**不**写入 `payments` 表，**不**支持按合约筛选。`POST /api/admin/payments/:id/reconcile` 语义不变。对账页不提供删除 `txid_claims`。
+
 ## 上游采购
 
 - 仅 `source=prodseller` 商品走 ProdSeller；`prodseller_enabled` 门禁默认关闭。

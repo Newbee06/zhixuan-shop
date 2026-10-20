@@ -87,6 +87,22 @@ var DEFAULT_USDT_CONTRACTS = { 'X Layer': '0x779Ded0c9e1022225f8E0630b35a9b54bE7
 // BEP20 默认 = Binance-Peg USDT 0x55d398326f99059fF775485246999027B3197955，18 位精度（BscScan 合约源码 _decimals=18）。
 // 注意：BEP20 精度是 18，不是 6；核验时必须用合约实际 decimals（见 getTokenDecimals），不得硬编码 6。
 // 管理员可在 settings.usdt_contracts 中显式覆盖任一链的合约（覆盖后仍按该合约实际 decimals 核验）。
+// 对账列表只读派生 contract：settings.usdt_contracts[chain] || DEFAULT_USDT_CONTRACTS[chain]。不写 payments 列、不可按合约筛选。
+function usdtContractForChain(settings, chain) {
+  var contracts = parseJsonSafe(settings && settings.usdt_contracts, {});
+  if (!contracts || typeof contracts !== 'object') contracts = {};
+  var key = String(chain == null ? '' : chain);
+  var configured = contracts[key];
+  if (typeof configured === 'string' && String(configured).trim()) return String(configured).trim();
+  return DEFAULT_USDT_CONTRACTS[key] || '';
+}
+// 对账列表 created_at 边界：纯日期 from 含当天 00:00:00、to 含当天 23:59:59；已带时间则原样（T 换成空格）。
+function paymentCreatedAtBound(raw, isEnd) {
+  var s = String(raw || '').trim().replace('T', ' ').replace(/Z$/, '');
+  if (!s) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s + (isEnd ? ' 23:59:59' : ' 00:00:00');
+  return s;
+}
 
 function json(data, status) {
   return new Response(JSON.stringify(data), {
@@ -4059,24 +4075,45 @@ async function handleApi(req, env, url, ctx) {
     await cleanupExpired(env);
     return json({ ok: true, message: '7天清理已执行' });
   }
-  // ---- 管理员：付款账本（第四轮 P0）----
-  // GET /api/admin/payments?status=&order_id=&page= —— 按状态/订单筛选付款记录，含订单号。
+  // ---- 管理员：付款账本（第四轮 P0；对账列表一期扩展筛选 + 订单只读对照 + 派生 contract）----
+  // GET /api/admin/payments
+  //   既有：status、order_id、page、page_size
+  //   新增：order_no、tx_hash（精确）、chain、reconcile_status、from、to（均按 payments.created_at）
+  //   不支持按 contract 筛选。contract 为响应派生字段，不落库。
+  // 本接口在上方 requireAdmin 网关之后，未登录 401。
   if (path === '/api/admin/payments' && method === 'GET') {
     var pStatus = String(url.searchParams.get('status') || '').trim();
     var pOrderId = String(url.searchParams.get('order_id') || '').trim();
+    var pOrderNo = String(url.searchParams.get('order_no') || '').trim();
+    var pTxHash = String(url.searchParams.get('tx_hash') || '').trim();
+    var pChain = String(url.searchParams.get('chain') || '').trim();
+    var pRecon = String(url.searchParams.get('reconcile_status') || '').trim();
+    var pFrom = paymentCreatedAtBound(url.searchParams.get('from'), false);
+    var pTo = paymentCreatedAtBound(url.searchParams.get('to'), true);
     var pPage = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1);
     var pPageSize = Math.min(100, Math.max(1, parseInt(url.searchParams.get('page_size') || '20', 10) || 20));
     var pOff = (pPage - 1) * pPageSize;
     var pWhere = [], pBinds = [];
     if (pStatus) { pWhere.push('p.status = ?'); pBinds.push(pStatus); }
     if (pOrderId) { pWhere.push('p.order_id = ?'); pBinds.push(Number(pOrderId)); }
+    if (pOrderNo) { pWhere.push('o.order_no = ?'); pBinds.push(pOrderNo); }
+    if (pTxHash) { pWhere.push('p.tx_hash = ?'); pBinds.push(pTxHash); }
+    if (pChain) { pWhere.push('p.chain = ?'); pBinds.push(pChain); }
+    if (pRecon) { pWhere.push('p.reconcile_status = ?'); pBinds.push(pRecon); }
+    if (pFrom) { pWhere.push('p.created_at >= ?'); pBinds.push(pFrom); }
+    if (pTo) { pWhere.push('p.created_at <= ?'); pBinds.push(pTo); }
     var pWhereSql = pWhere.length ? ('WHERE ' + pWhere.join(' AND ')) : '';
-    var pStmt = env.DB.prepare('SELECT p.*, o.order_no FROM payments p LEFT JOIN orders o ON o.id = p.order_id ' + pWhereSql + ' ORDER BY p.id DESC LIMIT ? OFFSET ?');
-    var pTotalStmt = env.DB.prepare('SELECT COUNT(*) as c FROM payments p ' + pWhereSql);
+    var pJoin = 'FROM payments p LEFT JOIN orders o ON o.id = p.order_id ';
+    var pSelect = 'SELECT p.*, o.order_no, o.actual_amount, o.pay_method, o.pay_chain, o.status AS order_status, o.payment_state, o.tx_hash AS order_tx_hash, o.pending_tx_hash ' + pJoin + pWhereSql + ' ORDER BY p.id DESC LIMIT ? OFFSET ?';
+    var pStmt = env.DB.prepare(pSelect);
+    var pTotalStmt = env.DB.prepare('SELECT COUNT(*) as c ' + pJoin + pWhereSql);
     var pRows = await pStmt.bind.apply(pStmt, pBinds.concat([pPageSize, pOff])).all();
     var pTotalRow = await pTotalStmt.bind.apply(pTotalStmt, pBinds).first();
     var pTotal = Number((pTotalRow && pTotalRow.c) || 0);
-    return json({ ok: true, payments: pRows.results || [], total: pTotal, page: pPage, page_size: pPageSize, total_pages: Math.max(1, Math.ceil(pTotal / pPageSize)) });
+    var paySettings = await getAllSettings(env);
+    var payList = pRows.results || [];
+    for (var pi = 0; pi < payList.length; pi++) payList[pi].contract = usdtContractForChain(paySettings, payList[pi].chain);
+    return json({ ok: true, payments: payList, total: pTotal, page: pPage, page_size: pPageSize, total_pages: Math.max(1, Math.ceil(pTotal / pPageSize)) });
   }
   // POST /api/admin/payments/:id/reconcile —— 人工对账：把 mismatch/unmatched 的付款标记为 reconciled，并写对账备注。
   // 仅能标记，不得直接把付款改为 posted（posted 必须经链上核验 + 履约流程）。
