@@ -60,6 +60,10 @@ async function mockFetch(url, opts = {}) {
   if (u.includes('mock-xlayer') || u.includes('mock-bsc')) {
     let body = {}; try { body = JSON.parse(opts.body || '{}'); } catch {}
     const rpc = body.params || [];
+    if (body.method === 'eth_chainId') {
+      const id = u.includes('mock-bsc') ? '0x38' : '0xc4';
+      return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: id }), text: async () => '' };
+    }
     if (body.method === 'eth_call') {
       const data = String(rpc[0]?.data || '');
       const dec = data.startsWith('0x313ce567') ? (u.includes('mock-xlayer') ? 6 : 18) : 18;
