@@ -318,6 +318,37 @@ CREATE TABLE IF NOT EXISTS lookup_attempts (
 );
 CREATE INDEX IF NOT EXISTS idx_lookup_attempts_order ON lookup_attempts(order_no, created_at);
 
+-- v19：定价模板。与全局 upstream_markup / upstream_fixed 并存。
+-- 重新导入不写 sell_price（管理员自定义售价保留）；套用模板是单独的显式操作。
+-- 预置版本仍停在 v10：本表由 schema.sql 建好，旧库由 Worker MIGRATIONS v19 幂等创建。
+CREATE TABLE IF NOT EXISTS pricing_templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  markup REAL NOT NULL DEFAULT 1,
+  fixed_add REAL NOT NULL DEFAULT 0,
+  price_floor REAL,
+  price_ceiling REAL,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_pricing_templates_active ON pricing_templates(is_active, id);
+
+-- v20：商品分类目录（扁平列表）。内置 recharge/account/card 的标识与发货规则绑定，显示名可改。
+CREATE TABLE IF NOT EXISTS categories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cat_key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  sort INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_key ON categories(cat_key);
+INSERT OR IGNORE INTO categories (cat_key, name, is_active, sort) VALUES ('recharge', '代充', 1, 10);
+INSERT OR IGNORE INTO categories (cat_key, name, is_active, sort) VALUES ('account', '成品号', 1, 20);
+INSERT OR IGNORE INTO categories (cat_key, name, is_active, sort) VALUES ('card', '卡密', 1, 30);
+
 -- v15 无新增表/索引（仅 orders.query_password_salt 列，见 orders 建表语句）。
 -- 金额唯一性：部分唯一索引，仅约束待付款订单（过期未取消的仍占位，轮询自动取消后释放）。
 -- v9：条件排除 BinanceUID 订单（无链上地址且金额无随机尾数，纳入约束会误判金额冲突）。

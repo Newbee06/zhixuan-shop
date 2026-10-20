@@ -55,10 +55,14 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 | v16 | P2-4（补 6 个查询索引：`idx_cards_product`、`idx_cards_used`、`idx_orders_no`、`idx_orders_status`、`idx_orders_created`、`idx_sessions_expires`；仅补 MIGRATIONS v1–v15 真缺失的，schema.sql 新库已含，`IF NOT EXISTS` 幂等；不删历史数据，不加 claim_token 列） |
 | v17 | P1-1/P1-2（`txid_claims` 加 `claim_token`（每次新认领的密码学安全随机令牌；无回滚删除入口，已消费认领永久保留）+ `source`（`chain_verified` / `manual_confirmed`，人工与链上共享同一全局原子认领）+ `order_lease_token`（认领时持有者的订单租约，接管时收养更新）；`ADD COLUMN` 幂等，旧库真正加列、新库 schema.sql 已含为 no-op；现有认领记录保留，旧行三列为默认值） |
 | v18 | 资金安全（`orders.pending_tx_hash` 未核验候选 TXID + `orders.payment_state` 超额付款态（`''` / `'overpaid_pending'`）+ `lookup_attempts`（/lookup 按单原子记数，与 /secret 同口径）；`ADD COLUMN` / `CREATE TABLE IF NOT EXISTS` 幂等，旧库真正加列/建表、新库 schema.sql 已含为 no-op） |
+| v19 | 定价模板 `pricing_templates`（markup 倍率 + fixed_add + 可选 price_floor / price_ceiling）。与全局 `upstream_markup` / `upstream_fixed` 并存。重新导入不写 `sell_price`；`POST /api/admin/products/:id/apply-pricing-template` 才显式覆盖售价 |
+| v20 | 商品分类目录 `categories`（扁平列表）。种子 `recharge` / `account` / `card`（`INSERT OR IGNORE`，不重置已改名或已停用的内置分类）。内置 key 不可改；自定义 key 改名时同步 `products.category` |
 
 > v17 核对（与 `src/worker.js` MIGRATIONS v17 + `migrations/0017_txid_claim_token_source_lease.sql` 一致）：三列均为 `ADD COLUMN`；`claim_token` 为 `randomHex(32)`；`source` 默认 `'chain_verified'`（v17 前只有链上路径写认领表）；`order_lease_token` 默认空。`GET /api/admin/schema-check` 按 `expectedTables` 校验 `txid_claims` 六列齐全。预置版本仍为 10（`schema.sql` 只预置 v1–v10），v11–v18 由 Worker 按序执行，不得把预置版本改到 18（否则 v11 图标种子等会被跳过）。
 >
 > v18 核对（与 `src/worker.js` MIGRATIONS v18 + `migrations/0018_pending_tx_hash_payment_state_lookup_attempts.sql` 一致）：`orders.pending_tx_hash` / `orders.payment_state` 为 `ADD COLUMN`；`lookup_attempts` 为 `CREATE TABLE IF NOT EXISTS` + 索引 `idx_lookup_attempts_order`。`GET /api/admin/schema-check` 按 `expectedTables` 校验 `orders` 含 `pending_tx_hash` / `payment_state`、`lookup_attempts` 三列齐全。预置版本仍为 10（`schema.sql` 只预置 v1–v10），v11–v18 由 Worker 按序执行。
+>
+> v19 / v20 核对：`pricing_templates`、`categories` 及唯一索引 `idx_categories_key` 已写入 `schema.sql` 与 `expectedTables`。预置版本仍为 10，不得改到 20（否则 v11 图标种子会被跳过）。旧库首次请求由 Worker 升到 v20。
 
 ## 管理员首次建站（B-P0）
 
@@ -76,5 +80,5 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 1. 备份生产 D1（`wrangler d1 export` 或 CF 面板快照）。
 2. 在测试 D1 上先演练迁移（见测试报告的迁移测试）。
 3. 部署前跑 `GET /api/admin/schema-check` 预检（只读），确认无差异。
-4. 部署新版 Worker，首次请求自动迁移；用 `GET /api/admin/migrate` 确认 `current_version = 18`。
+4. 部署新版 Worker，首次请求自动迁移；用 `GET /api/admin/migrate` 确认 `current_version = 20`。
 5. 回滚：重新部署旧版 Worker；新列/新表旧版代码不读取，不影响旧版运行。
