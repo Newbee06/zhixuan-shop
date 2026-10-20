@@ -52,4 +52,4 @@
 - **delivery_email**：后端只读取 `customer_fields.delivery_email`，请求体顶层的 `delivery_email` 会被忽略。例外是兼容回退：自营卡密/账号类商品需要邮件发货、但 `delivery_email` 为空时，会用 `customer_fields.contact_email`（或顶层 `contact`）回填，前提是它是合法邮箱格式；Telegram 用户名之类不回填。
 - **多件激活重复邮箱**：qty>1 时 `activation_emails` 允许重复（同一账号叠加时长/额度）。ProdSeller 文档未明确 `emails` 是否要求唯一，**NOT VERIFIED**；若上游拒绝，订单走既有上游失败转异常流程，不会自动发货。
 - **匿名订单概要**：`GET /api/orders/{order_no}` 是有意保留的概要接口（有限流，不含邮箱/交付内容/收款地址），本 PR 起不再返回内部自增 `id`。
-- **安全响应头**：所有响应统一加 CSP、X-Frame-Options=DENY、nosniff、Referrer-Policy=no-referrer、HSTS、Permissions-Policy。HTML 的 CSP 兼容现有内联脚本、data: 图片、api.qrserver.com 二维码和 Turnstile；非 HTML 响应使用 `default-src 'none'`。
+- **安全响应头**：所有响应统一加 CSP、X-Frame-Options=DENY、nosniff、Referrer-Policy=no-referrer、HSTS、Permissions-Policy。HTML 的 CSP 兼容现有内联脚本、data: 图片（含本地收款二维码）和 Turnstile；不再放行第三方二维码域名；非 HTML 响应使用 `default-src 'none'`。
