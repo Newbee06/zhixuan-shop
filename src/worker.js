@@ -4139,12 +4139,12 @@ async function handleApi(req, env, url, ctx) {
 import FRONTEND_HTML from './frontend.html';
 
 // 安全响应头（staging 冒烟 S7）：所有 fetch 响应统一附加。CSP 兼容现有内联脚本/样式、onclick 处理器、
-// data: 图片（上传图、App 图标、SVG 验证码）、收款二维码（api.qrserver.com）与 Turnstile（challenges.cloudflare.com）。
+// data: 图片（上传图、App 图标、SVG 验证码、本地生成的收款二维码）与 Turnstile（challenges.cloudflare.com）。
 var CSP_HTML = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: https://api.qrserver.com",
+  "img-src 'self' data:",
   "connect-src 'self'",
   "frame-src https://challenges.cloudflare.com",
   "object-src 'none'",

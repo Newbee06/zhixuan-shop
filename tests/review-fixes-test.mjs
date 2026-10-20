@@ -1233,8 +1233,8 @@ check('P3-34: copy buttons use data-copy-target, no onclick copyText-with-id', f
 check('P3-35: comment says empty password is rejected by backend 401', frontendHtml.includes('空密码由后端 401 拒绝'));
 check('P3-36: tutorial link has rel=noopener noreferrer and renders only when tut non-empty', frontendHtml.includes('rel="noopener noreferrer"') && frontendHtml.includes('if (tut)'));
 
-// P3-37：SECURITY.md 记录 qrserver 现状接受。
-check('P3-37: SECURITY.md documents qrserver acceptance', securityDoc.includes('qrserver'));
+// P3-37：SECURITY.md 记录本地 QR（不再接受第三方 qrserver）。
+check('P3-37: SECURITY.md documents local QR (no qrserver)', securityDoc.includes('paulmillr') && securityDoc.includes('api.qrserver.com') && securityDoc.includes('不再请求'));
 
 // P3-42：PR_REVIEW 顶部历史记录横幅。
 check('P3-42: PR_REVIEW starts with history banner (superseded by v15)', prReview.includes('已被 v15 取代'));
@@ -1272,7 +1272,7 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   check('payui: payBlockHTML shared by success + query pages', frontendHtml.includes('function payBlockHTML') && frontendHtml.includes("payBlockHTML(o, 'success')") && frontendHtml.includes('payBlockHTML(o, o.order_no)'));
   check('payui: amount header + exact-pay pill', frontendHtml.includes('pay-amount-usdt') && frontendHtml.includes('请严格按照数额进行付款'));
   check('payui: absolute expiry + merchant order + copy', frontendHtml.includes('fmtExpiryAbsolute') && frontendHtml.includes('到期时间') && frontendHtml.includes('商户订单'));
-  check('payui: QR with USDT mark + ecc=H', frontendHtml.includes('pay-qr-logo') && frontendHtml.includes('ecc=H'));
+  check('payui: QR with USDT mark + local ecc high', frontendHtml.includes('pay-qr-logo') && frontendHtml.includes("ecc: 'high'") && frontendHtml.includes('payQrDataUrl') && !frontendHtml.includes('api.qrserver.com/v1'));
   check('payui: address head/tail highlight', frontendHtml.includes('payAddrHighlighted') && frontendHtml.includes('pay-addr-hl'));
   check('payui: countdown clock format + expired state', frontendHtml.includes("mm + ':' + ss") && frontendHtml.includes('已过期，请重新下单'));
   // fmtCountdown 功能测试：从前端源码提取函数真跑（时钟格式 MM:SS / H:MM:SS，过期态）。
