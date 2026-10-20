@@ -192,7 +192,7 @@ const darkSeed = db.prepare("SELECT image_data FROM app_icons WHERE app_key='cha
 db.prepare("UPDATE app_icons SET image_data='data:image/jpeg;base64,FAKE-OLD-DARK' WHERE app_key='chatgpt' AND theme='dark'").run();
 db.prepare("DELETE FROM schema_migrations WHERE version=12").run();
 r = await call('POST', '/api/admin/migrate', {}, cookie);
-check('v12 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 18, JSON.stringify(r.json));
+check('v12 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 20, JSON.stringify(r.json));
 const darkAfter = db.prepare("SELECT image_data FROM app_icons WHERE app_key='chatgpt' AND theme='dark'").get().image_data;
 check('v12 refreshed dark icon to seed value', darkAfter === darkSeed, 'after len=' + darkAfter.length);
 check('v12 does not touch light icon', db.prepare("SELECT image_data FROM app_icons WHERE app_key='chatgpt' AND theme='light'").get().image_data === icons.chatgpt.light);
@@ -201,7 +201,7 @@ const tgSeed = db.prepare("SELECT image_data FROM app_icons WHERE app_key='teleg
 db.prepare("UPDATE app_icons SET image_data='data:image/jpeg;base64,FAKE-OLD-TELEGRAM-WHITE' WHERE app_key='telegram' AND theme='dark'").run();
 db.prepare("DELETE FROM schema_migrations WHERE version=13").run();
 r = await call('POST', '/api/admin/migrate', {}, cookie);
-check('v13 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 18, JSON.stringify(r.json));
+check('v13 re-migrate ok', r.json && r.json.ok === true && r.json.current_version === 20, JSON.stringify(r.json));
 const tgAfter = db.prepare("SELECT image_data FROM app_icons WHERE app_key='telegram' AND theme='dark'").get().image_data;
 check('v13 refreshed telegram dark to seed value', tgAfter === tgSeed, 'after len=' + tgAfter.length);
 

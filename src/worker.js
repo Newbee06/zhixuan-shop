@@ -25,6 +25,107 @@ function isLegacyContactField(f){ return !!f && f.key === 'contact' && f.label =
 function getFetch(env){ return (env && env.__fetch) ? env.__fetch : fetch; }
 function getProdSellerBase(env, settings){ return (env && env.PRODSELLER_BASE_URL) || (settings && settings.prodseller_base_url) || PRODSELLER_DEFAULT_BASE; }
 function getEffectivePrice(prod){ var sp = Number(prod && prod.sell_price); if (isFinite(sp) && sp > 0) return sp; return Number(prod ? prod.price_usdt : 0) || 0; }
+function roundMoney(n){ var x = Math.round(Number(n) * 100) / 100; return isFinite(x) ? x : 0; }
+function clampSell(n){ var x = roundMoney(n); if (!isFinite(x) || x < 0) return 0; if (x > 1000000) return 1000000; return x; }
+// 定价模板：售价 = cost × markup + fixed，再夹到可选下限/上限（控价）。markup 与全局 upstream_markup 同一口径（倍率，1.2 = 加价 20%）。
+function computeTemplateSell(cost, tpl){
+  var markup = Number(tpl && tpl.markup);
+  var fixed = Number(tpl && (tpl.fixed_add != null ? tpl.fixed_add : tpl.fixed));
+  if (!isFinite(markup) || markup <= 0) markup = 1;
+  if (!isFinite(fixed)) fixed = 0;
+  var sell = roundMoney((Number(cost) || 0) * markup + fixed);
+  var floor = tpl ? tpl.price_floor : null;
+  var ceiling = tpl ? tpl.price_ceiling : null;
+  if (floor != null && floor !== '' && isFinite(Number(floor)) && sell < Number(floor)) sell = Number(floor);
+  if (ceiling != null && ceiling !== '' && isFinite(Number(ceiling)) && sell > Number(ceiling)) sell = Number(ceiling);
+  return clampSell(sell);
+}
+var BUILTIN_CATEGORY_KEYS = { recharge: 1, account: 1, card: 1 };
+var FORM_FIELD_RESERVED_KEYS = { contact_email: 1, delivery_email: 1, activation_email: 1, activation_email_confirm: 1, activation_emails: 1, activation_emails_confirm: 1, activation_confirm: 1, query_password: 1 };
+// 商品自定义下单字段：前台只渲染 text / textarea（key、label、required、placeholder）。遗留联系方式字段原样保留（后台编辑器会滤掉，不再因它拒单）。
+function normalizeFormFields(raw){
+  var formFields = raw || [];
+  if (typeof formFields === 'string') { try { formFields = JSON.parse(formFields); } catch (e) { return { ok: false, error: '自定义字段 JSON 无效' }; } }
+  if (!Array.isArray(formFields)) return { ok: false, error: '自定义字段必须是数组' };
+  if (formFields.length > 20) return { ok: false, error: '自定义字段最多 20 个' };
+  var out = [];
+  var seen = {};
+  for (var i = 0; i < formFields.length; i++) {
+    var f = formFields[i];
+    if (!f || typeof f !== 'object' || Array.isArray(f)) return { ok: false, error: '自定义字段第 ' + (i + 1) + ' 项无效' };
+    if (isLegacyContactField(f)) {
+      out.push({ key: 'contact', label: '联系方式（邮箱/TG）', required: !!f.required, placeholder: String(f.placeholder || '').slice(0, 200) });
+      continue;
+    }
+    var key = String(f.key || '').trim();
+    if (!/^[a-z][a-z0-9_]{0,31}$/.test(key)) return { ok: false, error: '自定义字段 key 无效（小写字母开头，仅字母数字下划线，最长 32）：' + (key || '空') };
+    if (FORM_FIELD_RESERVED_KEYS[key]) return { ok: false, error: '自定义字段 key 与系统字段冲突：' + key };
+    if (seen[key]) return { ok: false, error: '自定义字段 key 重复：' + key };
+    seen[key] = 1;
+    var label = String(f.label || '').trim();
+    if (!label || label.length > 80) return { ok: false, error: '自定义字段名称必填且不超过 80 字' };
+    var type = (f.type == null || String(f.type).trim() === '') ? 'text' : String(f.type).trim();
+    if (type !== 'text' && type !== 'textarea') return { ok: false, error: '自定义字段类型仅支持 text / textarea' };
+    out.push({ key: key, label: label, required: !!f.required, placeholder: String(f.placeholder || '').slice(0, 200), type: type });
+  }
+  return { ok: true, fields: out };
+}
+function pricingTemplateJson(row){
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    name: String(row.name || ''),
+    markup: Number(row.markup),
+    fixed: Number(row.fixed_add),
+    price_floor: row.price_floor == null ? null : Number(row.price_floor),
+    price_ceiling: row.price_ceiling == null ? null : Number(row.price_ceiling),
+    is_active: Number(row.is_active) ? 1 : 0,
+    created_at: row.created_at || '',
+    updated_at: row.updated_at || ''
+  };
+}
+function sameMoney(a, b){
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return false;
+  return Math.abs(Number(a) - Number(b)) < 0.001;
+}
+function parsePricingInput(b){
+  var name = String((b && b.name) || '').trim();
+  if (!name || name.length > 40) return { ok: false, error: '模板名称必填且不超过 40 字' };
+  var markup = Number(b.markup);
+  if (!isFinite(markup) || markup <= 0 || markup > 100) return { ok: false, error: 'markup 必须是 0~100 之间的倍率（与全局 upstream_markup 相同，1.2 = 成本×1.2）' };
+  var fixed = Number(b.fixed != null ? b.fixed : b.fixed_add);
+  if (!isFinite(fixed) || fixed < 0 || fixed > 1000000) return { ok: false, error: 'fixed 必须是 0~1000000 之间的固定加价（USDT）' };
+  function optBound(v, label){
+    if (v == null || v === '') return { ok: true, value: null };
+    var n = Number(v);
+    if (!isFinite(n) || n < 0 || n > 1000000) return { ok: false, error: label + ' 必须是 0~1000000 或留空' };
+    return { ok: true, value: roundMoney(n) };
+  }
+  var fl = optBound(b.price_floor, 'price_floor');
+  if (!fl.ok) return fl;
+  var ce = optBound(b.price_ceiling, 'price_ceiling');
+  if (!ce.ok) return ce;
+  if (fl.value != null && ce.value != null && fl.value > ce.value) return { ok: false, error: '控价下限不能高于上限' };
+  var active = (b.is_active === 0 || b.is_active === '0' || b.is_active === false) ? 0 : 1;
+  return { ok: true, data: { name: name, markup: markup, fixed_add: roundMoney(fixed), price_floor: fl.value, price_ceiling: ce.value, is_active: active } };
+}
+function categoryJson(row){
+  if (!row) return null;
+  return { id: Number(row.id), key: String(row.cat_key || ''), name: String(row.name || ''), is_active: Number(row.is_active) ? 1 : 0, sort: Number(row.sort) || 0, builtin: BUILTIN_CATEGORY_KEYS[row.cat_key] ? 1 : 0, created_at: row.created_at || '', updated_at: row.updated_at || '' };
+}
+async function categoryGate(env, category, allowKey){
+  var row = await env.DB.prepare('SELECT cat_key, is_active FROM categories WHERE cat_key = ?').bind(category).first();
+  if (!row) return '分类不存在，请先在「商品分类」中创建';
+  if (Number(row.is_active) !== 1 && category !== allowKey) return '分类已停用，不能用于新商品或改到该分类';
+  return null;
+}
+async function runWrites(env, stmts){
+  if (env.DB.batch) return await env.DB.batch(stmts);
+  var out = [];
+  for (var i = 0; i < stmts.length; i++) out.push(await stmts[i].run());
+  return out;
+}
 async function cardStockMap(env){
   var m = {};
   try {
@@ -617,6 +718,20 @@ var MIGRATIONS = [
     await addColumnIfMissing(env, 'orders', "payment_state TEXT NOT NULL DEFAULT ''");
     await createTableIfMissing(env, 'CREATE TABLE IF NOT EXISTS lookup_attempts (order_no TEXT NOT NULL, ip TEXT NOT NULL, created_at TEXT NOT NULL)');
     await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_lookup_attempts_order ON lookup_attempts(order_no, created_at)');
+  } },
+  { version: 19, name: '定价模板（加价倍率 + 固定加价 + 可选控价上下限）', up: async function (env) {
+    // 与全局 upstream_markup / upstream_fixed 并存：未指定模板时导入仍用全局两档。
+    // 重新导入不写 sell_price（管理员自定义售价保留）；套用模板是单独的显式操作。
+    await createTableIfMissing(env, "CREATE TABLE IF NOT EXISTS pricing_templates (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, markup REAL NOT NULL DEFAULT 1, fixed_add REAL NOT NULL DEFAULT 0, price_floor REAL, price_ceiling REAL, is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')))");
+    await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_pricing_templates_active ON pricing_templates(is_active, id)');
+  } },
+  { version: 20, name: '商品分类目录（扁平列表，内置代充/成品号/卡密）', up: async function (env) {
+    await createTableIfMissing(env, "CREATE TABLE IF NOT EXISTS categories (id INTEGER PRIMARY KEY AUTOINCREMENT, cat_key TEXT NOT NULL, name TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1, sort INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')))");
+    await createIndexIfMissing(env, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_key ON categories(cat_key)');
+    // INSERT OR IGNORE：已改过显示名或停用状态的内置分类不会被迁移重置。
+    await env.DB.prepare("INSERT OR IGNORE INTO categories (cat_key, name, is_active, sort) VALUES ('recharge', '代充', 1, 10)").run();
+    await env.DB.prepare("INSERT OR IGNORE INTO categories (cat_key, name, is_active, sort) VALUES ('account', '成品号', 1, 20)").run();
+    await env.DB.prepare("INSERT OR IGNORE INTO categories (cat_key, name, is_active, sort) VALUES ('card', '卡密', 1, 30)").run();
   } }
 ];
 // 执行待迁移：先建基表（空库首次迁移），再逐个版本 apply，成功才标记版本；任一失败抛错（带版本号与原因），不得伪装成功。
@@ -840,7 +955,9 @@ async function precheckSchema(env) {
     pay_rate: ['key', 'created_at'],
     app_icons: ['app_key', 'theme', 'name', 'image_data'],
     secret_attempts: ['order_no', 'ip', 'created_at'],
-    lookup_attempts: ['order_no', 'ip', 'created_at']
+    lookup_attempts: ['order_no', 'ip', 'created_at'],
+    pricing_templates: ['id', 'name', 'markup', 'fixed_add', 'price_floor', 'price_ceiling', 'is_active', 'created_at', 'updated_at'],
+    categories: ['id', 'cat_key', 'name', 'is_active', 'sort', 'created_at', 'updated_at']
   };
   var expectedIndexes = [
     { name: 'idx_upstream_orders_order_unique', unique: 1 },
@@ -853,7 +970,8 @@ async function precheckSchema(env) {
     { name: 'idx_orders_no', unique: 0 },
     { name: 'idx_orders_status', unique: 0 },
     { name: 'idx_orders_created', unique: 0 },
-    { name: 'idx_sessions_expires', unique: 0 }
+    { name: 'idx_sessions_expires', unique: 0 },
+    { name: 'idx_categories_key', unique: 1 }
   ];
   var curRow = await env.DB.prepare('SELECT MAX(version) AS v FROM schema_migrations').first().catch(function () { return null; });
   var curV = curRow ? Number(curRow.v || 0) : 0;
@@ -2691,6 +2809,14 @@ async function handleApi(req, env, url, ctx) {
       pay_methods: PAY_METHODS,
       pay_chains: PAY_CHAINS,
       cny_rate: Number(s.cny_rate || 7.2) || 7.2,
+      categories: await (async function () {
+        try {
+          var catPub = await env.DB.prepare('SELECT cat_key, name FROM categories WHERE is_active = 1 ORDER BY sort ASC, id ASC').all();
+          var list = (catPub.results || []).map(function (c) { return { key: c.cat_key, name: c.name }; });
+          if (list.length) return list;
+        } catch (e) {}
+        return [{ key: 'recharge', name: '代充' }, { key: 'account', name: '成品号' }, { key: 'card', name: '卡密' }];
+      })(),
       // Turnstile：仅暴露开关与公开 site key（密钥绝不经公开接口返回）。
       turnstile_enabled: String(s.turnstile_enabled || '0') === '1',
       turnstile_site_key: String(s.turnstile_site_key || '')
@@ -3556,8 +3682,8 @@ async function handleApi(req, env, url, ctx) {
     var slug = String(b.slug || '').trim().toLowerCase().replace(/[^a-z0-9\-]+/g, '-').replace(/^-+|-+$/g, '');
     if (!slug) slug = 'p-' + Date.now().toString(36);
     if (slug.length > 100) return { ok: false, error: 'slug 过长（最多 100 字符）' };
-    var category = String(b.category || 'recharge');
-    if (['recharge', 'account', 'card'].indexOf(category) === -1) return { ok: false, error: '分类无效（代充 / 成品号 / 卡密）' };
+    var category = String(b.category || 'recharge').trim();
+    if (!/^[a-z][a-z0-9_]{0,31}$/.test(category)) return { ok: false, error: '分类标识无效（小写字母开头，仅字母数字下划线）' };
     var source = b.source === 'prodseller' ? 'prodseller' : 'self';
     var stockType = String(b.stock_type || 'manual');
     if (['card', 'manual'].indexOf(stockType) === -1) return { ok: false, error: '库存类型无效' };
@@ -3569,9 +3695,9 @@ async function handleApi(req, env, url, ctx) {
     var costPrice = Number(b.cost_price || 0);
     if (!isFinite(costPrice) || costPrice < 0 || costPrice > 1000000) return { ok: false, error: '成本价无效（0 ~ 1000000）' };
     var deliveryMethod = ['onsite', 'email', 'both'].indexOf(b.delivery_method) !== -1 ? b.delivery_method : 'both';
-    var formFields = b.form_fields || [];
-    if (typeof formFields === 'string') { try { formFields = JSON.parse(formFields); } catch (e) { return { ok: false, error: '自定义字段 JSON 无效' }; } }
-    if (!Array.isArray(formFields)) return { ok: false, error: '自定义字段必须是数组' };
+    var ffNorm = normalizeFormFields(b.form_fields || []);
+    if (!ffNorm.ok) return { ok: false, error: ffNorm.error };
+    var formFields = ffNorm.fields;
     if (!validImageData(b.image_data || '')) return { ok: false, error: '图片格式无效（仅支持 JPG/PNG/WebP，压缩后不超过约 500KB）' };
     // App 图标与上传图片互斥：选了 App 图标则上传图清空；App 图标 key 只允许小写字母数字（前端选择器只提供合法 key）。
     var appIconKey = String(b.app_icon_key || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 32);
@@ -3606,7 +3732,7 @@ async function handleApi(req, env, url, ctx) {
     var pcountSql = 'SELECT COUNT(*) as c FROM products WHERE 1=1';
     var pbinds = [];
     if (qP) { psql += ' AND (instr(title, ?) > 0 OR instr(slug, ?) > 0)'; pcountSql += ' AND (instr(title, ?) > 0 OR instr(slug, ?) > 0)'; pbinds.push(qP, qP); }
-    if (['recharge', 'account', 'card'].indexOf(catP) !== -1) { psql += ' AND category = ?'; pcountSql += ' AND category = ?'; pbinds.push(catP); }
+    if (catP && /^[a-z][a-z0-9_]{0,31}$/.test(catP)) { psql += ' AND category = ?'; pcountSql += ' AND category = ?'; pbinds.push(catP); }
     if (['self', 'prodseller'].indexOf(srcP) !== -1) { psql += ' AND source = ?'; pcountSql += ' AND source = ?'; pbinds.push(srcP); }
     if (actP === '0' || actP === '1') { psql += ' AND is_active = ?'; pcountSql += ' AND is_active = ?'; pbinds.push(Number(actP)); }
     psql += ' ORDER BY sort ASC, id ASC LIMIT ? OFFSET ?';
@@ -3633,6 +3759,8 @@ async function handleApi(req, env, url, ctx) {
     var pb = await parseJsonBody(req);
     var norm = normalizeProductInput(pb);
     if (!norm.ok) return err(norm.error);
+    var catErr = await categoryGate(env, norm.data.category, '');
+    if (catErr) return err(catErr);
     // slug 唯一性校验
     var slugDup = await env.DB.prepare('SELECT id FROM products WHERE slug = ?').bind(norm.data.slug).first();
     if (slugDup) return err('slug 已被其他商品使用，请换一个');
@@ -3655,8 +3783,12 @@ async function handleApi(req, env, url, ctx) {
     if (typeof ub.image_data !== 'string') ub.image_data = oldP.image_data || '';
     if (typeof ub.app_icon_key !== 'string') ub.app_icon_key = oldP.app_icon_key || '';
     if (ub.slug == null || String(ub.slug).trim() === '') ub.slug = oldP.slug;
+    // 未传 form_fields 时保留库内字段（含历史自定义字段）；显式传入则按编辑器结果保存（后台会滤掉遗留联系方式字段）。
+    if (ub.form_fields == null) ub.form_fields = oldP.form_fields || '[]';
     var normU = normalizeProductInput(ub);
     if (!normU.ok) return err(normU.error);
+    var catErrU = await categoryGate(env, normU.data.category, String(oldP.category || ''));
+    if (catErrU) return err(catErrU);
     var slugDupU = await env.DB.prepare('SELECT id FROM products WHERE slug = ? AND id != ?').bind(normU.data.slug, pid).first();
     if (slugDupU) return err('slug 已被其他商品使用，请换一个');
     var du = normU.data;
@@ -3825,20 +3957,31 @@ async function handleApi(req, env, url, ctx) {
     var settingsI = await getAllSettings(env);
     var markup = Number(settingsI.upstream_markup || '1.2'); if (!isFinite(markup) || markup <= 0) markup = 1.2;
     var fixed = Number(settingsI.upstream_fixed || '0'); if (!isFinite(fixed)) fixed = 0;
+    var priceFloor = null, priceCeiling = null, templateId = null;
+    if (ib2.template_id != null && String(ib2.template_id).trim() !== '') {
+      var tplRow = await env.DB.prepare('SELECT * FROM pricing_templates WHERE id = ?').bind(Number(ib2.template_id)).first();
+      if (!tplRow || Number(tplRow.is_active) !== 1) return err('定价模板不存在或已停用');
+      markup = Number(tplRow.markup);
+      fixed = Number(tplRow.fixed_add);
+      priceFloor = tplRow.price_floor;
+      priceCeiling = tplRow.price_ceiling;
+      templateId = Number(tplRow.id);
+    }
     var c2 = await env.DB.prepare("SELECT * FROM upstream_cache WHERE key='products'").first();
     if (!c2) return err('请先执行上游同步（sync），import 只从缓存读，不直接拉上游');
     var payload2 = null; try { payload2 = JSON.parse(c2.payload || '{}'); } catch (e) { payload2 = null; }
     var arr = Array.isArray(payload2) ? payload2 : (payload2 && Array.isArray(payload2.products) ? payload2.products : []);
     var wanted = ib2.items || ib2.ids || [];
     if (!Array.isArray(wanted) || !wanted.length) return err('请选择要导入的上游商品');
-    var imported = 0;
+    var imported = 0, sellPreserved = 0;
+    var priceRule = { markup: markup, fixed_add: fixed, price_floor: priceFloor, price_ceiling: priceCeiling };
     for (var ui = 0; ui < wanted.length; ui++) {
       var sel = wanted[ui];
       var up = null;
       for (var uj = 0; uj < arr.length; uj++) { var cand = arr[uj] || {}; if (String(cand.id) === String(sel.id != null ? sel.id : sel) || String(cand.slug) === String(sel.slug || '')) { up = cand; break; } }
       if (!up) continue;
       var cost = Number(up.cost || up.cost_price || up.price || 0) || 0;
-      var sell = Math.round((cost * markup + fixed) * 100) / 100;
+      var sell = computeTemplateSell(cost, priceRule);
       var slug = 'ps-' + String(up.id || up.slug || ('u' + ui)).toLowerCase().replace(/[^a-z0-9\-]+/g, '-');
       var title = up.title || up.name || ('上游商品 ' + String(up.id || ''));
       var reqAct = (up.requiresEmailActivation === true || up.requires_email_activation === true || up.activation === true) ? 1 : 0;
@@ -3846,13 +3989,16 @@ async function handleApi(req, env, url, ctx) {
       // 上游商品按标题自动匹配 App 图标（仅新导入时设置；冲突重导入不覆盖人工选的图标）。
       var upIconKey = matchAppIconKey(String(title || ''));
       try {
+        var existedUp = await env.DB.prepare('SELECT id FROM products WHERE slug = ?').bind(slug).first();
         // 冲突时不覆盖 title/description/sell_price/price_usdt/app_icon_key：
-        // 标题与简介可能已人工翻译；售价可能已管理员自定义，重新导入只刷新成本/库存/激活标记/上游 id。
+        // 标题与简介可能已人工翻译；售价可能已管理员自定义（或上次套用模板后手改）。
+        // 重新导入只刷新成本/库存/激活标记/上游 id，即使用了定价模板也不改已有售价。
         await env.DB.prepare('INSERT INTO products (slug, title, category, price_usdt, sell_price, cost_price, source, prodseller_id, requires_email_activation, delivery_method, stock_type, description, notice, form_fields, image_emoji, app_icon_key, sort, is_active, in_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET cost_price=excluded.cost_price, prodseller_id=excluded.prodseller_id, requires_email_activation=excluded.requires_email_activation, in_stock=excluded.in_stock').bind(slug, title, 'recharge', sell, sell, cost, 'prodseller', String(up.id || ''), reqAct, 'both', 'manual', String(up.description || ''), '', '[]', 'box', upIconKey, 0, 1, inSt).run();
         imported++;
+        if (existedUp) sellPreserved++;
       } catch (e) {}
     }
-    return json({ ok: true, imported: imported, markup: markup, fixed: fixed });
+    return json({ ok: true, imported: imported, markup: markup, fixed: fixed, template_id: templateId, price_floor: priceFloor == null ? null : Number(priceFloor), price_ceiling: priceCeiling == null ? null : Number(priceCeiling), sell_price_preserved: sellPreserved });
   }
   if (path === '/api/admin/upstream/orders' && method === 'GET') {
     var upPage = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1);
@@ -4075,6 +4221,141 @@ async function handleApi(req, env, url, ctx) {
     await cleanupExpired(env);
     return json({ ok: true, message: '7天清理已执行' });
   }
+  // ---- 定价模板（加价倍率 + 固定加价 + 可选控价；不含会员档/佣金）----
+  if (path === '/api/admin/pricing-templates' && method === 'GET') {
+    var ptAll = await env.DB.prepare('SELECT * FROM pricing_templates ORDER BY is_active DESC, id ASC').all();
+    return json({ ok: true, templates: (ptAll.results || []).map(pricingTemplateJson) });
+  }
+  if (path === '/api/admin/pricing-templates' && method === 'POST') {
+    var ptb = await parseJsonBody(req);
+    var ptNorm = parsePricingInput(ptb);
+    if (!ptNorm.ok) return err(ptNorm.error);
+    var ptSame = await env.DB.prepare('SELECT * FROM pricing_templates WHERE name = ?').bind(ptNorm.data.name).first();
+    if (ptSame) {
+      var sameTpl = Number(ptSame.is_active) === 1 && sameMoney(ptSame.markup, ptNorm.data.markup) && sameMoney(ptSame.fixed_add, ptNorm.data.fixed_add) && sameMoney(ptSame.price_floor, ptNorm.data.price_floor) && sameMoney(ptSame.price_ceiling, ptNorm.data.price_ceiling);
+      if (sameTpl) return json({ ok: true, template: pricingTemplateJson(ptSame), idempotent: true });
+      return err(Number(ptSame.is_active) === 1 ? '同名定价模板已存在' : '同名定价模板已存在（已停用），请在列表中启用或改名');
+    }
+    var ptIns = await env.DB.prepare('INSERT INTO pricing_templates (name, markup, fixed_add, price_floor, price_ceiling, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(ptNorm.data.name, ptNorm.data.markup, ptNorm.data.fixed_add, ptNorm.data.price_floor, ptNorm.data.price_ceiling, ptNorm.data.is_active, nowISO(), nowISO()).run();
+    var ptId = ptIns && ptIns.meta ? Number(ptIns.meta.last_row_id) : 0;
+    var ptCreated = await env.DB.prepare('SELECT * FROM pricing_templates WHERE id = ?').bind(ptId).first();
+    await logAudit(env, null, 'pricing_template_create', '', '', '创建定价模板 #' + ptId + ' ' + ptNorm.data.name);
+    return json({ ok: true, template: pricingTemplateJson(ptCreated) });
+  }
+  var mPt = path.match(/^\/api\/admin\/pricing-templates\/(\d+)$/);
+  if (mPt && method === 'PUT') {
+    var ptIdU = Number(mPt[1]);
+    var ptOld = await env.DB.prepare('SELECT * FROM pricing_templates WHERE id = ?').bind(ptIdU).first();
+    if (!ptOld) return err('定价模板不存在', 404);
+    var ptbU = await parseJsonBody(req);
+    if (ptbU.name == null) ptbU.name = ptOld.name;
+    if (ptbU.markup == null) ptbU.markup = ptOld.markup;
+    if (ptbU.fixed == null && ptbU.fixed_add == null) ptbU.fixed = ptOld.fixed_add;
+    if (ptbU.price_floor === undefined) ptbU.price_floor = ptOld.price_floor;
+    if (ptbU.price_ceiling === undefined) ptbU.price_ceiling = ptOld.price_ceiling;
+    if (ptbU.is_active == null) ptbU.is_active = ptOld.is_active;
+    var ptNormU = parsePricingInput(ptbU);
+    if (!ptNormU.ok) return err(ptNormU.error);
+    var ptNameDup = await env.DB.prepare('SELECT id FROM pricing_templates WHERE name = ? AND id != ?').bind(ptNormU.data.name, ptIdU).first();
+    if (ptNameDup) return err('同名定价模板已存在');
+    await env.DB.prepare('UPDATE pricing_templates SET name=?, markup=?, fixed_add=?, price_floor=?, price_ceiling=?, is_active=?, updated_at=? WHERE id=?').bind(ptNormU.data.name, ptNormU.data.markup, ptNormU.data.fixed_add, ptNormU.data.price_floor, ptNormU.data.price_ceiling, ptNormU.data.is_active, nowISO(), ptIdU).run();
+    var ptAfter = await env.DB.prepare('SELECT * FROM pricing_templates WHERE id = ?').bind(ptIdU).first();
+    await logAudit(env, null, 'pricing_template_update', '', '', '更新定价模板 #' + ptIdU + ' ' + ptNormU.data.name);
+    return json({ ok: true, template: pricingTemplateJson(ptAfter) });
+  }
+  var mPtOff = path.match(/^\/api\/admin\/pricing-templates\/(\d+)\/deactivate$/);
+  if (mPtOff && method === 'POST') {
+    var ptOffId = Number(mPtOff[1]);
+    var ptOff = await env.DB.prepare('SELECT * FROM pricing_templates WHERE id = ?').bind(ptOffId).first();
+    if (!ptOff) return err('定价模板不存在', 404);
+    if (Number(ptOff.is_active) === 0) return json({ ok: true, template: pricingTemplateJson(ptOff), idempotent: true });
+    await env.DB.prepare('UPDATE pricing_templates SET is_active=0, updated_at=? WHERE id=? AND is_active!=0').bind(nowISO(), ptOffId).run();
+    var ptOffAfter = await env.DB.prepare('SELECT * FROM pricing_templates WHERE id = ?').bind(ptOffId).first();
+    await logAudit(env, null, 'pricing_template_deactivate', '1', '0', '停用定价模板 #' + ptOffId + ' ' + String(ptOff.name || ''));
+    return json({ ok: true, template: pricingTemplateJson(ptOffAfter) });
+  }
+  // POST /api/admin/products/:id/apply-pricing-template —— 显式按成本套用模板写售价（会覆盖当前售价；重新导入不会）。
+  var mApplyPt = path.match(/^\/api\/admin\/products\/(\d+)\/apply-pricing-template$/);
+  if (mApplyPt && method === 'POST') {
+    var apBody = await parseJsonBody(req);
+    var apPid = Number(mApplyPt[1]);
+    var apProd = await env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(apPid).first();
+    if (!apProd) return err('商品不存在', 404);
+    var apTpl = await env.DB.prepare('SELECT * FROM pricing_templates WHERE id = ?').bind(Number(apBody.template_id)).first();
+    if (!apTpl || Number(apTpl.is_active) !== 1) return err('定价模板不存在或已停用');
+    var apSell = computeTemplateSell(apProd.cost_price, apTpl);
+    await env.DB.prepare('UPDATE products SET sell_price=?, price_usdt=? WHERE id=?').bind(apSell, apSell, apPid).run();
+    await logAudit(env, null, 'product_apply_pricing', String(apProd.sell_price || ''), String(apSell), '商品 #' + apPid + ' 套用定价模板 #' + apTpl.id + ' ' + String(apTpl.name || ''));
+    return json({ ok: true, product_id: apPid, template_id: Number(apTpl.id), cost_price: Number(apProd.cost_price) || 0, sell_price: apSell });
+  }
+
+  // ---- 商品分类（扁平目录；内置 recharge/account/card 的 key 不可改，因发货规则绑定这三个标识）----
+  if (path === '/api/admin/categories' && method === 'GET') {
+    var catRows = await env.DB.prepare('SELECT * FROM categories ORDER BY sort ASC, id ASC').all();
+    return json({ ok: true, categories: (catRows.results || []).map(categoryJson) });
+  }
+  if (path === '/api/admin/categories' && method === 'POST') {
+    var cb = await parseJsonBody(req);
+    var cName = String(cb.name || '').trim();
+    if (!cName || cName.length > 40) return err('分类名称必填且不超过 40 字');
+    var cKey = String(cb.key || cb.cat_key || '').trim().toLowerCase();
+    if (!cKey) cKey = 'c' + randomHex(4);
+    if (!/^[a-z][a-z0-9_]{0,31}$/.test(cKey)) return err('分类标识无效（小写字母开头，仅字母数字下划线，最长 32）');
+    var cSort = Number(cb.sort);
+    if (!isFinite(cSort)) cSort = 100;
+    cSort = Math.max(0, Math.min(100000, Math.floor(cSort)));
+    var cExist = await env.DB.prepare('SELECT * FROM categories WHERE cat_key = ?').bind(cKey).first();
+    if (cExist) {
+      if (String(cExist.name) === cName && Number(cExist.is_active) === 1) return json({ ok: true, category: categoryJson(cExist), idempotent: true });
+      return err('分类标识已存在');
+    }
+    var cIns = await env.DB.prepare('INSERT INTO categories (cat_key, name, is_active, sort, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?)').bind(cKey, cName, cSort, nowISO(), nowISO()).run();
+    var cNewId = cIns && cIns.meta ? Number(cIns.meta.last_row_id) : 0;
+    var cCreated = await env.DB.prepare('SELECT * FROM categories WHERE id = ?').bind(cNewId).first();
+    await logAudit(env, null, 'category_create', '', '', '创建分类 ' + cKey + ' / ' + cName);
+    return json({ ok: true, category: categoryJson(cCreated) });
+  }
+  var mCat = path.match(/^\/api\/admin\/categories\/(\d+)$/);
+  if (mCat && method === 'PUT') {
+    var catId = Number(mCat[1]);
+    var catOld = await env.DB.prepare('SELECT * FROM categories WHERE id = ?').bind(catId).first();
+    if (!catOld) return err('分类不存在', 404);
+    var cub = await parseJsonBody(req);
+    var catName = cub.name == null ? String(catOld.name || '') : String(cub.name || '').trim();
+    if (!catName || catName.length > 40) return err('分类名称必填且不超过 40 字');
+    var catKey = (cub.key == null && cub.cat_key == null) ? String(catOld.cat_key || '') : String(cub.key != null ? cub.key : cub.cat_key).trim().toLowerCase();
+    if (!/^[a-z][a-z0-9_]{0,31}$/.test(catKey)) return err('分类标识无效（小写字母开头，仅字母数字下划线，最长 32）');
+    if (catKey !== String(catOld.cat_key) && BUILTIN_CATEGORY_KEYS[catOld.cat_key]) return err('内置分类标识不可修改（代充 / 成品号 / 卡密 与发货规则绑定）');
+    var catSort = cub.sort == null ? Number(catOld.sort) || 0 : Number(cub.sort);
+    if (!isFinite(catSort)) return err('排序无效');
+    catSort = Math.max(0, Math.min(100000, Math.floor(catSort)));
+    if (catKey !== String(catOld.cat_key)) {
+      var catDup = await env.DB.prepare('SELECT id FROM categories WHERE cat_key = ? AND id != ?').bind(catKey, catId).first();
+      if (catDup) return err('分类标识已存在');
+      await runWrites(env, [
+        env.DB.prepare('UPDATE products SET category = ? WHERE category = ?').bind(catKey, catOld.cat_key),
+        env.DB.prepare('UPDATE categories SET cat_key=?, name=?, sort=?, updated_at=? WHERE id=?').bind(catKey, catName, catSort, nowISO(), catId)
+      ]);
+    } else if (catName !== String(catOld.name) || catSort !== (Number(catOld.sort) || 0)) {
+      await env.DB.prepare('UPDATE categories SET name=?, sort=?, updated_at=? WHERE id=?').bind(catName, catSort, nowISO(), catId).run();
+    }
+    var catAfter = await env.DB.prepare('SELECT * FROM categories WHERE id = ?').bind(catId).first();
+    await logAudit(env, null, 'category_update', String(catOld.cat_key || ''), String(catAfter.cat_key || ''), '更新分类 #' + catId + ' ' + catName);
+    return json({ ok: true, category: categoryJson(catAfter) });
+  }
+  var mCatAct = path.match(/^\/api\/admin\/categories\/(\d+)\/(deactivate|activate)$/);
+  if (mCatAct && method === 'POST') {
+    var catActId = Number(mCatAct[1]);
+    var catAct = await env.DB.prepare('SELECT * FROM categories WHERE id = ?').bind(catActId).first();
+    if (!catAct) return err('分类不存在', 404);
+    var catOn = mCatAct[2] === 'activate' ? 1 : 0;
+    if (Number(catAct.is_active) === catOn) return json({ ok: true, category: categoryJson(catAct), idempotent: true });
+    await env.DB.prepare('UPDATE categories SET is_active=?, updated_at=? WHERE id=?').bind(catOn, nowISO(), catActId).run();
+    var catActAfter = await env.DB.prepare('SELECT * FROM categories WHERE id = ?').bind(catActId).first();
+    await logAudit(env, null, catOn ? 'category_activate' : 'category_deactivate', String(catAct.is_active), String(catOn), (catOn ? '启用' : '停用') + '分类 ' + String(catAct.cat_key || ''));
+    return json({ ok: true, category: categoryJson(catActAfter) });
+  }
+
   // ---- 管理员：付款账本（第四轮 P0；对账列表一期扩展筛选 + 订单只读对照 + 派生 contract）----
   // GET /api/admin/payments
   //   既有：status、order_id、page、page_size

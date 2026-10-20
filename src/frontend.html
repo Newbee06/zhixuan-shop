@@ -461,7 +461,16 @@ function paginationHTML(p, totalPages, fnName){
   return h + '</div>';
 }
 function fmtTime(s){ return s ? String(s).replace('T', ' ') : ''; }
-function catLabel(c){ if (c === 'recharge') return '代充'; if (c === 'account') return '成品号'; if (c === 'card') return '卡密'; return c; }
+function catLabel(c){
+  var lists = [];
+  if (typeof CFG !== 'undefined' && CFG && Array.isArray(CFG.categories)) lists.push(CFG.categories);
+  if (window._adminCategories) lists.push(window._adminCategories);
+  for (var li = 0; li < lists.length; li++){
+    var list = lists[li];
+    for (var i = 0; i < list.length; i++){ if (list[i] && list[i].key === c && list[i].name) return list[i].name; }
+  }
+  if (c === 'recharge') return '代充'; if (c === 'account') return '成品号'; if (c === 'card') return '卡密'; return c;
+}
 function statusLabel(s){ if (s === 'pending_payment') return '待付款'; if (s === 'pending_fulfill') return '待发货'; if (s === 'pending_activation') return '激活待处理'; if (s === 'pending_upstream') return '待处理'; if (s === 'refund_pending') return '退款待处理'; if (s === 'completed') return '已完成'; if (s === 'cancelled') return '已取消'; return escH(s); }
 // P3-19：解析服务端时间。已带时区（Z / +08:00 / -07:00）按原时区解析，绝不重复追加 Z；
 // 无时区的 'YYYY-MM-DD HH:mm:ss' 按 UTC 解析（与服务端 nowISO 口径一致）；非法返回 NaN。
@@ -726,7 +735,7 @@ async function renderProduct(id){
   window._payChain = _enabledPay.length ? _enabledPay[0].pay_chain : '';
   var payOpts = payOptionsHTML();
   var fh = '';
-  for (var i = 0; i < p.form_fields.length; i++){ var f = p.form_fields[i]; if (isLegacyContactField(f)) continue; fh += '<label>' + escH(f.label) + (f.required ? ' *' : '') + '</label><input data-k="' + escH(f.key) + '" data-label="' + escH(f.label) + '"' + (f.required ? ' data-required="1"' : '') + ' placeholder="' + escH(f.placeholder || '') + '">'; }
+  for (var i = 0; i < p.form_fields.length; i++){ var f = p.form_fields[i]; if (isLegacyContactField(f)) continue; var freq = f.required ? ' data-required="1"' : ''; var fattr = ' data-k="' + escH(f.key) + '" data-label="' + escH(f.label) + '"' + freq + ' placeholder="' + escH(f.placeholder || '') + '"'; fh += '<label>' + escH(f.label) + (f.required ? ' *' : '') + '</label>'; fh += (f.type === 'textarea') ? ('<textarea rows="3"' + fattr + '></textarea>') : ('<input' + fattr + '>'); }
   var inSt = Number(p.in_stock == null ? 1 : p.in_stock);
   var badgeMain = inSt === 0 ? '<span class="badge" style="background:rgba(255,69,58,.14);color:var(--red)">缺货 · 补货中</span>' : (payAvailable() ? '<span class="badge green">自动发货</span>' : '<span class="badge" id="payOffBadge">收款开放后可下单</span>');
   var actHint = p.requires_email_activation ? '<div class="warn-box" style="margin-top:12px">' + ic('warn') + ' 激活类商品：激活邮箱是要开通会员的邮箱，必须填对，填错无法开通。</div>' : '';
@@ -1151,7 +1160,7 @@ function statusPill(s){
 }
 function adminNavHTML(){
   var tabs = [['data',ic('chart')+' 数据总览'],['orders',ic('receipt')+' 订单管理'],['payments',ic('clipboard')+' 付款对账']];
-  var tail = [['cards',ic('card')+' 卡密库存'],['upstream',ic('link')+' 上游管理'],['settings',ic('settings')+' 系统设置'],['audit',ic('clipboard')+' 操作审计']];
+  var tail = [['cards',ic('card')+' 卡密库存'],['categories',ic('book')+' 商品分类'],['pricing',ic('chart')+' 定价模板'],['upstream',ic('link')+' 上游管理'],['settings',ic('settings')+' 系统设置'],['audit',ic('clipboard')+' 操作审计']];
   var h = '<div class="admin-nav">';
   for (var i = 0; i < tabs.length; i++){ h += '<button data-tab="' + tabs[i][0] + '" onclick="adminTab(\'' + tabs[i][0] + '\');adminToggleSide(false)">' + tabs[i][1] + '</button>'; }
   // 商品管理子目录：对接商品（上游 prodseller）/ 自营商品（self），分开管理
@@ -1168,7 +1177,7 @@ function adminNavSync(){
     var on = (tb === window._adminTab) || (tb === 'products' && (window._adminTab === 'products-upstream' || window._adminTab === 'products-self'));
     btns[i].classList.toggle('on', on);
   }
-  var titles = {data:'数据总览', orders:'订单管理', payments:'付款对账', products:'商品管理', 'products-upstream':'对接商品', 'products-self':'自营商品', cards:'卡密库存', upstream:'上游管理', settings:'系统设置', audit:'操作审计'};
+  var titles = {data:'数据总览', orders:'订单管理', payments:'付款对账', products:'商品管理', 'products-upstream':'对接商品', 'products-self':'自营商品', cards:'卡密库存', categories:'商品分类', pricing:'定价模板', upstream:'上游管理', settings:'系统设置', audit:'操作审计'};
   var t = el('adminTitle'); if (t) t.textContent = titles[window._adminTab] || '管理后台';
 }
 function adminToggleSide(open){
@@ -1197,6 +1206,8 @@ async function adminTab(t){
     else if (t === 'orders') await renderAdminOrders(1);
     else if (t === 'payments') await renderAdminPayments(1);
     else if (t === 'products') { window._prodView = 'all'; window._prodFilter.source = ''; await renderAdminProducts(1); } // 全部视图：清掉子目录残留的来源筛选，否则会误以为只剩 6 件
+    else if (t === 'categories') await renderAdminCategories();
+    else if (t === 'pricing') await renderAdminPricing();
     else if (t === 'products-upstream') { window._prodView = 'upstream'; await renderAdminProducts(1); }
     else if (t === 'products-self') { window._prodView = 'self'; await renderAdminProducts(1); }
     else if (t === 'cards') await renderAdminCards(1);
@@ -1515,7 +1526,106 @@ async function adminRefundConfirm(id){
 window._prodFilter = { q: '', category: '', source: '', is_active: '', stock: '', page: 1 };
 function prodViewSource(){ return window._prodView === 'upstream' ? 'prodseller' : (window._prodView === 'self' ? 'self' : ''); }
 function prodViewTitle(){ return window._prodView === 'upstream' ? '对接商品' : (window._prodView === 'self' ? '自营商品' : '商品管理'); }
+async function loadAdminCategories(){
+  var r = await api('/api/admin/categories');
+  if (r && r.ok && Array.isArray(r.categories)) window._adminCategories = r.categories;
+  else if (!window._adminCategories) window._adminCategories = [{ key: 'recharge', name: '代充', is_active: 1 }, { key: 'account', name: '成品号', is_active: 1 }, { key: 'card', name: '卡密', is_active: 1 }];
+  return window._adminCategories;
+}
+async function loadAdminTemplates(){
+  var r = await api('/api/admin/pricing-templates');
+  window._adminTemplates = (r && r.ok && Array.isArray(r.templates)) ? r.templates : (window._adminTemplates || []);
+  return window._adminTemplates;
+}
+function categoryOptionHTML(cur, includeInactive){
+  var cats = window._adminCategories || [{ key: 'recharge', name: '代充', is_active: 1 }, { key: 'account', name: '成品号', is_active: 1 }, { key: 'card', name: '卡密', is_active: 1 }];
+  var h = '', seen = {};
+  for (var i = 0; i < cats.length; i++){
+    var c = cats[i]; if (!c || !c.key) continue;
+    seen[c.key] = 1;
+    var off = Number(c.is_active) === 0;
+    if (off && !includeInactive && c.key !== cur) continue;
+    h += '<option value="' + escH(c.key) + '"' + (String(cur) === String(c.key) ? ' selected' : '') + '>' + escH(c.name || c.key) + (off ? '（已停用）' : '') + '</option>';
+  }
+  if (cur && !seen[cur]) h += '<option value="' + escH(cur) + '" selected>' + escH(cur) + '</option>';
+  return h;
+}
+function previewTemplateSell(cost, tpl){
+  var markup = Number(tpl && tpl.markup);
+  var fixed = Number(tpl && (tpl.fixed != null ? tpl.fixed : tpl.fixed_add));
+  if (!isFinite(markup) || markup <= 0) markup = 1;
+  if (!isFinite(fixed)) fixed = 0;
+  var sell = Math.round(((Number(cost) || 0) * markup + fixed) * 100) / 100;
+  if (tpl && tpl.price_floor != null && tpl.price_floor !== '' && isFinite(Number(tpl.price_floor)) && sell < Number(tpl.price_floor)) sell = Number(tpl.price_floor);
+  if (tpl && tpl.price_ceiling != null && tpl.price_ceiling !== '' && isFinite(Number(tpl.price_ceiling)) && sell > Number(tpl.price_ceiling)) sell = Number(tpl.price_ceiling);
+  if (!isFinite(sell) || sell < 0) sell = 0;
+  if (sell > 1000000) sell = 1000000;
+  return Math.round(sell * 100) / 100;
+}
+function parseProductFormFields(p){
+  var ff = [];
+  if (p && p.form_fields != null){
+    if (typeof p.form_fields === 'string'){ try { ff = JSON.parse(p.form_fields); } catch (e) { ff = []; } }
+    else ff = p.form_fields;
+  }
+  if (!Array.isArray(ff)) ff = [];
+  return ff.filter(function(f){ return f && !isLegacyContactField(f); }).map(function(f){
+    return { key: String(f.key || ''), label: String(f.label || ''), placeholder: String(f.placeholder || ''), type: f.type === 'textarea' ? 'textarea' : 'text', required: !!f.required };
+  });
+}
+function renderFormFieldRows(pfx){
+  var box = el(pfx + 'ff');
+  if (!box) return;
+  var rows = (window._formFields && window._formFields[pfx]) || [];
+  if (!rows.length){ box.innerHTML = '<div class="muted">暂无自定义字段</div>'; return; }
+  var h = '';
+  for (var i = 0; i < rows.length; i++){
+    var f = rows[i];
+    h += '<div class="ff-row" data-i="' + i + '" style="border-top:1px solid rgba(127,127,127,.25);padding:8px 0">';
+    h += '<div class="field-grid">';
+    h += '<div><label>key</label><input class="ff-key" value="' + escH(f.key) + '" placeholder="account_email"></div>';
+    h += '<div><label>名称</label><input class="ff-label" value="' + escH(f.label) + '"></div>';
+    h += '<div><label>类型</label><select class="ff-type"><option value="text"' + (f.type !== 'textarea' ? ' selected' : '') + '>单行</option><option value="textarea"' + (f.type === 'textarea' ? ' selected' : '') + '>多行</option></select></div>';
+    h += '<div><label>占位</label><input class="ff-ph" value="' + escH(f.placeholder) + '"></div>';
+    h += '</div><label><input type="checkbox" class="ff-req" style="width:auto"' + (f.required ? ' checked' : '') + '> 必填</label> <button type="button" class="btn small danger" onclick="adminRemoveFormField(\'' + pfx + '\',' + i + ')">删除</button></div>';
+  }
+  box.innerHTML = h;
+}
+function readFormFieldRows(pfx){
+  var box = el(pfx + 'ff');
+  if (!box) return (window._formFields && window._formFields[pfx]) || [];
+  var rows = box.querySelectorAll('.ff-row');
+  var out = [];
+  for (var i = 0; i < rows.length; i++){
+    var r = rows[i];
+    out.push({ key: (r.querySelector('.ff-key').value || '').trim(), label: (r.querySelector('.ff-label').value || '').trim(), type: r.querySelector('.ff-type').value === 'textarea' ? 'textarea' : 'text', placeholder: (r.querySelector('.ff-ph').value || '').trim(), required: !!r.querySelector('.ff-req').checked });
+  }
+  return out;
+}
+function adminAddFormField(pfx){
+  window._formFields = window._formFields || {};
+  window._formFields[pfx] = readFormFieldRows(pfx);
+  window._formFields[pfx].push({ key: '', label: '', placeholder: '', type: 'text', required: false });
+  renderFormFieldRows(pfx);
+}
+function adminRemoveFormField(pfx, i){
+  window._formFields = window._formFields || {};
+  window._formFields[pfx] = readFormFieldRows(pfx);
+  window._formFields[pfx].splice(i, 1);
+  renderFormFieldRows(pfx);
+}
+function adminFillPriceFromTemplate(pfx){
+  var sel = el(pfx + 'tpl');
+  if (!sel || !sel.value){ toast('请先选择定价模板', 'error'); return; }
+  var tpl = null;
+  var list = window._adminTemplates || [];
+  for (var i = 0; i < list.length; i++){ if (String(list[i].id) === String(sel.value)) tpl = list[i]; }
+  if (!tpl){ toast('模板不存在', 'error'); return; }
+  var cost = parseFloat((el(pfx + 'cost') && el(pfx + 'cost').value) || '0');
+  el(pfx + 'price').value = previewTemplateSell(cost, tpl).toFixed(2);
+}
 async function renderAdminProducts(page){
+  await loadAdminCategories();
   var f = window._prodFilter;
   f.page = page || 1;
   var viewSrc = prodViewSource();
@@ -1532,7 +1642,7 @@ async function renderAdminProducts(page){
   window._adminProducts = list;
   function selOpts(opts, cur){ var h = ''; for (var i = 0; i < opts.length; i++) h += '<option value="' + opts[i][0] + '"' + (String(cur) === String(opts[i][0]) ? ' selected' : '') + '>' + opts[i][1] + '</option>'; return h; }
   var h = '<div class="admin-page"><div class="admin-page-head"><h2>' + prodViewTitle() + '</h2><button class="btn" onclick="adminProductForm(null' + (viewSrc ? ",'" + viewSrc + "'" : '') + ')">+ 新增商品</button></div>';
-  h += '<div class="admin-toolbar"><input id="prodQ" placeholder="搜索标题 / slug" value="' + escH(f.q) + '" onkeydown="if(event.key===\'Enter\')adminProdSearch()"><select id="prodCat" onchange="adminProdSearch()">' + selOpts([['', '全部分类'], ['recharge', '代充'], ['account', '成品号'], ['card', '卡密']], f.category) + '</select>' + (viewSrc ? '' : '<select id="prodSrc" onchange="adminProdSearch()">' + selOpts([['', '全部来源'], ['self', '自营'], ['prodseller', '上游']], f.source) + '</select>') + '<select id="prodAct" onchange="adminProdSearch()">' + selOpts([['', '在售/下架'], ['1', '在售'], ['0', '下架']], f.is_active) + '</select><select id="prodStock" onchange="adminProdSearch()">' + selOpts([['', '全部库存'], ['in', '有货'], ['out', '缺货']], f.stock) + '</select><button class="btn" onclick="adminProdSearch()">搜索</button><button class="btn ghost" onclick="adminProdReset()">重置</button></div>';
+  h += '<div class="admin-toolbar"><input id="prodQ" placeholder="搜索标题 / slug" value="' + escH(f.q) + '" onkeydown="if(event.key===\'Enter\')adminProdSearch()"><select id="prodCat" onchange="adminProdSearch()"><option value="">全部分类</option>' + categoryOptionHTML(f.category, false) + '</select>' + (viewSrc ? '' : '<select id="prodSrc" onchange="adminProdSearch()">' + selOpts([['', '全部来源'], ['self', '自营'], ['prodseller', '上游']], f.source) + '</select>') + '<select id="prodAct" onchange="adminProdSearch()">' + selOpts([['', '在售/下架'], ['1', '在售'], ['0', '下架']], f.is_active) + '</select><select id="prodStock" onchange="adminProdSearch()">' + selOpts([['', '全部库存'], ['in', '有货'], ['out', '缺货']], f.stock) + '</select><button class="btn" onclick="adminProdSearch()">搜索</button><button class="btn ghost" onclick="adminProdReset()">重置</button></div>';
   h += '<p class="muted">共 ' + (r.total || 0) + ' 件商品。毛利 = 售价 − 成本价；无成本数据的商品毛利显示 —。</p>';
   if (!list.length) h += '<div class="adm-empty">暂无符合条件的商品</div>';
   else {
@@ -1581,7 +1691,7 @@ function productFormHTML(pfx, p){
   h += '<div><label>成本价 cost_price</label><input id="' + pfx + 'cost" type="number" step="0.01" min="0" value="' + v('cost_price', 0) + '"></div>';
   h += '<div><label>来源</label><select id="' + pfx + 'source" onchange="adminSourceChange(\'' + pfx + '\')">' + sel('source', [['self','自营 self'],['prodseller','上游 prodseller']]) + '</select></div>';
   h += '<div id="' + pfx + 'psid-row"' + (isUp ? '' : ' style="display:none"') + '><label>上游商品 ID（仅上游）</label><input id="' + pfx + 'psid" value="' + v('prodseller_id') + '"><div class="muted" style="margin-top:4px">一般不用手动填：去上游页同步 + 导入，系统自动填。上游发货靠这个 ID 去 ProdSeller 拿货。</div></div>';
-  h += '<div><label>分类</label><select id="' + pfx + 'cat" onchange="adminCatChange(\'' + pfx + '\')">' + sel('category', [['recharge','代充'],['account','成品号'],['card','卡密']]) + '</select></div>';
+  h += '<div><label>分类</label><select id="' + pfx + 'cat" onchange="adminCatChange(\'' + pfx + '\')">' + categoryOptionHTML(initCat, false) + '</select></div>';
   h += '<div><label>库存类型</label><select id="' + pfx + 'stock" onchange="adminStockRow(\'' + pfx + '\')">' + sel('stock_type', [['manual','人工发货'],['card','卡密自动发']]) + '</select></div>';
   var showStockRow = (String(p.source) !== 'prodseller') && !(p.stock_type === 'card' || p.category === 'account');
   h += '<div id="' + pfx + 'stock-row"' + (showStockRow ? '' : ' style="display:none"') + '><label>库存状态</label><select id="' + pfx + 'instock">' + sel('in_stock', [['1','有货'],['0','缺货']]) + '</select><div class="muted" style="margin-top:4px">仅人工发货商品有效：选缺货后前台显示「缺货 · 补货中」，顾客无法下单。卡密/成品号商品的库存由卡密数量决定，上游商品由上游同步。</div></div>';
@@ -1589,9 +1699,16 @@ function productFormHTML(pfx, p){
   h += '<div><label>在售</label><select id="' + pfx + 'active">' + sel('is_active', [['1','在售'],['0','下架']]) + '</select></div>';
   h += '</div>';
   h += '<div id="' + pfx + 'delivery-hint" class="muted" style="margin-top:8px">' + initHint + '</div>';
+  var tpls = (window._adminTemplates || []).filter(function(t){ return Number(t.is_active) === 1; });
+  var tplOpts = '<option value="">不套用</option>';
+  for (var ti = 0; ti < tpls.length; ti++) tplOpts += '<option value="' + tpls[ti].id + '">' + escH(tpls[ti].name) + '</option>';
+  h += '<div><label>定价模板</label><div class="row"><select id="' + pfx + 'tpl">' + tplOpts + '</select><button type="button" class="btn small ghost" onclick="adminFillPriceFromTemplate(\'' + pfx + '\')">按成本填入售价</button></div><div class="muted" style="margin-top:4px">填入后再保存才会改售价。重新导入上游商品不会覆盖已保存的售价。</div></div>';
   h += '<label>说明</label><input id="' + pfx + 'desc" value="' + v('description') + '">';
   h += '<label>使用说明（显示在详情页）</label><textarea id="' + pfx + 'notice" rows="2">' + v('notice') + '</textarea>';
   h += '<label><input type="checkbox" id="' + pfx + 'reqact" style="width:auto"' + (Number(p.requires_email_activation) ? ' checked' : '') + '> 需要激活邮箱</label>';
+  window._formFields = window._formFields || {};
+  window._formFields[pfx] = parseProductFormFields(p);
+  h += '<div style="margin-top:10px"><label>自定义下单字段</label><div class="muted">类型仅 text / textarea。遗留联系方式字段已过滤，保存时不写回。</div><div id="' + pfx + 'ff"></div><button type="button" class="btn small ghost" onclick="adminAddFormField(\'' + pfx + '\')">+ 添加字段</button></div>';
   return h;
 }
 // 商品图片选择器：三选一 —— App 图标 / 自己上传 / 不选（默认 📦 线条图标）。
@@ -1688,6 +1805,8 @@ function adminDeliveryHint(pfx){
   else hint.textContent = '发货方式：付款后人工发货。确认收款后，在订单页点「发货」填交付内容。';
 }
 async function adminProductForm(id, defaultSource){
+  await loadAdminCategories();
+  await loadAdminTemplates();
   var p = null;
   if (id) { for (var i = 0; i < (window._adminProducts || []).length; i++){ if (String(window._adminProducts[i].id) === String(id)) p = window._adminProducts[i]; } }
   else if (defaultSource) p = { source: defaultSource }; // 子目录下新增商品默认归属当前目录（对接=上游 / 自营=self）
@@ -1707,23 +1826,20 @@ async function adminProductForm(id, defaultSource){
     if (imgMode === 'app' && imgAppKey) { body.app_icon_key = imgAppKey; body.image_data = ''; }
     else if (imgMode === 'upload') { body.app_icon_key = ''; if (window._productImage && window._productImage[pfx]) body.image_data = window._productImage[pfx]; }
     else { body.app_icon_key = ''; body.image_data = ''; }
+    body.form_fields = readFormFieldRows(pfx).filter(function(f){ return !isLegacyContactField(f); });
     if (id){
       var old = p;
       body.image_emoji = (old && old.image_emoji) || 'box';
-      // 第七轮：新建/编辑商品不再自动加入旧默认联系方式字段；编辑历史商品时过滤掉旧字段，不重新加入。
-      var ff = [];
-      if (old && old.form_fields != null){ if (typeof old.form_fields === 'string'){ try { ff = JSON.parse(old.form_fields); } catch (e) { ff = []; } } else { ff = old.form_fields; } }
-      body.form_fields = (Array.isArray(ff) ? ff : []).filter(function(f){ return !isLegacyContactField(f); });
       var r = await api('/api/admin/products/' + id, 'PUT', body);
       if (!r.ok){ toast(r.error, 'error'); return false; }
     } else {
-      body.form_fields = []; // 第七轮：新商品不再自动加入旧默认联系方式字段
       var r2 = await api('/api/admin/products', 'POST', body);
       if (!r2.ok){ toast(r2.error, 'error'); return false; }
     }
     toast('已保存', 'success');
     renderAdminProducts(window._prodFilter.page || 1);
   }});
+  renderFormFieldRows(pfx);
 }
 async function adminDelProduct(id){
   var p = null;
@@ -1879,8 +1995,14 @@ async function renderAdminUpstream(){
   var sv = (settings && settings.settings) || {};
   var markup = Number(sv.upstream_markup || 1.2) || 1.2;
   var fixed = Number(sv.upstream_fixed || 0) || 0;
+  window._upMarkup = markup;
+  window._upFixed = fixed;
+  await loadAdminTemplates();
+  var tpls = (window._adminTemplates || []).filter(function(t){ return Number(t.is_active) === 1; });
+  var tplSel = '<option value="">全局加价（' + markup + ' + ' + fixed + '）</option>';
+  for (var ti = 0; ti < tpls.length; ti++) tplSel += '<option value="' + tpls[ti].id + '">' + escH(tpls[ti].name) + '</option>';
   var h = '<div class="admin-page"><div class="admin-page-head"><h2>上游管理</h2></div>';
-  h += '<div class="adm-card"><h3>第一步：同步上游商品</h3><p class="muted">同步限速 300 / 15min，结果缓存到 upstream_cache，导入只从缓存读，不直接拉上游。售价 = cost × ' + markup + ' + ' + fixed + '（在设置里配）。</p><div class="row"><button class="btn" id="syncBtn" onclick="adminUpstreamSync()">同步上游商品</button> <button class="btn ghost" onclick="adminUpstreamBalance()">查余额</button></div><div id="upRes" class="muted" style="margin-top:10px">' + (hasCache ? '缓存有效：同步于 ' + escH(fmtTime(cache.fetched_at)) + '，共 ' + (Array.isArray(cache.payload) ? cache.payload.length : (cache.payload && Array.isArray(cache.payload.products) ? cache.payload.products.length : 0)) + ' 件。点同步可刷新。' : '暂无缓存，请先同步。') + '</div></div>';
+  h += '<div class="adm-card"><h3>第一步：同步上游商品</h3><p class="muted">同步限速 300 / 15min，结果缓存到 upstream_cache，导入只从缓存读，不直接拉上游。未选模板时售价 = cost × ' + markup + ' + ' + fixed + '。重新导入不覆盖已保存售价。</p><div class="adm-field"><label>导入时使用的定价模板</label><select id="upTpl" onchange="adminUpstreamFilter()">' + tplSel + '</select></div><div class="row"><button class="btn" id="syncBtn" onclick="adminUpstreamSync()">同步上游商品</button> <button class="btn ghost" onclick="adminUpstreamBalance()">查余额</button></div><div id="upRes" class="muted" style="margin-top:10px">' + (hasCache ? '缓存有效：同步于 ' + escH(fmtTime(cache.fetched_at)) + '，共 ' + (Array.isArray(cache.payload) ? cache.payload.length : (cache.payload && Array.isArray(cache.payload.products) ? cache.payload.products.length : 0)) + ' 件。点同步可刷新。' : '暂无缓存，请先同步。') + '</div></div>';
   h += '<div class="adm-card"><h3>第二步：浏览商品目录（来自缓存）</h3><p class="muted">勾选要导入的商品，导入前会展示成本、加价与最终售价预览。重新导入已存在的商品时，不会覆盖管理员人工修改的标题与简介。</p><div class="admin-toolbar"><input id="upQ" placeholder="搜索上游商品名称 / ID" oninput="adminUpstreamFilter()"><button class="btn" onclick="adminUpstreamImport()">批量导入已选</button></div><div id="upCatalog">' + (hasCache ? '<div class="muted">加载中…</div>' : '<div class="muted">暂无缓存，请先同步。</div>') + '</div><div id="upPreview" class="muted" style="margin-top:10px"></div></div>';
   h += '<div class="adm-card"><h3>第三步：上游订单与异常</h3>';
   if (!alerts.length) h += '<div class="muted">暂无置顶告警（pending_upstream 订单）</div>';
@@ -1906,15 +2028,12 @@ async function adminUpstreamFilter(){
   window._upCatalog = arr;
   var q = (el('upQ') ? el('upQ').value.trim().toLowerCase() : '');
   var filtered = arr.filter(function(x){ if (!q) return true; return String(x.title || x.name || '').toLowerCase().indexOf(q) !== -1 || String(x.id).toLowerCase().indexOf(q) !== -1; });
-  var settings = await api('/api/admin/settings');
-  var sv = (settings && settings.settings) || {};
-  var markup = Number(sv.upstream_markup || 1.2) || 1.2;
-  var fixed = Number(sv.upstream_fixed || 0) || 0;
+  var rule = currentUpstreamPriceRule();
   var h = '';
   if (!filtered.length) h = '<div class="adm-empty">暂无符合条件的上游商品</div>';
   else {
     h = '<div class="adm-table-wrap"><table class="adm-table"><thead><tr><th><input type="checkbox" onchange="adminUpstreamCheckAll(this.checked)"></th><th>上游 ID</th><th>名称</th><th>成本</th><th>库存</th><th>激活</th><th>售价预览</th></tr></thead><tbody>';
-    for (var i = 0; i < filtered.length; i++){ var up = filtered[i]; var cost = Number(up.cost || up.cost_price || up.price || 0) || 0; var sell = Math.round((cost * markup + fixed) * 100) / 100; var inSt = (up.inStock === false || up.in_stock === 0) ? '<span class="spill red">缺货</span>' : '<span class="spill green">有货</span>'; var reqAct = (up.requiresEmailActivation === true || up.requires_email_activation === true || up.activation === true) ? '是' : '否';
+    for (var i = 0; i < filtered.length; i++){ var up = filtered[i]; var cost = Number(up.cost || up.cost_price || up.price || 0) || 0; var sell = previewTemplateSell(cost, rule); var inSt = (up.inStock === false || up.in_stock === 0) ? '<span class="spill red">缺货</span>' : '<span class="spill green">有货</span>'; var reqAct = (up.requiresEmailActivation === true || up.requires_email_activation === true || up.activation === true) ? '是' : '否';
       h += '<tr><td data-label="选择"><input type="checkbox" class="up-check" data-id="' + escH(String(up.id)) + '" onchange="adminUpstreamPreview()"></td><td data-label="上游 ID"><span class="adm-mono">' + escH(String(up.id)) + '</span></td><td data-label="名称">' + escH(up.title || up.name || '') + '</td><td data-label="成本">' + cost.toFixed(2) + ' USDT</td><td data-label="库存">' + inSt + '</td><td data-label="激活">' + reqAct + '</td><td data-label="售价预览">' + sell.toFixed(2) + ' USDT</td></tr>';
     }
     h += '</tbody></table></div>';
@@ -1933,17 +2052,23 @@ async function adminUpstreamPreview(){
   var pv = el('upPreview');
   if (!pv) return;
   if (!boxes.length){ pv.textContent = ''; return; }
-  var settings = await api('/api/admin/settings');
-  var sv = (settings && settings.settings) || {};
-  var markup = Number(sv.upstream_markup || 1.2) || 1.2;
-  var fixed = Number(sv.upstream_fixed || 0) || 0;
+  var rule = currentUpstreamPriceRule();
   var totalCost = 0, totalSell = 0;
   var cat = window._upCatalog || [];
   for (var i = 0; i < boxes.length; i++){
     var id = boxes[i].getAttribute('data-id');
-    for (var j = 0; j < cat.length; j++){ if (String(cat[j].id) === String(id)){ var cost = Number(cat[j].cost || cat[j].cost_price || cat[j].price || 0) || 0; totalCost += cost; totalSell += Math.round((cost * markup + fixed) * 100) / 100; break; } }
+    for (var j = 0; j < cat.length; j++){ if (String(cat[j].id) === String(id)){ var cost = Number(cat[j].cost || cat[j].cost_price || cat[j].price || 0) || 0; totalCost += cost; totalSell += previewTemplateSell(cost, rule); break; } }
   }
-  pv.textContent = '已选 ' + boxes.length + ' 件：总成本 ' + totalCost.toFixed(2) + ' USDT，售价合计 ' + totalSell.toFixed(2) + ' USDT（售价 = cost × ' + markup + ' + ' + fixed + '）';
+  pv.textContent = '已选 ' + boxes.length + ' 件：总成本 ' + totalCost.toFixed(2) + ' USDT，售价合计 ' + totalSell.toFixed(2) + ' USDT（' + (rule.name || ('cost × ' + rule.markup + ' + ' + rule.fixed)) + '）。已存在商品的售价不会被导入覆盖。';
+}
+function currentUpstreamPriceRule(){
+  var sel = el('upTpl');
+  var id = sel ? sel.value : '';
+  var list = window._adminTemplates || [];
+  for (var i = 0; i < list.length; i++){ if (id && String(list[i].id) === String(id)) return list[i]; }
+  var markup = Number(window._upMarkup || 1.2) || 1.2;
+  var fixed = Number(window._upFixed || 0) || 0;
+  return { markup: markup, fixed: fixed, price_floor: null, price_ceiling: null, name: '' };
 }
 async function adminUpstreamSync(){
   var btn = el('syncBtn'); setBtnLoading(btn, true);
@@ -1965,8 +2090,11 @@ async function adminUpstreamImport(){
   if (!boxes.length){ toast('请先勾选要导入的上游商品', 'error'); return; }
   var ids = [];
   for (var i = 0; i < boxes.length; i++) ids.push({ id: boxes[i].getAttribute('data-id') });
-  showModal({ title: '批量导入上游商品', bodyHTML: '<p>将导入 <b>' + ids.length + '</b> 件商品。重新导入已存在的商品时，不会覆盖标题与简介（保留人工翻译）。确定导入？</p>', confirmText: '确认导入', onConfirm: async function(){
-    var r = await api('/api/admin/upstream/import', 'POST', { items: ids });
+  var tplId = el('upTpl') ? el('upTpl').value : '';
+  showModal({ title: '批量导入上游商品', bodyHTML: '<p>将导入 <b>' + ids.length + '</b> 件商品。重新导入已存在的商品时，不会覆盖标题、简介和已保存售价。确定导入？</p>', confirmText: '确认导入', onConfirm: async function(){
+    var payload = { items: ids };
+    if (tplId) payload.template_id = Number(tplId);
+    var r = await api('/api/admin/upstream/import', 'POST', payload);
     if (!r.ok){ toast(r.error, 'error'); return false; }
     toast('导入 ' + r.imported + ' 件（markup ' + r.markup + ' / fixed ' + r.fixed + '）', 'success');
     adminTab('products');
@@ -2012,7 +2140,7 @@ async function renderAdminSettings(){
     + '<div class="adm-field"><label>API Key 状态</label><div class="muted">' + (keyConfigured ? '已配置' : '未配置') + '</div><div class="hint">改 Key 走 CF 面板或安全流程；后台只显示“已配置/未配置”，绝不显示 Key 明文。</div></div>'
     + '<div><button class="btn ghost" id="testProdSellerBtn" onclick="adminTestProdSeller()">测试连接</button></div><div id="prodsellerTestRes" style="margin-top:8px"></div>'
     + '<p class="muted">测试连接只调一次 ProdSeller 只读接口（查余额），绝不下单；返回成功/失败 + 失败原因，不泄露 Key。</p></div>';
-  h += '<div class="adm-card"><h3>上游与汇率</h3>' + adminSettingInput(sv, 'upstream_markup', '上游加价倍率', '导入售价 = cost × markup + fixed，默认 1.2', 'number') + adminSettingInput(sv, 'upstream_fixed', '上游固定加价', '默认 0', 'number') + adminSettingInput(sv, 'cny_rate', 'CNY 汇率', '前台 CNY 展示汇率，当前 7.2', 'number') + '</div>';
+  h += '<div class="adm-card"><h3>上游与汇率</h3><p class="muted">未选择定价模板时，导入使用这里的全局倍率。模板在「定价模板」页维护；重新导入不会覆盖已保存售价。</p>' + adminSettingInput(sv, 'upstream_markup', '上游加价倍率', '导入售价 = cost × markup + fixed，默认 1.2', 'number') + adminSettingInput(sv, 'upstream_fixed', '上游固定加价', '默认 0', 'number') + adminSettingInput(sv, 'cny_rate', 'CNY 汇率', '前台 CNY 展示汇率，当前 7.2', 'number') + '</div>';
   h += '<div><button class="btn" id="saveSettingsBtn" onclick="adminSaveSettings()">保存设置</button></div></div>';
   el('adminBody').innerHTML = h;
 }
@@ -2091,6 +2219,95 @@ function adminAuditSearch(){
 }
 function adminAuditReset(){ window._auditFilter = { action: '', order_id: '', page: 1 }; renderAdminAudit(1); }
 
+async function renderAdminCategories(){
+  var r = await api('/api/admin/categories');
+  if (!r.ok){ el('adminBody').innerHTML = '<div class="adm-empty">加载失败：' + escH(r.error) + '</div>'; return; }
+  window._adminCategories = r.categories || [];
+  var list = window._adminCategories;
+  var h = '<div class="admin-page"><div class="admin-page-head"><h2>商品分类</h2><button class="btn" onclick="adminCategoryForm(null)">+ 新增分类</button></div>';
+  h += '<p class="muted">扁平目录。内置代充 / 成品号 / 卡密的标识不能改（发货规则绑定）。停用后不能用于新商品，已有商品保留原标识。</p>';
+  if (!list.length) h += '<div class="adm-empty">暂无分类</div>';
+  else {
+    h += '<div class="adm-table-wrap"><table class="adm-table"><thead><tr><th>标识</th><th>名称</th><th>排序</th><th>状态</th><th></th></tr></thead><tbody>';
+    for (var i = 0; i < list.length; i++){
+      var c = list[i];
+      h += '<tr><td data-label="标识"><span class="adm-mono">' + escH(c.key) + '</span>' + (c.builtin ? ' <span class="spill gray">内置</span>' : '') + '</td><td data-label="名称">' + escH(c.name) + '</td><td data-label="排序">' + c.sort + '</td><td data-label="状态">' + (Number(c.is_active) ? '<span class="spill green">启用</span>' : '<span class="spill gray">停用</span>') + '</td><td data-label=""><button class="btn small ghost" data-id="' + c.id + '" onclick="adminCategoryForm(this.dataset.id)">改名</button> ' + (Number(c.is_active) ? '<button class="btn small" data-id="' + c.id + '" onclick="adminCategoryActive(this.dataset.id,0)">停用</button>' : '<button class="btn small" data-id="' + c.id + '" onclick="adminCategoryActive(this.dataset.id,1)">启用</button>') + '</td></tr>';
+    }
+    h += '</tbody></table></div>';
+  }
+  h += '</div>';
+  el('adminBody').innerHTML = h;
+}
+function adminCategoryForm(id){
+  var c = null;
+  var list = window._adminCategories || [];
+  for (var i = 0; i < list.length; i++){ if (String(list[i].id) === String(id)) c = list[i]; }
+  var body = '<div class="adm-field"><label>名称</label><input id="catName" value="' + escH(c ? c.name : '') + '"></div>';
+  if (!c) body += '<div class="adm-field"><label>标识（可留空自动生成）</label><input id="catKey" placeholder="如 vip_pack"></div>';
+  else if (!c.builtin) body += '<div class="adm-field"><label>标识</label><input id="catKey" value="' + escH(c.key) + '"><div class="hint">修改标识会同步已有商品的分类。</div></div>';
+  else body += '<p class="muted">内置标识 ' + escH(c.key) + ' 不可修改。</p>';
+  body += '<div class="adm-field"><label>排序</label><input id="catSort" type="number" value="' + (c ? c.sort : 100) + '"></div>';
+  showModal({ title: c ? '编辑分类' : '新增分类', bodyHTML: body, confirmText: '保存', onConfirm: async function(){
+    var name = (el('catName').value || '').trim();
+    if (!name){ toast('名称必填', 'error'); return false; }
+    var payload = { name: name, sort: Number(el('catSort').value || 100) };
+    if (el('catKey')) payload.key = (el('catKey').value || '').trim();
+    var r = c ? await api('/api/admin/categories/' + c.id, 'PUT', payload) : await api('/api/admin/categories', 'POST', payload);
+    if (!r.ok){ toast(r.error, 'error'); return false; }
+    toast('已保存', 'success');
+    renderAdminCategories();
+  }});
+}
+function adminCategoryActive(id, on){
+  var path = '/api/admin/categories/' + id + (on ? '/activate' : '/deactivate');
+  api(path, 'POST', {}).then(function(r){
+    if (!r.ok){ toast(r.error, 'error'); return; }
+    toast(on ? '已启用' : '已停用', 'success');
+    renderAdminCategories();
+  });
+}
+
+async function renderAdminPricing(){
+  var r = await api('/api/admin/pricing-templates');
+  if (!r.ok){ el('adminBody').innerHTML = '<div class="adm-empty">加载失败：' + escH(r.error) + '</div>'; return; }
+  window._adminTemplates = r.templates || [];
+  var list = window._adminTemplates;
+  var h = '<div class="admin-page"><div class="admin-page-head"><h2>定价模板</h2><button class="btn" onclick="adminPricingForm(null)">+ 新增模板</button></div>';
+  h += '<p class="muted">售价 = 成本 × 倍率 + 固定加价，再夹到可选下限/上限。导入新商品可用模板；重新导入不覆盖已保存售价。显式「按成本填入售价」并保存才会改价。</p>';
+  if (!list.length) h += '<div class="adm-empty">暂无模板。未选模板时导入仍用系统设置里的全局倍率。</div>';
+  else {
+    h += '<div class="adm-table-wrap"><table class="adm-table"><thead><tr><th>名称</th><th>倍率</th><th>固定</th><th>下限</th><th>上限</th><th>状态</th><th></th></tr></thead><tbody>';
+    for (var i = 0; i < list.length; i++){
+      var t = list[i];
+      h += '<tr><td data-label="名称">' + escH(t.name) + '</td><td data-label="倍率">' + t.markup + '</td><td data-label="固定">' + t.fixed + '</td><td data-label="下限">' + (t.price_floor == null ? '—' : t.price_floor) + '</td><td data-label="上限">' + (t.price_ceiling == null ? '—' : t.price_ceiling) + '</td><td data-label="状态">' + (Number(t.is_active) ? '<span class="spill green">启用</span>' : '<span class="spill gray">停用</span>') + '</td><td data-label=""><button class="btn small ghost" data-id="' + t.id + '" onclick="adminPricingForm(this.dataset.id)">编辑</button>' + (Number(t.is_active) ? ' <button class="btn small" data-id="' + t.id + '" onclick="adminPricingOff(this.dataset.id)">停用</button>' : '') + '</td></tr>';
+    }
+    h += '</tbody></table></div>';
+  }
+  h += '</div>';
+  el('adminBody').innerHTML = h;
+}
+function adminPricingForm(id){
+  var t = null;
+  var list = window._adminTemplates || [];
+  for (var i = 0; i < list.length; i++){ if (String(list[i].id) === String(id)) t = list[i]; }
+  function fld(fid, label, val){ return '<div class="adm-field"><label>' + label + '</label><input id="' + fid + '" value="' + escH(val == null ? '' : val) + '"></div>'; }
+  var body = fld('ptName', '名称', t ? t.name : '') + fld('ptMarkup', '倍率（1.2 = 成本×1.2）', t ? t.markup : '1.2') + fld('ptFixed', '固定加价', t ? t.fixed : '0') + fld('ptFloor', '控价下限（可空）', t ? t.price_floor : '') + fld('ptCeil', '控价上限（可空）', t ? t.price_ceiling : '');
+  showModal({ title: t ? '编辑定价模板' : '新增定价模板', bodyHTML: body, confirmText: '保存', onConfirm: async function(){
+    var payload = { name: (el('ptName').value || '').trim(), markup: el('ptMarkup').value, fixed: el('ptFixed').value, price_floor: el('ptFloor').value, price_ceiling: el('ptCeil').value };
+    if (t) payload.is_active = t.is_active;
+    var r = t ? await api('/api/admin/pricing-templates/' + t.id, 'PUT', payload) : await api('/api/admin/pricing-templates', 'POST', payload);
+    if (!r.ok){ toast(r.error, 'error'); return false; }
+    toast(r.idempotent ? '模板已存在' : '已保存', 'success');
+    renderAdminPricing();
+  }});
+}
+function adminPricingOff(id){
+  api('/api/admin/pricing-templates/' + id + '/deactivate', 'POST', {}).then(function(r){
+    if (!r.ok){ toast(r.error, 'error'); return; }
+    toast('已停用', 'success');
+    renderAdminPricing();
+  });
+}
 
 load();
 </script>
