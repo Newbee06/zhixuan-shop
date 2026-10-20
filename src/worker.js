@@ -110,6 +110,14 @@ function parsePricingInput(b){
   var active = (b.is_active === 0 || b.is_active === '0' || b.is_active === false) ? 0 : 1;
   return { ok: true, data: { name: name, markup: markup, fixed_add: roundMoney(fixed), price_floor: fl.value, price_ceiling: ce.value, is_active: active } };
 }
+// 定价模板功能开关。只有 settings.pricing_templates_enabled 去空白后正好是 "1" 才算开。
+// 缺行、空串、"0" 以及其他值都按关。不删 pricing_templates 表，也不回滚 v19。
+function isPricingTemplatesEnabled(settings){
+  return String((settings && settings.pricing_templates_enabled) || '').trim() === '1';
+}
+function pricingTemplatesDisabledErr(){
+  return json({ ok: false, error: '定价模板已关闭', code: 'pricing_templates_disabled' }, 403);
+}
 function categoryJson(row){
   if (!row) return null;
   return { id: Number(row.id), key: String(row.cat_key || ''), name: String(row.name || ''), is_active: Number(row.is_active) ? 1 : 0, sort: Number(row.sort) || 0, builtin: BUILTIN_CATEGORY_KEYS[row.cat_key] ? 1 : 0, created_at: row.created_at || '', updated_at: row.updated_at || '' };
@@ -4018,14 +4026,21 @@ async function handleApi(req, env, url, ctx) {
     var markup = Number(settingsI.upstream_markup || '1.2'); if (!isFinite(markup) || markup <= 0) markup = 1.2;
     var fixed = Number(settingsI.upstream_fixed || '0'); if (!isFinite(fixed)) fixed = 0;
     var priceFloor = null, priceCeiling = null, templateId = null;
+    var templateIgnored = false;
+    var templatesOn = isPricingTemplatesEnabled(settingsI);
     if (ib2.template_id != null && String(ib2.template_id).trim() !== '') {
-      var tplRow = await env.DB.prepare('SELECT * FROM pricing_templates WHERE id = ?').bind(Number(ib2.template_id)).first();
-      if (!tplRow || Number(tplRow.is_active) !== 1) return err('定价模板不存在或已停用');
-      markup = Number(tplRow.markup);
-      fixed = Number(tplRow.fixed_add);
-      priceFloor = tplRow.price_floor;
-      priceCeiling = tplRow.price_ceiling;
-      templateId = Number(tplRow.id);
+      if (!templatesOn) {
+        // 开关关闭：忽略 template_id，不查询 pricing_templates，一律退回全局 upstream_markup + upstream_fixed。
+        templateIgnored = true;
+      } else {
+        var tplRow = await env.DB.prepare('SELECT * FROM pricing_templates WHERE id = ?').bind(Number(ib2.template_id)).first();
+        if (!tplRow || Number(tplRow.is_active) !== 1) return err('定价模板不存在或已停用');
+        markup = Number(tplRow.markup);
+        fixed = Number(tplRow.fixed_add);
+        priceFloor = tplRow.price_floor;
+        priceCeiling = tplRow.price_ceiling;
+        templateId = Number(tplRow.id);
+      }
     }
     var c2 = await env.DB.prepare("SELECT * FROM upstream_cache WHERE key='products'").first();
     if (!c2) return err('请先执行上游同步（sync），import 只从缓存读，不直接拉上游');
@@ -4058,7 +4073,7 @@ async function handleApi(req, env, url, ctx) {
         if (existedUp) sellPreserved++;
       } catch (e) {}
     }
-    return json({ ok: true, imported: imported, markup: markup, fixed: fixed, template_id: templateId, price_floor: priceFloor == null ? null : Number(priceFloor), price_ceiling: priceCeiling == null ? null : Number(priceCeiling), sell_price_preserved: sellPreserved });
+    return json({ ok: true, imported: imported, markup: markup, fixed: fixed, template_id: templateId, price_floor: priceFloor == null ? null : Number(priceFloor), price_ceiling: priceCeiling == null ? null : Number(priceCeiling), sell_price_preserved: sellPreserved, template_ignored: templateIgnored });
   }
   if (path === '/api/admin/upstream/orders' && method === 'GET') {
     var upPage = Math.max(1, parseInt(url.searchParams.get('page') || '1', 10) || 1);
@@ -4144,6 +4159,7 @@ async function handleApi(req, env, url, ctx) {
     }
     if (key === 'upstream_markup') { var mk = Number(v); if (!isFinite(mk) || mk <= 0 || mk > 100) return 'upstream_markup 必须是 0~100 之间的倍率'; return null; }
     if (key === 'upstream_fixed') { var fx = Number(v); if (!isFinite(fx) || fx < 0 || fx > 1000000) return 'upstream_fixed 必须是 0~1000000 之间的固定加价'; return null; }
+    if (key === 'pricing_templates_enabled') { if (v !== '0' && v !== '1') return 'pricing_templates_enabled 只能是 0 或 1（默认 0 关闭）'; return null; }
     if (key === 'large_order_usdt') { var lou = Number(v); if (!isFinite(lou) || lou <= 0 || lou > 1000000) return 'large_order_usdt 必须是 0~1000000 之间的大额阈值（USDT）'; return null; }
     if (key === 'large_order_confirmations') { var loc = Number(v); if (!isFinite(loc) || loc < 1 || loc > 100 || Math.floor(loc) !== loc) return 'large_order_confirmations 必须是 1~100 的整数'; return null; }
     if (key === 'cny_rate') { var cr = Number(v); if (!isFinite(cr) || cr <= 0 || cr > 1000) return 'cny_rate 必须是 0~1000 之间的汇率'; return null; }
@@ -4171,7 +4187,7 @@ async function handleApi(req, env, url, ctx) {
   if (path === '/api/admin/settings' && method === 'GET') {
     var settingsForAdmin = await getAllSettings(env);
     // API Key 只返回“已配置/未配置”布尔值，绝不返回 Key 明文。
-    return json({ ok: true, settings: settingsForAdmin, pay_config: { methods: payConfigMethods(settingsForAdmin), pay_available: payConfigMethods(settingsForAdmin).some(function (m) { return !!m.enabled && isValidEvmAddress(m.address); }) }, prodseller_api_key_configured: !!(env && env.PRODSELLER_API_KEY) });
+    return json({ ok: true, settings: settingsForAdmin, pricing_templates_enabled: isPricingTemplatesEnabled(settingsForAdmin), pay_config: { methods: payConfigMethods(settingsForAdmin), pay_available: payConfigMethods(settingsForAdmin).some(function (m) { return !!m.enabled && isValidEvmAddress(m.address); }) }, prodseller_api_key_configured: !!(env && env.PRODSELLER_API_KEY) });
   }
   if (path === '/api/admin/settings' && method === 'POST') {
     var sb = await parseJsonBody(req);
@@ -4282,11 +4298,15 @@ async function handleApi(req, env, url, ctx) {
     return json({ ok: true, message: '7天清理已执行' });
   }
   // ---- 定价模板（加价倍率 + 固定加价 + 可选控价；不含会员档/佣金）----
+  // 开关关：GET 返回空列表且不读取旧模板；创建 / 修改 / 停用 / 套用售价一律 403 + code=pricing_templates_disabled。
+  // 开关开：与加入开关前一致（重新导入仍不覆盖已保存售价）。
   if (path === '/api/admin/pricing-templates' && method === 'GET') {
+    if (!isPricingTemplatesEnabled(await getAllSettings(env))) return json({ ok: true, templates: [], pricing_templates_enabled: false });
     var ptAll = await env.DB.prepare('SELECT * FROM pricing_templates ORDER BY is_active DESC, id ASC').all();
-    return json({ ok: true, templates: (ptAll.results || []).map(pricingTemplateJson) });
+    return json({ ok: true, templates: (ptAll.results || []).map(pricingTemplateJson), pricing_templates_enabled: true });
   }
   if (path === '/api/admin/pricing-templates' && method === 'POST') {
+    if (!isPricingTemplatesEnabled(await getAllSettings(env))) return pricingTemplatesDisabledErr();
     var ptb = await parseJsonBody(req);
     var ptNorm = parsePricingInput(ptb);
     if (!ptNorm.ok) return err(ptNorm.error);
@@ -4304,6 +4324,7 @@ async function handleApi(req, env, url, ctx) {
   }
   var mPt = path.match(/^\/api\/admin\/pricing-templates\/(\d+)$/);
   if (mPt && method === 'PUT') {
+    if (!isPricingTemplatesEnabled(await getAllSettings(env))) return pricingTemplatesDisabledErr();
     var ptIdU = Number(mPt[1]);
     var ptOld = await env.DB.prepare('SELECT * FROM pricing_templates WHERE id = ?').bind(ptIdU).first();
     if (!ptOld) return err('定价模板不存在', 404);
@@ -4325,6 +4346,7 @@ async function handleApi(req, env, url, ctx) {
   }
   var mPtOff = path.match(/^\/api\/admin\/pricing-templates\/(\d+)\/deactivate$/);
   if (mPtOff && method === 'POST') {
+    if (!isPricingTemplatesEnabled(await getAllSettings(env))) return pricingTemplatesDisabledErr();
     var ptOffId = Number(mPtOff[1]);
     var ptOff = await env.DB.prepare('SELECT * FROM pricing_templates WHERE id = ?').bind(ptOffId).first();
     if (!ptOff) return err('定价模板不存在', 404);
@@ -4337,6 +4359,7 @@ async function handleApi(req, env, url, ctx) {
   // POST /api/admin/products/:id/apply-pricing-template —— 显式按成本套用模板写售价（会覆盖当前售价；重新导入不会）。
   var mApplyPt = path.match(/^\/api\/admin\/products\/(\d+)\/apply-pricing-template$/);
   if (mApplyPt && method === 'POST') {
+    if (!isPricingTemplatesEnabled(await getAllSettings(env))) return pricingTemplatesDisabledErr();
     var apBody = await parseJsonBody(req);
     var apPid = Number(mApplyPt[1]);
     var apProd = await env.DB.prepare('SELECT * FROM products WHERE id = ?').bind(apPid).first();

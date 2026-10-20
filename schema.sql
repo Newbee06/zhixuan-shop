@@ -160,6 +160,8 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('usdt_contracts', '{"X Layer":"0x779Ded0c9e1022225f8E0630b35a9b54bE713736","BEP20":"0x55d398326f99059fF775485246999027B3197955"}'),
   ('upstream_markup', '1.2'),
   ('upstream_fixed', '0'),
+  -- 定价模板功能开关：默认 0。缺行或空值同样按关闭。不删 pricing_templates，不回滚 v19。
+  ('pricing_templates_enabled', '0'),
   ('prodseller_base_url', 'https://prodseller.com/v1'),
   ('email_from', 'noreply@your-domain.example'),
   ('email_enabled', '0'),

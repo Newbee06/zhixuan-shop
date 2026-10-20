@@ -1215,7 +1215,8 @@ function statusPill(s){
 }
 function adminNavHTML(){
   var tabs = [['data',ic('chart')+' 数据总览'],['orders',ic('receipt')+' 订单管理'],['payments',ic('clipboard')+' 付款对账']];
-  var tail = [['cards',ic('card')+' 卡密库存'],['categories',ic('book')+' 商品分类'],['pricing',ic('chart')+' 定价模板'],['upstream',ic('link')+' 上游管理'],['settings',ic('settings')+' 系统设置'],['audit',ic('clipboard')+' 操作审计']];
+  // 定价模板不是独立菜单。开关打开时，入口在「上游管理」页里的高级区。
+  var tail = [['cards',ic('card')+' 卡密库存'],['categories',ic('book')+' 商品分类'],['upstream',ic('link')+' 上游管理'],['settings',ic('settings')+' 系统设置'],['audit',ic('clipboard')+' 操作审计']];
   var h = '<div class="admin-nav">';
   for (var i = 0; i < tabs.length; i++){ h += '<button data-tab="' + tabs[i][0] + '" onclick="adminTab(\'' + tabs[i][0] + '\');adminToggleSide(false)">' + tabs[i][1] + '</button>'; }
   // 商品管理子目录：对接商品（上游 prodseller）/ 自营商品（self），分开管理
@@ -1232,7 +1233,7 @@ function adminNavSync(){
     var on = (tb === window._adminTab) || (tb === 'products' && (window._adminTab === 'products-upstream' || window._adminTab === 'products-self'));
     btns[i].classList.toggle('on', on);
   }
-  var titles = {data:'数据总览', orders:'订单管理', payments:'付款对账', products:'商品管理', 'products-upstream':'对接商品', 'products-self':'自营商品', cards:'卡密库存', categories:'商品分类', pricing:'定价模板', upstream:'上游管理', settings:'系统设置', audit:'操作审计'};
+  var titles = {data:'数据总览', orders:'订单管理', payments:'付款对账', products:'商品管理', 'products-upstream':'对接商品', 'products-self':'自营商品', cards:'卡密库存', categories:'商品分类', upstream:'上游管理', settings:'系统设置', audit:'操作审计'};
   var t = el('adminTitle'); if (t) t.textContent = titles[window._adminTab] || '管理后台';
 }
 function adminToggleSide(open){
@@ -1262,7 +1263,7 @@ async function adminTab(t){
     else if (t === 'payments') await renderAdminPayments(1);
     else if (t === 'products') { window._prodView = 'all'; window._prodFilter.source = ''; await renderAdminProducts(1); } // 全部视图：清掉子目录残留的来源筛选，否则会误以为只剩 6 件
     else if (t === 'categories') await renderAdminCategories();
-    else if (t === 'pricing') await renderAdminPricing();
+    else if (t === 'pricing') { window._adminTab = 'upstream'; adminNavSync(); await renderAdminUpstream(); }
     else if (t === 'products-upstream') { window._prodView = 'upstream'; await renderAdminProducts(1); }
     else if (t === 'products-self') { window._prodView = 'self'; await renderAdminProducts(1); }
     else if (t === 'cards') await renderAdminCards(1);
@@ -1587,9 +1588,17 @@ async function loadAdminCategories(){
   else if (!window._adminCategories) window._adminCategories = [{ key: 'recharge', name: '代充', is_active: 1 }, { key: 'account', name: '成品号', is_active: 1 }, { key: 'card', name: '卡密', is_active: 1 }];
   return window._adminCategories;
 }
+async function loadPricingTemplatesFlag(){
+  var sr = await api('/api/admin/settings');
+  var on = !!(sr && sr.ok && sr.pricing_templates_enabled === true);
+  window._pricingTemplatesEnabled = on;
+  if (sr && sr.ok) window._adminSettingsCache = sr;
+  return sr && sr.ok ? sr : { ok: false, error: (sr && sr.error) || '加载设置失败', settings: {}, pricing_templates_enabled: false };
+}
 async function loadAdminTemplates(){
+  if (!window._pricingTemplatesEnabled) { window._adminTemplates = []; return []; }
   var r = await api('/api/admin/pricing-templates');
-  window._adminTemplates = (r && r.ok && Array.isArray(r.templates)) ? r.templates : (window._adminTemplates || []);
+  window._adminTemplates = (r && r.ok && Array.isArray(r.templates)) ? r.templates : [];
   return window._adminTemplates;
 }
 function categoryOptionHTML(cur, includeInactive){
@@ -1754,10 +1763,12 @@ function productFormHTML(pfx, p){
   h += '<div><label>在售</label><select id="' + pfx + 'active">' + sel('is_active', [['1','在售'],['0','下架']]) + '</select></div>';
   h += '</div>';
   h += '<div id="' + pfx + 'delivery-hint" class="muted" style="margin-top:8px">' + initHint + '</div>';
-  var tpls = (window._adminTemplates || []).filter(function(t){ return Number(t.is_active) === 1; });
-  var tplOpts = '<option value="">不套用</option>';
-  for (var ti = 0; ti < tpls.length; ti++) tplOpts += '<option value="' + tpls[ti].id + '">' + escH(tpls[ti].name) + '</option>';
-  h += '<div><label>定价模板</label><div class="row"><select id="' + pfx + 'tpl">' + tplOpts + '</select><button type="button" class="btn small ghost" onclick="adminFillPriceFromTemplate(\'' + pfx + '\')">按成本填入售价</button></div><div class="muted" style="margin-top:4px">填入后再保存才会改售价。重新导入上游商品不会覆盖已保存的售价。</div></div>';
+  if (window._pricingTemplatesEnabled) {
+    var tpls = (window._adminTemplates || []).filter(function(t){ return Number(t.is_active) === 1; });
+    var tplOpts = '<option value="">不套用</option>';
+    for (var ti = 0; ti < tpls.length; ti++) tplOpts += '<option value="' + tpls[ti].id + '">' + escH(tpls[ti].name) + '</option>';
+    h += '<div><label>定价模板</label><div class="row"><select id="' + pfx + 'tpl">' + tplOpts + '</select><button type="button" class="btn small ghost" onclick="adminFillPriceFromTemplate(\'' + pfx + '\')">按成本填入售价</button></div><div class="muted" style="margin-top:4px">填入后再保存才会改售价。重新导入上游商品不会覆盖已保存的售价。</div></div>';
+  }
   h += '<label>说明</label><input id="' + pfx + 'desc" value="' + v('description') + '">';
   h += '<label>使用说明（显示在详情页）</label><textarea id="' + pfx + 'notice" rows="2">' + v('notice') + '</textarea>';
   h += '<label><input type="checkbox" id="' + pfx + 'reqact" style="width:auto"' + (Number(p.requires_email_activation) ? ' checked' : '') + '> 需要激活邮箱</label>';
@@ -1861,7 +1872,9 @@ function adminDeliveryHint(pfx){
 }
 async function adminProductForm(id, defaultSource){
   await loadAdminCategories();
-  await loadAdminTemplates();
+  await loadPricingTemplatesFlag();
+  if (window._pricingTemplatesEnabled) await loadAdminTemplates();
+  else window._adminTemplates = [];
   var p = null;
   if (id) { for (var i = 0; i < (window._adminProducts || []).length; i++){ if (String(window._adminProducts[i].id) === String(id)) p = window._adminProducts[i]; } }
   else if (defaultSource) p = { source: defaultSource }; // 子目录下新增商品默认归属当前目录（对接=上游 / 自营=self）
@@ -2046,24 +2059,33 @@ async function renderAdminUpstream(){
   var alerts = (al && al.alerts) || [];
   var cache = await api('/api/admin/upstream/cache');
   var hasCache = !!(cache && cache.cached);
-  var settings = await api('/api/admin/settings');
+  var settings = await loadPricingTemplatesFlag();
   var sv = (settings && settings.settings) || {};
   var markup = Number(sv.upstream_markup || 1.2) || 1.2;
   var fixed = Number(sv.upstream_fixed || 0) || 0;
   window._upMarkup = markup;
   window._upFixed = fixed;
-  await loadAdminTemplates();
-  var tpls = (window._adminTemplates || []).filter(function(t){ return Number(t.is_active) === 1; });
-  var tplSel = '<option value="">全局加价（' + markup + ' + ' + fixed + '）</option>';
-  for (var ti = 0; ti < tpls.length; ti++) tplSel += '<option value="' + tpls[ti].id + '">' + escH(tpls[ti].name) + '</option>';
+  var ptOn = !!(settings && settings.pricing_templates_enabled === true);
+  var tplField = '';
+  var adv = '';
+  if (ptOn) {
+    await loadAdminTemplates();
+    var tpls = (window._adminTemplates || []).filter(function(t){ return Number(t.is_active) === 1; });
+    var tplSel = '<option value="">全局加价（' + markup + ' + ' + fixed + '）</option>';
+    for (var ti = 0; ti < tpls.length; ti++) tplSel += '<option value="' + tpls[ti].id + '">' + escH(tpls[ti].name) + '</option>';
+    tplField = '<div class="adm-field"><label>导入时使用的定价模板</label><select id="upTpl" onchange="adminUpstreamFilter()">' + tplSel + '</select></div>';
+    adv = pricingAdvancedHTML(window._adminTemplates || []);
+  }
+  var priceHint = ptOn ? ('未选模板时售价 = cost × ' + markup + ' + ' + fixed + '。重新导入不覆盖已保存售价。') : ('售价 = cost × ' + markup + ' + ' + fixed + '。重新导入不覆盖已保存售价。');
   var h = '<div class="admin-page"><div class="admin-page-head"><h2>上游管理</h2></div>';
-  h += '<div class="adm-card"><h3>第一步：同步上游商品</h3><p class="muted">同步限速 300 / 15min，结果缓存到 upstream_cache，导入只从缓存读，不直接拉上游。未选模板时售价 = cost × ' + markup + ' + ' + fixed + '。重新导入不覆盖已保存售价。</p><div class="adm-field"><label>导入时使用的定价模板</label><select id="upTpl" onchange="adminUpstreamFilter()">' + tplSel + '</select></div><div class="row"><button class="btn" id="syncBtn" onclick="adminUpstreamSync()">同步上游商品</button> <button class="btn ghost" onclick="adminUpstreamBalance()">查余额</button></div><div id="upRes" class="muted" style="margin-top:10px">' + (hasCache ? '缓存有效：同步于 ' + escH(fmtTime(cache.fetched_at)) + '，共 ' + (Array.isArray(cache.payload) ? cache.payload.length : (cache.payload && Array.isArray(cache.payload.products) ? cache.payload.products.length : 0)) + ' 件。点同步可刷新。' : '暂无缓存，请先同步。') + '</div></div>';
+  h += '<div class="adm-card"><h3>第一步：同步上游商品</h3><p class="muted">同步限速 300 / 15min，结果缓存到 upstream_cache，导入只从缓存读，不直接拉上游。' + priceHint + '</p>' + tplField + '<div class="row"><button class="btn" id="syncBtn" onclick="adminUpstreamSync()">同步上游商品</button> <button class="btn ghost" onclick="adminUpstreamBalance()">查余额</button></div><div id="upRes" class="muted" style="margin-top:10px">' + (hasCache ? '缓存有效：同步于 ' + escH(fmtTime(cache.fetched_at)) + '，共 ' + (Array.isArray(cache.payload) ? cache.payload.length : (cache.payload && Array.isArray(cache.payload.products) ? cache.payload.products.length : 0)) + ' 件。点同步可刷新。' : '暂无缓存，请先同步。') + '</div></div>';
   h += '<div class="adm-card"><h3>第二步：浏览商品目录（来自缓存）</h3><p class="muted">勾选要导入的商品，导入前会展示成本、加价与最终售价预览。重新导入已存在的商品时，不会覆盖管理员人工修改的标题与简介。</p><div class="admin-toolbar"><input id="upQ" placeholder="搜索上游商品名称 / ID" oninput="adminUpstreamFilter()"><button class="btn" onclick="adminUpstreamImport()">批量导入已选</button></div><div id="upCatalog">' + (hasCache ? '<div class="muted">加载中…</div>' : '<div class="muted">暂无缓存，请先同步。</div>') + '</div><div id="upPreview" class="muted" style="margin-top:10px"></div></div>';
   h += '<div class="adm-card"><h3>第三步：上游订单与异常</h3>';
   if (!alerts.length) h += '<div class="muted">暂无置顶告警（pending_upstream 订单）</div>';
   else { h += '<table class="adm-table"><thead><tr><th>订单号</th><th>原因</th><th>操作</th></tr></thead><tbody>'; for (var ai = 0; ai < alerts.length; ai++){ var ao = alerts[ai]; h += '<tr><td data-label="订单号"><span class="adm-mono">' + escH(ao.order_no) + '</span></td><td data-label="原因">' + escH(ao.admin_note || '') + '</td><td data-label="操作"><button class="btn small" data-id="' + ao.id + '" onclick="adminOrderDetail(this.dataset.id)">详情</button> <button class="btn small ghost" data-id="' + ao.id + '" onclick="adminUpstreamRetry(' + ao.id + ')">重试</button></td></tr>'; } h += '</tbody></table>'; }
   h += '</div>';
   h += '<div class="adm-card"><h3>上游订单列表</h3><div id="upOrders"><div class="muted">加载中…</div></div></div>';
+  h += adv;
   h += '</div>';
   el('adminBody').innerHTML = h;
   if (hasCache) adminUpstreamFilter();
@@ -2170,6 +2192,10 @@ function adminSettingField(sv, k, label, rows, hint){
 function adminSettingInput(sv, k, label, hint, type){
   return '<div class="adm-field"><label>' + escH(label) + '（' + k + '）</label><input data-sk="' + k + '" type="' + (type || 'text') + '" value="' + escH(sv[k] || '') + '">' + (hint ? '<div class="hint">' + escH(hint) + '</div>' : '') + '</div>';
 }
+function adminSettingSelect01(sv, k, label, hint){
+  var cur = String(sv[k] == null ? '' : sv[k]).trim() === '1' ? '1' : '0';
+  return '<div class="adm-field"><label>' + escH(label) + '（' + k + '）</label><select data-sk="' + k + '"><option value="0"' + (cur === '0' ? ' selected' : '') + '>0 关闭</option><option value="1"' + (cur === '1' ? ' selected' : '') + '>1 开启</option></select>' + (hint ? '<div class="hint">' + escH(hint) + '</div>' : '') + '</div>';
+}
 async function renderAdminSettings(){
   var sr = await api('/api/admin/settings');
   if (!sr.ok){ el('adminBody').innerHTML = '<div class="adm-empty">加载失败：' + escH(sr.error) + '</div>'; return; }
@@ -2195,7 +2221,7 @@ async function renderAdminSettings(){
     + '<div class="adm-field"><label>API Key 状态</label><div class="muted">' + (keyConfigured ? '已配置' : '未配置') + '</div><div class="hint">改 Key 走 CF 面板或安全流程；后台只显示“已配置/未配置”，绝不显示 Key 明文。</div></div>'
     + '<div><button class="btn ghost" id="testProdSellerBtn" onclick="adminTestProdSeller()">测试连接</button></div><div id="prodsellerTestRes" style="margin-top:8px"></div>'
     + '<p class="muted">测试连接只调一次 ProdSeller 只读接口（查余额），绝不下单；返回成功/失败 + 失败原因，不泄露 Key。</p></div>';
-  h += '<div class="adm-card"><h3>上游与汇率</h3><p class="muted">未选择定价模板时，导入使用这里的全局倍率。模板在「定价模板」页维护；重新导入不会覆盖已保存售价。</p>' + adminSettingInput(sv, 'upstream_markup', '上游加价倍率', '导入售价 = cost × markup + fixed，默认 1.2', 'number') + adminSettingInput(sv, 'upstream_fixed', '上游固定加价', '默认 0', 'number') + adminSettingInput(sv, 'cny_rate', 'CNY 汇率', '前台 CNY 展示汇率，当前 7.2', 'number') + '</div>';
+  h += '<div class="adm-card"><h3>上游与汇率</h3><p class="muted">导入默认使用这里的全局倍率。定价模板默认关闭；打开后，维护入口在「上游管理」的高级区，不是独立菜单。重新导入不会覆盖已保存售价。</p>' + adminSettingInput(sv, 'upstream_markup', '上游加价倍率', '导入售价 = cost × markup + fixed，默认 1.2', 'number') + adminSettingInput(sv, 'upstream_fixed', '上游固定加价', '默认 0', 'number') + adminSettingSelect01(sv, 'pricing_templates_enabled', '定价模板', '默认 0 关闭。打开后上游管理才出现模板下拉和高级区。关闭时导入忽略 template_id，只用全局倍率。') + adminSettingInput(sv, 'cny_rate', 'CNY 汇率', '前台 CNY 展示汇率，当前 7.2', 'number') + '</div>';
   h += '<div><button class="btn" id="saveSettingsBtn" onclick="adminSaveSettings()">保存设置</button></div></div>';
   el('adminBody').innerHTML = h;
 }
@@ -2322,13 +2348,9 @@ function adminCategoryActive(id, on){
   });
 }
 
-async function renderAdminPricing(){
-  var r = await api('/api/admin/pricing-templates');
-  if (!r.ok){ el('adminBody').innerHTML = '<div class="adm-empty">加载失败：' + escH(r.error) + '</div>'; return; }
-  window._adminTemplates = r.templates || [];
-  var list = window._adminTemplates;
-  var h = '<div class="admin-page"><div class="admin-page-head"><h2>定价模板</h2><button class="btn" onclick="adminPricingForm(null)">+ 新增模板</button></div>';
-  h += '<p class="muted">售价 = 成本 × 倍率 + 固定加价，再夹到可选下限/上限。导入新商品可用模板；重新导入不覆盖已保存售价。显式「按成本填入售价」并保存才会改价。</p>';
+function pricingAdvancedHTML(list){
+  var h = '<div class="adm-card" id="pricingAdvanced"><h3>高级：定价模板</h3>';
+  h += '<div class="row" style="margin-bottom:8px"><p class="muted" style="margin:0;flex:1">售价 = 成本 × 倍率 + 固定加价，再夹到可选下限/上限。导入新商品可用模板；重新导入不覆盖已保存售价。显式「按成本填入售价」并保存才会改价。</p><button class="btn small" onclick="adminPricingForm(null)">+ 新增模板</button></div>';
   if (!list.length) h += '<div class="adm-empty">暂无模板。未选模板时导入仍用系统设置里的全局倍率。</div>';
   else {
     h += '<div class="adm-table-wrap"><table class="adm-table"><thead><tr><th>名称</th><th>倍率</th><th>固定</th><th>下限</th><th>上限</th><th>状态</th><th></th></tr></thead><tbody>';
@@ -2339,7 +2361,11 @@ async function renderAdminPricing(){
     h += '</tbody></table></div>';
   }
   h += '</div>';
-  el('adminBody').innerHTML = h;
+  return h;
+}
+async function renderAdminPricing(){
+  window._adminTab = 'upstream';
+  await renderAdminUpstream();
 }
 function adminPricingForm(id){
   var t = null;
@@ -2353,14 +2379,14 @@ function adminPricingForm(id){
     var r = t ? await api('/api/admin/pricing-templates/' + t.id, 'PUT', payload) : await api('/api/admin/pricing-templates', 'POST', payload);
     if (!r.ok){ toast(r.error, 'error'); return false; }
     toast(r.idempotent ? '模板已存在' : '已保存', 'success');
-    renderAdminPricing();
+    renderAdminUpstream();
   }});
 }
 function adminPricingOff(id){
   api('/api/admin/pricing-templates/' + id + '/deactivate', 'POST', {}).then(function(r){
     if (!r.ok){ toast(r.error, 'error'); return; }
     toast('已停用', 'success');
-    renderAdminPricing();
+    renderAdminUpstream();
   });
 }
 
