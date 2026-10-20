@@ -89,7 +89,9 @@ r = await call('PUT', '/api/admin/products/' + fp.id, { title: '字段商品改�
 assert(r.json && r.json.ok === false, 'reserved key rejected');
 assert(/account_note/.test(q('SELECT form_fields FROM products WHERE id=?', fp.id).form_fields), 'rejected put did not wipe fields');
 
-// ----- 定价模板 -----
+// ----- 定价模板（开关默认关；这里打开后复用原断言）-----
+r = await call('POST', '/api/admin/settings', { settings: { pricing_templates_enabled: '1' } }, cookie);
+assert(r.json && r.json.ok, 'enable pricing templates so existing assertions run');
 r = await call('POST', '/api/admin/pricing-templates', { name: '标准加价', markup: 2, fixed: 1, price_floor: '', price_ceiling: '' }, cookie);
 assert(r.json && r.json.ok && r.json.template.markup === 2 && r.json.template.fixed === 1 && r.json.template.price_floor == null, 'create template: ' + JSON.stringify(r.json));
 const tplId = r.json.template.id;
