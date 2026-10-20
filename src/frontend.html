@@ -22,8 +22,8 @@
   --bg:var(--zx-bg);--card:var(--zx-surface-2);--card2:var(--zx-surface-3);--text:var(--zx-text);--sub:var(--zx-muted);--line:var(--zx-border);--accent:var(--zx-accent);--green:#34c759;--orange:#9a5b00;--red:#b42318;--radius:24px;
   color-scheme:light
 }
-@media (prefers-color-scheme:dark){html:not([data-theme]){--bg:#000;--card:rgba(28,28,30,.62);--card2:rgba(44,44,46,.85);--text:#f5f5f7;--sub:#a1a1aa;--line:rgba(255,255,255,.14);--red:#ff7b73;--orange:#ff9f0a;color-scheme:dark}html:not([data-theme]) .pcard-btn{background:rgba(48,209,88,.28);color:#7be3a8}html:not([data-theme]) .pcard-btn:disabled{background:rgba(255,69,58,.28);color:#ff9d97}}
-html[data-theme="dark"]{--bg:#000;--card:rgba(28,28,30,.62);--card2:rgba(44,44,46,.85);--text:#f5f5f7;--sub:#a1a1aa;--line:rgba(255,255,255,.14);--red:#ff7b73;--orange:#ff9f0a;color-scheme:dark}
+@media (prefers-color-scheme:dark){html:not([data-theme]){--bg:#000;--card:rgba(28,28,30,.62);--card2:rgba(44,44,46,.85);--text:#f5f5f7;--sub:#a1a1aa;--line:rgba(255,255,255,.14);--red:#ff7b73;--orange:#ff9f0a;--zx-surface:rgba(44,44,46,.72);--zx-text-strong:#f5f5f7;--zx-bg-muted:#1c1c1e;color-scheme:dark}html:not([data-theme]) .pcard-btn{background:rgba(48,209,88,.28);color:#7be3a8}html:not([data-theme]) .pcard-btn:disabled{background:rgba(255,69,58,.28);color:#ff9d97}}
+html[data-theme="dark"]{--bg:#000;--card:rgba(28,28,30,.62);--card2:rgba(44,44,46,.85);--text:#f5f5f7;--sub:#a1a1aa;--line:rgba(255,255,255,.14);--red:#ff7b73;--orange:#ff9f0a;--zx-surface:rgba(44,44,46,.72);--zx-text-strong:#f5f5f7;--zx-bg-muted:#1c1c1e;color-scheme:dark}
 html[data-theme="dark"] .pcard-btn{background:rgba(48,209,88,.28);color:#7be3a8}html[data-theme="dark"] .pcard-btn:disabled{background:rgba(255,69,58,.28);color:#ff9d97}
 html[data-theme="dark"] .pcard-img{background:#1c1c1e}
 html[data-theme="dark"] .prod-img{background:#1c1c1e}
@@ -214,7 +214,7 @@ ol.detail-list li:before{content:none}
 .detail-spec th{color:var(--sub);width:34%;padding-right:16px}
 .detail-spec td{color:var(--text);font-weight:600}
 .detail-spec tr:last-child th,.detail-spec tr:last-child td{border-bottom:0}
-.detail-photo,.detail-rich img{max-width:100%;width:auto;height:auto;display:block;margin:14px 0;border-radius:16px;object-fit:contain;background:rgba(127,127,127,.08)}
+.detail-photo,.detail-rich img{max-width:100%;width:auto;height:auto;display:block;margin:14px 0;border-radius:18px;object-fit:contain;background:rgba(127,127,127,.08)}
 @media(max-width:640px){
   .detail-blocks{margin-top:22px;max-width:none}
   .detail-sheet-title{font-size:22px}
@@ -355,12 +355,12 @@ html:not([data-theme="dark"]) .glass.pcard{background:#fff;box-shadow:var(--zx-s
 #announce.glass{background:rgba(36,107,213,.10);border:1px solid rgba(36,107,213,.22);border-radius:18px;box-shadow:none;color:var(--text)}
 .footer{margin-top:36px;padding:14px 20px;border-radius:var(--zx-radius-pill);background:var(--card);border:1px solid var(--line);backdrop-filter:blur(var(--zx-glass-blur));-webkit-backdrop-filter:blur(var(--zx-glass-blur));max-width:680px;margin-left:auto;margin-right:auto}
 .buy-price{color:var(--zx-accent)}
-html:not([data-theme="dark"]) .detail-block{background:#fff}
+html:not([data-theme="dark"]) .detail-block{background:var(--zx-surface)}
 html:not([data-theme="dark"]) .detail-sheet-title,html:not([data-theme="dark"]) .detail-block-title,html:not([data-theme="dark"]) .detail-block h3{color:var(--zx-text-strong)}
-@media (prefers-color-scheme:dark){html:not([data-theme]) .detail-block{box-shadow:none;background:rgba(44,44,46,.72)}html:not([data-theme]) .detail-sheet-title,html:not([data-theme]) .detail-block-title,html:not([data-theme]) .detail-block h3{color:#f5f5f7}html:not([data-theme]) .detail-photo,html:not([data-theme]) .detail-rich img{background:#1c1c1e}}
-html[data-theme="dark"] .detail-block{box-shadow:none;background:rgba(44,44,46,.72)}
-html[data-theme="dark"] .detail-sheet-title,html[data-theme="dark"] .detail-block-title,html[data-theme="dark"] .detail-block h3{color:#f5f5f7}
-html[data-theme="dark"] .detail-photo,html[data-theme="dark"] .detail-rich img{background:#1c1c1e}
+@media (prefers-color-scheme:dark){html:not([data-theme]) .detail-block{box-shadow:none;background:var(--zx-surface)}html:not([data-theme]) .detail-sheet-title,html:not([data-theme]) .detail-block-title,html:not([data-theme]) .detail-block h3{color:var(--zx-text-strong)}html:not([data-theme]) .detail-photo,html:not([data-theme]) .detail-rich img{background:var(--zx-bg-muted)}}
+html[data-theme="dark"] .detail-block{box-shadow:none;background:var(--zx-surface)}
+html[data-theme="dark"] .detail-sheet-title,html[data-theme="dark"] .detail-block-title,html[data-theme="dark"] .detail-block h3{color:var(--zx-text-strong)}
+html[data-theme="dark"] .detail-photo,html[data-theme="dark"] .detail-rich img{background:var(--zx-bg-muted)}
 .pay-shell.glass{border-radius:var(--zx-radius-xl);box-shadow:var(--zx-shadow-lg)}
 html:not([data-theme="dark"]) .detail-img,html:not([data-theme="dark"]) .buy-box,html:not([data-theme="dark"]) .pay-shell.glass{background:#fff;box-shadow:var(--zx-shadow-md)}
 @media (prefers-color-scheme:dark){html:not([data-theme]) .detail-img,html:not([data-theme]) .buy-box,html:not([data-theme]) .pay-shell.glass{background:var(--card2);box-shadow:0 16px 40px rgba(0,0,0,.45)}}
@@ -812,21 +812,47 @@ function payOptionsHTML(){
   for (var i = 0; i < opts.length; i++) h += payOptionButtonHTML(opts[i], i === 0);
   return h;
 }
-// 宝贝详情只把纯文本排成段落 / 列表 / 规格表。用户原文一律走 escH，不解析 HTML，避免新的注入面。
-// 图片只认单独一行的 https 图片地址（或 ![说明](https://…)），扩展名限定，属性值再转义。
-function detailSafeImgUrl(s){
-  if (!s || s.length > 800) return false;
-  if (!/^https:\/\/[^ \t\r\n"'<>\\]+$/i.test(s)) return false;
-  if (/[\u0000-\u001f]/.test(s)) return false;
-  return /\.(png|jpe?g|gif|webp|avif)(\?[^#]*)?$/i.test(s.split('#')[0]);
+// 宝贝详情只把纯文本排成段落 / 列表 / 规格表。用户原文一律走 escH，不解析 HTML。
+// 单独一行的图片：同源路径和 data: 用 img；外域 https 只做成「查看图片」链接（CSP 的 img-src 不含外域）。
+function detailImgExtOk(path){
+  return /\.(png|jpe?g|gif|webp|avif)(\?[^#]*)?$/i.test(String(path || '').split('#')[0]);
+}
+function detailImgBad(s){ return /[\u0000-\u001f\s"'<>\\]/.test(s); }
+function detailIsDataImage(s){
+  if (!s || s.length > 5000 || detailImgBad(s)) return false;
+  return /^data:image\/(?:png|jpeg|jpg|gif|webp|avif)[;,]/i.test(s);
+}
+function detailParsedUrl(s){
+  try { return new URL(s, (typeof location !== 'undefined' && location.href) ? location.href : 'https://local.invalid/'); } catch (e) { return null; }
+}
+function detailIsSameOriginImg(s){
+  if (!s || s.length > 800 || detailImgBad(s) || /^\/\//.test(s)) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s) && !/^https?:/i.test(s)) return false;
+  if (!detailImgExtOk(s)) return false;
+  var u = detailParsedUrl(s);
+  var origin = '';
+  try { origin = (typeof location !== 'undefined' && location.origin) ? location.origin : ''; } catch (e) { origin = ''; }
+  if (!u || !origin || u.origin !== origin) return false;
+  return u.protocol === 'https:' || u.protocol === 'http:';
+}
+function detailIsExternalHttpsImg(s){
+  if (!s || s.length > 800 || !/^https:\/\/[^ \t\r\n"'<>\\]+$/i.test(s) || /[\u0000-\u001f]/.test(s) || !detailImgExtOk(s)) return false;
+  var u = detailParsedUrl(s);
+  var origin = '';
+  try { origin = (typeof location !== 'undefined' && location.origin) ? location.origin : ''; } catch (e) { origin = ''; }
+  if (!u || u.protocol !== 'https:') return false;
+  if (origin && u.origin === origin) return false;
+  return true;
 }
 function detailImgFromLine(line){
   var t = String(line || '').trim();
   var alt = '', url = t;
   var md = t.match(/^!\[([^\]]*)\]\(([^)\s]+)\)\s*$/);
   if (md){ alt = md[1]; url = md[2]; }
-  if (!detailSafeImgUrl(url)) return null;
-  return { src: url, alt: alt };
+  if (detailIsDataImage(url)) return { src: url, alt: alt, external: false };
+  if (detailIsSameOriginImg(url)) return { src: url, alt: alt, external: false };
+  if (detailIsExternalHttpsImg(url)) return { src: url, alt: alt, external: true };
+  return null;
 }
 function detailLi(line){
   var t = String(line).trim();
@@ -900,7 +926,10 @@ function detailRichHTML(text){
       for (var j2 = 0; j2 < block.items.length; j2++) html += '<tr><th scope="row">' + escH(block.items[j2].k) + '</th><td>' + escH(block.items[j2].v) + '</td></tr>';
       html += '</tbody></table>';
     } else if (block.kind === 'img'){
-      html += '<img class="detail-photo" alt="' + escH(block.items[0].alt || '') + '" src="' + escH(block.items[0].src) + '">';
+      var im = block.items[0];
+      if (im.external){
+        if (/^https:\/\//i.test(im.src)) html += '<p><a href="' + escH(im.src) + '" rel="noopener noreferrer" target="_blank">查看图片</a></p>';
+      } else html += '<img class="detail-photo" alt="' + escH(im.alt || '') + '" src="' + escH(im.src) + '" referrerpolicy="no-referrer" loading="lazy">';
     }
   }
   return html;
