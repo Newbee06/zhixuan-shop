@@ -154,6 +154,8 @@ jobs:
         run: node tests/txid-race-deterministic-test.mjs
       - name: Pay config test (per-chain switches, old-JSON migration, address validation, ProdSeller test-connection)
         run: node tests/pay-config-test.mjs
+      - name: Payments admin list test (reconcile filters, order join, derived contract)
+        run: node tests/payments-admin-list-test.mjs
       - name: Review config test (CI secret scan patterns, .gitignore, untracked secrets)
         run: node tests/review-config-test.mjs
       - name: Admin entry path (/fuyan HTML, /admin redirect, /api/admin unchanged)
@@ -163,7 +165,7 @@ jobs:
         run: |
           {
             echo "## Business regression — ${{ job.status }}"
-            echo "- mock-test / stock-test / security-test / concurrency-test / release-readiness-test / payment-whitelist-test / app-icons-test / review-fixes-test / review-p1-backend-test / txid-race-deterministic-test / review-config-test / admin-entry-path-test: see logs for counts"
+            echo "- mock-test / stock-test / security-test / concurrency-test / release-readiness-test / payment-whitelist-test / app-icons-test / review-fixes-test / review-p1-backend-test / txid-race-deterministic-test / review-config-test / pay-config-test / admin-entry-path-test / payments-admin-list-test: see logs for counts"
           } >> "$GITHUB_STEP_SUMMARY"
 
   migration:
