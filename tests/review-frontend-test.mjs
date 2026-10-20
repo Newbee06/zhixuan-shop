@@ -208,13 +208,25 @@ check('P1-3: 开启但 Site Key 缺失时 fail-closed（提示、无 Slot）', t
   });
   await page.goto(BASE + '/', { waitUntil: 'networkidle' });
   await page.waitForTimeout(400);
-  const r1 = await page.evaluate(async () => {
+  // P2-8：submitTxid 成功后 fire-and-forget 调 loadPayCaptcha，不 await。
+  // 固定等 400ms 在 CI 上会偶发未刷新完就断言（71/1 flaky）。改为 waitForFunction 等新 captcha_id。
+  await page.evaluate(async () => {
     CFG = Object.assign({}, CFG, { turnstile_enabled: false, turnstile_site_key: '' });
     document.body.insertAdjacentHTML('beforeend', '<input id="txid" value="  ABC123xyz  "><input id="payCaptchaCode" value="ABCD"><img id="payCaptchaImg">');
     window._payCaptchaId = 'cap-before';
-    const beforeCap = window._payCaptchaId;
+    window.__p28BeforeCap = 'cap-before';
     await submitTxid('AIS-TEST-9');
-    await new Promise((r) => setTimeout(r, 400));
+  });
+  await page.waitForFunction(() => {
+    const before = window.__p28BeforeCap;
+    const tx = document.getElementById('txid');
+    const cap = document.getElementById('payCaptchaCode');
+    return !!window._payCaptchaId && window._payCaptchaId !== before
+      && tx && tx.value === ''
+      && cap && cap.value === '';
+  }, null, { timeout: 10000 });
+  const r1 = await page.evaluate(() => {
+    const beforeCap = window.__p28BeforeCap;
     const txCleared = document.getElementById('txid').value === '';
     const capCleared = document.getElementById('payCaptchaCode').value === '';
     const capRefreshed = window._payCaptchaId !== beforeCap;
