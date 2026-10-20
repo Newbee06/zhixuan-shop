@@ -82,6 +82,11 @@ var LOGIN_GLOBAL_BLOCK_MS = 5 * 60 * 1000;
 // EVM 扫描分页：每次 eth_getLogs 最多覆盖的区块数，避免单次 RPC 超时。
 var EVM_SCAN_PAGE_BLOCKS = 1000;
 var DEFAULT_USDT_CONTRACTS = { 'X Layer': '0x779Ded0c9e1022225f8E0630b35a9b54bE713736', 'BEP20': '0x55d398326f99059fF775485246999027B3197955' };
+// RPC 短超时：慢节点或挂死连接不得拖住整轮扫描或 /pay。超时视为该节点失败，换下一 URL。
+var RPC_TIMEOUT_MS = 12000;
+// 认账前 eth_chainId 期望值。X Layer = 196 (0xc4)，BSC/BEP20 = 56 (0x38)。
+// 键同时接受白名单组合名与 pay_chain，调用方传订单上的链名即可。
+var EXPECTED_CHAIN_ID = { 'OKX|X Layer': 196, 'X Layer': 196, 'Binance|BEP20': 56, 'BEP20': 56 };
 // 第九轮：X Layer 默认代币 = USDT0（欧易 + Tether 2025-09-09 上线 X Layer 的当前标准，欧易提币/充值走 USDT0；6 位精度，LayerZero OFT v2）。
 // 旧版 X Layer USDT（0x1e4a5963abfd975d8c9021ce480b42188849d41d）是不同资产，绝不混用、绝不自动接受。
 // BEP20 默认 = Binance-Peg USDT 0x55d398326f99059fF775485246999027B3197955，18 位精度（BscScan 合约源码 _decimals=18）。
@@ -1415,15 +1420,64 @@ async function genActualAmount(env, baseTotal, payAddress) {
 }
 function padAddressTopic(addr) { return '0x' + '000000000000000000000000' + String(addr).slice(2).toLowerCase(); }
 function toHex(n) { return '0x' + Number(n).toString(16); }
+function expectedChainIdFor(chain) {
+  var key = String(chain || '');
+  if (!Object.prototype.hasOwnProperty.call(EXPECTED_CHAIN_ID, key)) return null;
+  return EXPECTED_CHAIN_ID[key];
+}
+function parseChainId(v) {
+  if (typeof v === 'bigint') {
+    if (v < 0n || v > BigInt(Number.MAX_SAFE_INTEGER)) return NaN;
+    return Number(v);
+  }
+  if (typeof v === 'number') return isFinite(v) ? v : NaN;
+  var s = String(v == null ? '' : v).trim();
+  if (!s) return NaN;
+  try {
+    if (/^0x[0-9a-fA-F]+$/.test(s)) return Number(BigInt(s));
+    if (/^[0-9]+$/.test(s)) return Number(BigInt(s));
+  } catch (e) { return NaN; }
+  return NaN;
+}
+// 默认 12s AbortSignal。到点中止本次请求并拒绝；调用方把该节点当失败，换下一 URL。
+// 用 AbortController 等价于 AbortSignal.timeout：请求结束即 clearTimeout，避免已完成的调用把进程/隔离拖住。
 async function rpcCall(fetchFn, rpcUrl, method, params) {
-  var res = await fetchFn(rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: method, params: params }) });
-  if (!res.ok) throw new Error('RPC HTTP ' + res.status);
-  var j = await res.json();
-  if (j.error) throw new Error('RPC ' + (j.error.message || JSON.stringify(j.error)));
-  return j.result;
+  var ac = new AbortController();
+  var timer = null;
+  var timeoutPromise = new Promise(function (_, reject) {
+    timer = setTimeout(function () {
+      try { ac.abort(); } catch (e) {}
+      reject(new Error('RPC timeout'));
+    }, RPC_TIMEOUT_MS);
+  });
+  var fetchPromise = (async function () {
+    var res = await fetchFn(rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: method, params: params }), signal: ac.signal });
+    if (!res || !res.ok) throw new Error('RPC HTTP ' + (res && res.status));
+    var j = await res.json();
+    if (j && j.error) throw new Error('RPC ' + (j.error.message || JSON.stringify(j.error)));
+    return j ? j.result : undefined;
+  })();
+  // 超时先返回时，迟到的 fetch 拒绝不得变成未处理拒绝。
+  fetchPromise.then(function () {}, function () {});
+  try {
+    return await Promise.race([fetchPromise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+// 该 RPC 首次用于认账前断言 eth_chainId。读失败、超时或与期望不符都抛错，调用方作废该节点并换下一个。
+async function assertRpcChainId(fetchFn, rpcUrl, chain) {
+  var expected = expectedChainIdFor(chain);
+  if (expected == null) throw new Error('RPC chainId: unknown chain');
+  var hex = await rpcCall(fetchFn, rpcUrl, 'eth_chainId', []);
+  var got = parseChainId(hex);
+  if (!isFinite(got) || got !== expected) {
+    throw new Error('RPC chainId mismatch: expected ' + expected + ' got ' + String(hex == null ? '' : hex).slice(0, 32));
+  }
 }
 // EVM/X Layer：eth_getLogs 查 USDT Transfer，至少 requiredConfirmations 确认（各链策略，见 DEFAULT_CHAIN_CONFIRMATIONS）。
-// opts: { requiredConfirmations, fromBlockOverride }。fromBlockOverride 用于游标扫描；未传时回溯 200 区块（兼容旧口径）。
+// opts: { requiredConfirmations, fromBlockOverride, chain }。fromBlockOverride 用于游标扫描；未传时回溯 200 区块（兼容旧口径）。
+// chain 为 pay_chain（X Layer / BEP20），认账前用它核对 eth_chainId。
 async function checkEvmPayment(fetchFn, rpcUrls, contract, payAddress, actualAmount, opts) {
   // 第九轮：严格核验。合约地址格式非法 → 不认账；decimals 读取失败 → 该 RPC 不认账（fail-closed）；
   // 日志 address 必须与配置合约严格一致（不得只信 RPC 的 address 过滤）；金额按合约实际 decimals 精确 BigInt 比较。
@@ -1438,6 +1492,8 @@ async function checkEvmPayment(fetchFn, rpcUrls, contract, payAddress, actualAmo
   for (var ri = 0; ri < rpcUrls.length; ri++) {
     try {
       var rpc = rpcUrls[ri];
+      // 认账前断言 chainId。不符/超时：该节点作废，换下一 URL；全部失败则与 all RPC failed 一样不认账。
+      await assertRpcChainId(fetchFn, rpc, opts.chain);
       var decimals = await getTokenDecimals(fetchFn, rpc, contract);
       if (decimals === null) continue; // 合约精度读不到：该 RPC 不认账，换下一个 RPC
       var expected = amountToRaw(actualAmount, decimals);
@@ -1510,6 +1566,8 @@ async function scanEvmChain(env, fetchFn, ctx, chain, pendingOrders) {
     var addrOrders = pendingOrders.filter(function (o) { return String(o.pay_address || o.wallet_address || '').toLowerCase() === addrs[ai]; });
     for (var ri = 0; ri < rpcs.length; ri++) {
       try {
+        // 本 URL 首次使用前断言 chainId。不符或超时则换下一节点；全部失败不推进游标（与 RPC 失败相同）。
+        await assertRpcChainId(fetchFn, rpcs[ri], chain);
         var decimals = await getTokenDecimals(fetchFn, rpcs[ri], contract);
         if (decimals === null) continue; // 合约精度读不到：该 RPC 不认账，换下一个 RPC
         // 按合约实际 decimals 精确换算待匹配金额（BigInt），避免 float 精度丢失（BEP20 18 位时 float 无法精确表示）。
@@ -1613,7 +1671,7 @@ async function checkChainPayment(env, fetchFn, order) {
   var rpcs = rpcMap[order.pay_chain] || DEFAULT_RPC_URLS[order.pay_chain] || [];
   if (!rpcs.length) return null;
   var reqConf = await getRequiredConfirmations(env, order.pay_chain, order.actual_amount || order.total_usdt);
-  return await checkEvmPayment(fetchFn, rpcs, contract, order.pay_address || order.wallet_address, order.actual_amount || order.total_usdt, { requiredConfirmations: reqConf });
+  return await checkEvmPayment(fetchFn, rpcs, contract, order.pay_address || order.wallet_address, order.actual_amount || order.total_usdt, { requiredConfirmations: reqConf, chain: order.pay_chain });
 }
 async function checkTxidPayment(env, fetchFn, order, txid) {
   // 按需核验：用户主动提交 TXID 时复用同一链上核验（EVM 查 receipt 日志）。白名单封堵：非首期两种组合不核验。
@@ -1628,6 +1686,8 @@ async function checkTxidPayment(env, fetchFn, order, txid) {
     var toTopic = padAddressTopic(order.pay_address || order.wallet_address);
     for (var ri = 0; ri < rpcs.length; ri++) {
       try {
+        // 认账前断言 chainId。不符/超时：该节点作废；全部失败则返回 null，不认账（与原先全部 RPC 失败一致）。
+        await assertRpcChainId(fetchFn, rpcs[ri], order.pay_chain);
         // 第九轮：按合约实际 decimals 精确换算金额；decimals 读不到时该 RPC 不认账。
         var decimalsTx = await getTokenDecimals(fetchFn, rpcs[ri], contract);
         if (decimalsTx === null) continue;
