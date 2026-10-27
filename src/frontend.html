@@ -108,6 +108,14 @@ a{color:var(--accent);text-decoration:none}
 .home-back-top:hover{color:var(--text)}
 html[data-theme="dark"] .home-h1-accent,html[data-theme="dark"] .home-section-star,html[data-theme="dark"] .home-eyebrow b,html[data-theme="dark"] .ic{color:#8ea6ff}
 @media(max-width:640px){.home-hero{flex-direction:row;gap:12px;padding:16px;align-items:flex-start}.home-hero>div:first-child{flex:1;min-width:0}.home-h1{font-size:10px}.home-eyebrow{font-size:8px;margin-bottom:10px}.home-sub{font-size:8px;margin-bottom:16px}.home-cta{font-size:10px;padding:6px 12px}.home-note{font-size:8px;margin-top:12px}.home-visual{flex:0 0 156px;height:119px;min-width:0}.home-visual-scale{width:420px;height:320px;transform:scale(0.37);transform-origin:top left}.home-section-title{font-size:20px}.home-section-star{font-size:22px}}
+/* 移动端合集标题：✳ 与首行对齐，换行留在文字列；副标题与标题文字左缘对齐。桌面仍居中、副标题不缩进。 */
+@media(max-width:640px){
+  .home-section-copy{display:grid;grid-template-columns:auto minmax(0,1fr);column-gap:10px;align-items:start;flex:1;min-width:0}
+  .home-section-title{display:grid;grid-template-columns:subgrid;grid-column:1 / -1;align-items:start;line-height:1.2;column-gap:10px}
+  .home-section-star{font-size:1.32em;line-height:1;margin-top:-.02em}
+  .home-section-title-text{min-width:0}
+  .home-section-sub{grid-column:2;margin-top:6px}
+}
 .h1{font-size:26px;font-weight:800;margin:6px 0 4px}
 .h2{font-size:18px;font-weight:700;margin:0 0 10px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
@@ -161,7 +169,10 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
 .sort-sel{width:auto;min-width:215px;flex:0 0 auto;cursor:pointer}
 .filter-row{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:4px 0 12px}
 @media(max-width:640px){.search-row{flex-direction:column}.sort-sel{width:100%;min-width:0}}
-.footer{margin-top:28px;text-align:center}
+.page-notice{margin:0 0 8px;padding:0 8px;border-radius:var(--zx-radius-sm);background:var(--zx-bg-muted);color:var(--zx-text-strong);box-shadow:inset 0 0 0 1px var(--zx-border);font-size:clamp(9px,calc((100vw - 80px) / 30),13px);line-height:1.65;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
+.page-notice .ic{width:1.05em;height:1.05em;margin-right:4px;vertical-align:-0.12em;color:var(--zx-accent)}
+html[data-theme="dark"] .page-notice .ic{color:var(--zx-accent)}
+@media (prefers-color-scheme:dark){html:not([data-theme]) .page-notice .ic{color:var(--zx-accent)}}
 .breadcrumb{font-size:13px;color:var(--sub);margin:4px 0 12px}
 .breadcrumb a{color:var(--sub)}
 .detail-meta{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
@@ -353,7 +364,6 @@ html:not([data-theme="dark"]) .glass.pcard{background:#fff;box-shadow:var(--zx-s
 @media (prefers-color-scheme:dark){html:not([data-theme]) .glass.pcard{background:var(--card);box-shadow:0 8px 24px rgba(0,0,0,.35)}}
 .nav a,.theme-btn{background:rgba(36,107,213,.08)}
 #announce.glass{background:rgba(36,107,213,.10);border:1px solid rgba(36,107,213,.22);border-radius:18px;box-shadow:none;color:var(--text)}
-.footer{margin-top:36px;padding:14px 20px;border-radius:var(--zx-radius-pill);background:var(--card);border:1px solid var(--line);backdrop-filter:blur(var(--zx-glass-blur));-webkit-backdrop-filter:blur(var(--zx-glass-blur));max-width:680px;margin-left:auto;margin-right:auto}
 .buy-price{color:var(--zx-accent)}
 html:not([data-theme="dark"]) .detail-block{background:var(--zx-surface)}
 html:not([data-theme="dark"]) .detail-sheet-title,html:not([data-theme="dark"]) .detail-block-title,html:not([data-theme="dark"]) .detail-block h3{color:var(--zx-text-strong)}
@@ -369,6 +379,19 @@ html:not([data-theme="dark"]) .detail-img,html:not([data-theme="dark"]) .buy-box
 .pay-deadline-expired .pay-deadline-left{color:var(--red)}
 .pay-qr-box{padding:22px;border-radius:22px;background:#fff;border-color:var(--line)}
 .pay-addrbox{border:1px solid var(--line);border-radius:18px;background:var(--card2)}
+/* 窄屏付款页：公告 + 提示条之下，金额、倒计时、二维码、地址仍要落在 390×844 首屏里。桌面间距不动。 */
+@media(max-width:640px){
+  .pay-shell.glass{padding:10px 12px}
+  .pay-shell .h2{margin:0 0 6px}
+  .pay-shell .warn-box{margin:6px 0;padding:8px}
+  .pay-amount{margin:6px 0 2px}
+  .pay-toprow{margin:6px 0}
+  .pay-div{margin:6px 0}
+  .pay-row{margin:4px 0}
+  .pay-qr-box{padding:8px;margin:6px 0}
+  .pay-qr{margin:0}
+  .pay-addrbox{margin:6px 0;padding:8px 10px}
+}
 .pay-card{border:1px solid var(--line);border-radius:18px}
 .btn:not(.ghost):not(.danger):not(.green):hover{background:var(--zx-accent-strong)}
 .btn.ghost:hover{background:rgba(36,107,213,.10)}
@@ -385,7 +408,7 @@ html:not([data-theme="dark"]) .admin-login-card{background:rgba(255,255,255,.88)
 </head>
 <body>
 <header class="top"><div class="top-in"><a class="logo" href="#/"><span id="siteName">智选</span></a><nav class="nav"><a class="nav-icon" href="#/" title="商城" aria-label="商城"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg></a><a class="nav-icon" href="#/query" title="查询订单" aria-label="查询订单"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></a><button id="themeBtn" class="theme-btn" onclick="toggleTheme()" title="切换深浅色"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></button></nav></div></header>
-<main class="wrap"><div id="announce" class="glass muted" style="margin-bottom:14px;display:none"></div><div id="app"></div><div class="footer muted">虚拟商品一经交付不退换，下单前请仔细阅读商品说明。</div></main>
+<main class="wrap"><div id="announce" class="glass muted" style="margin-bottom:14px;display:none"></div><div id="app"></div></main>
 <script>
 <!-- vendored @paulmillr/qr 0.3.0 (MIT OR Apache-2.0): local QR encode+decode; no third-party QR host -->
 /*! @paulmillr/qr 0.3.0 — MIT OR Apache-2.0 — https://github.com/paulmillr/qr */
@@ -431,7 +454,8 @@ var ICONS = {
   card: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg>',
   link: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>',
   settings: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="4" x2="4" y1="21" y2="14"/><line x1="4" x2="4" y1="10" y2="3"/><line x1="12" x2="12" y1="21" y2="12"/><line x1="12" x2="12" y1="8" y2="3"/><line x1="20" x2="20" y1="21" y2="16"/><line x1="20" x2="20" y1="12" y2="3"/><line x1="1" x2="7" y1="14" y2="14"/><line x1="9" x2="15" y1="8" y2="8"/><line x1="17" x2="23" y1="16" y2="16"/></svg>',
-  warn: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>'
+  warn: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
+  info: '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><path d="M12 8h.01"/></svg>'
 };
 function ic(k){ return ICONS[String(k || '')] || ICONS.box; }
 function renderThemeBtn(){ var b = el('themeBtn'); if (b) b.innerHTML = ic(currentTheme() === 'dark' ? 'sun' : 'moon'); }
@@ -750,7 +774,11 @@ function homeHeroHTML(){
 }
 // 商品合集区标题（截图第二块；本站无收藏夹，右侧改为返回顶部）。
 function homeSectionHeadHTML(){
-  return '<div class="home-section-head"><div><div class="home-section-title"><span class="home-section-star">✳</span> 日常生活，升级版。</div><div class="home-section-sub">一个合集，囊括所有数字可能性。</div></div><button class="home-back-top" onclick="window.scrollTo({top:0,behavior:\x27smooth\x27})">返回顶部 ↑</button></div>';
+  return '<div class="home-section-head"><div class="home-section-copy"><div class="home-section-title"><span class="home-section-star" aria-hidden="true">✳</span><span class="home-section-title-text">日常生活，升级版。</span></div><div class="home-section-sub">一个合集，囊括所有数字可能性。</div></div><button class="home-back-top" onclick="window.scrollTo({top:0,behavior:\x27smooth\x27})">返回顶部 ↑</button></div>';
+}
+// 交付提示只出现在商品页、付款页、查单页顶部，静态排在文档流里。首页和后台不加。
+function pageNoticeHTML(){
+  return '<p class="page-notice"><span class="page-notice-ic" aria-hidden="true">' + ic('info') + '</span><span class="page-notice-text">虚拟商品一经交付不退换，下单前请仔细阅读商品说明。</span></p>';
 }
 function filterStock(s){ curStock = s; renderList(); }
 function doSearch(){ curQ = el('q').value || ''; renderList(); }
@@ -949,7 +977,7 @@ function detailCardHTML(titleInner, bodyHTML){
 }
 async function renderProduct(id){
   var r = await api('/api/products/' + id);
-  if (!r.ok){ el('app').innerHTML = '<div class="muted">商品不存在 · <a href="#/">回商城</a></div>'; return; }
+  if (!r.ok){ el('app').innerHTML = pageNoticeHTML() + '<div class="muted">商品不存在 · <a href="#/">回商城</a></div>'; return; }
   var p = r.product;
   window._curProduct = p;
   var _enabledPay = enabledPayOptions();
@@ -968,7 +996,7 @@ async function renderProduct(id){
     for (var ri=0; ri<rel.length; ri++){ relHtml += productCard(rel[ri]); }
     relHtml += '</div></div>';
   }
-  var html = '';
+  var html = pageNoticeHTML();
   html += '<div class="breadcrumb"><a href="#/">商城</a> / ' + escH(catLabel(p.category)) + ' / ' + escH(p.title) + '</div>';
   // Top: left image, right buy box (aisou.pro style)
   html += '<div class="detail-top">';
@@ -1137,7 +1165,7 @@ async function renderSuccess(no){
   // P1-13：刷新后内存订单已清空（o 为 null）时，渲染“恢复支付信息”表单：
   // 用订单号 + 图形验证码调查询接口恢复收款地址与精确应付金额（地址只写内存，不存 localStorage）。
   if (!o) {
-    var recHtml = '<div class="glass pay-shell"><div class="h2">恢复支付信息</div><p>订单号：<b>' + escH(no) + '</b></p>';
+    var recHtml = pageNoticeHTML() + '<div class="glass pay-shell"><div class="h2">恢复支付信息</div><p>订单号：<b>' + escH(no) + '</b></p>';
     recHtml += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 请牢记您设置的查询密码</b><p class="muted" style="margin:6px 0 0">查询卡密时需要输入该密码。忘记密码请联系客服重置。</p></div>';
     recHtml += '<p class="muted">页面已刷新，收款地址已随内存清空。请填写图形验证码恢复该订单的收款地址与精确应付金额。</p>';
     recHtml += '<label>订单号</label><input id="recoverOrderNo" value="' + escH(no) + '" autocomplete="off">';
@@ -1148,7 +1176,7 @@ async function renderSuccess(no){
     return;
   }
   var tut = ''; if (CFG && o) tut = CFG.pay_tutorials[o.pay_method] || '';
-  var html = '<div class="glass pay-shell"><div class="h2">下单成功</div>';
+  var html = pageNoticeHTML() + '<div class="glass pay-shell"><div class="h2">下单成功</div>';
   html += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 请牢记您设置的查询密码</b><p class="muted" style="margin:6px 0 0">查询卡密时需要输入该密码。忘记密码请联系客服重置。</p></div>';
   html += payBlockHTML(o, 'success');
   html += '<p class="muted">付完不用做任何事，等 1-3 分钟自动发货。系统按精确金额自动匹配到账，金额差 1 分钱都匹配不上。</p>';
@@ -1245,7 +1273,7 @@ async function submitTxid(no){
   toast(r.message || 'TXID 已提交', 'success');
 }
 function renderQuery(){
-  var html = '<div class="glass"><div class="h2">查询订单</div><p class="muted">输入订单号或下单邮箱查询订单；卡密需输入下单时设置的查询密码查看。邮箱 + 图形验证码仅可查订单概要，不代表邮箱所有权证明。</p><label>订单号或邮箱</label><input id="qkeywords" placeholder="订单号或下单邮箱" autocomplete="off"><label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="qCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="qCaptchaImg" class="captcha-img" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px" onclick="loadQueryCaptcha()"></div><div style="margin-top:12px"><button class="btn" onclick="doQueryList()">查询</button></div><div id="qres" style="margin-top:14px"></div></div>';
+  var html = pageNoticeHTML() + '<div class="glass"><div class="h2">查询订单</div><p class="muted">输入订单号或下单邮箱查询订单；卡密需输入下单时设置的查询密码查看。邮箱 + 图形验证码仅可查订单概要，不代表邮箱所有权证明。</p><label>订单号或邮箱</label><input id="qkeywords" placeholder="订单号或下单邮箱" autocomplete="off"><label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="qCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="qCaptchaImg" class="captcha-img" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px" onclick="loadQueryCaptcha()"></div><div style="margin-top:12px"><button class="btn" onclick="doQueryList()">查询</button></div><div id="qres" style="margin-top:14px"></div></div>';
   el('app').innerHTML = html;
   loadQueryCaptcha();
 }
