@@ -797,6 +797,78 @@ for (const w of [390, 360]) {
     footer: !!document.querySelector('footer, .footer'),
   }));
   check('notice: homepage has no bar and no footer disclaimer', homeN.notice === 0 && homeN.footer === false, JSON.stringify(homeN));
+  const popOpen = await page.evaluate(() => {
+    const prevTheme = document.documentElement.dataset.theme || '';
+    localStorage.removeItem('zx_notice_popup_seen');
+    CFG.notice_popup_enabled = 0;
+    CFG.notice_popup_title = '关';
+    CFG.notice_popup_body = '关';
+    CFG.notice_popup_version = 1;
+    maybeShowNoticePopup();
+    const off = !!document.getElementById('noticePopup');
+    delete CFG.notice_popup_enabled;
+    delete CFG.notice_popup_title;
+    delete CFG.notice_popup_body;
+    delete CFG.notice_popup_version;
+    maybeShowNoticePopup();
+    const missing = !!document.getElementById('noticePopup');
+    CFG.notice_popup_enabled = '1';
+    CFG.notice_popup_title = '<img src=x>';
+    CFG.notice_popup_body = '你好 <b>公告</b>';
+    CFG.notice_popup_version = 7;
+    maybeShowNoticePopup();
+    const node = document.getElementById('noticePopup');
+    const card = node && node.querySelector('.notice-popup');
+    document.documentElement.dataset.theme = 'light';
+    const light = card ? getComputedStyle(card) : null;
+    const lightBg = light ? light.backgroundColor : '';
+    const lightColor = light ? light.color : '';
+    document.documentElement.dataset.theme = 'dark';
+    const dark = card ? getComputedStyle(card) : null;
+    const darkBg = dark ? dark.backgroundColor : '';
+    const darkColor = dark ? dark.color : '';
+    if (prevTheme) document.documentElement.dataset.theme = prevTheme;
+    else delete document.documentElement.dataset.theme;
+    return {
+      off,
+      missing,
+      open: !!node,
+      title: node && node.querySelector('.notice-popup-title') ? node.querySelector('.notice-popup-title').textContent : '',
+      body: node && node.querySelector('.notice-popup-body') ? node.querySelector('.notice-popup-body').textContent : '',
+      raw: node ? node.querySelectorAll('img,b,script').length : -1,
+      position: node ? getComputedStyle(node).position : '',
+      sticky: card ? getComputedStyle(card).position : '',
+      lightBg,
+      lightColor,
+      darkBg,
+      darkColor,
+    };
+  });
+  check('popup: disabled or missing fields stay closed', popOpen.off === false && popOpen.missing === false, JSON.stringify(popOpen));
+  check('popup: homepage opens and escapes copy', popOpen.open === true && popOpen.title === '<img src=x>' && popOpen.body === '你好 <b>公告</b>' && popOpen.raw === 0 && popOpen.position === 'fixed' && popOpen.sticky !== 'sticky', JSON.stringify(popOpen));
+  check('popup: light and dark use theme colors', popOpen.lightBg === 'rgb(255, 255, 255)' && popOpen.lightColor === 'rgb(16, 43, 87)' && popOpen.darkBg === 'rgb(28, 28, 30)' && popOpen.darkColor === 'rgb(245, 245, 247)', JSON.stringify(popOpen));
+  await page.click('#noticePopupOk');
+  const popSame = await page.evaluate(() => {
+    maybeShowNoticePopup();
+    return { open: !!document.getElementById('noticePopup'), seen: localStorage.getItem('zx_notice_popup_seen') };
+  });
+  check('popup: same version stays closed after 我知道了', popSame.open === false && popSame.seen === '7', JSON.stringify(popSame));
+  const popNext = await page.evaluate(() => {
+    CFG.notice_popup_version = 8;
+    maybeShowNoticePopup();
+    return !!document.getElementById('noticePopup');
+  });
+  check('popup: a new version opens again', popNext === true);
+  await page.keyboard.press('Escape');
+  const popEsc = await page.evaluate(() => ({ open: !!document.getElementById('noticePopup'), seen: localStorage.getItem('zx_notice_popup_seen') }));
+  check('popup: Esc closes and remembers that version', popEsc.open === false && popEsc.seen === '8', JSON.stringify(popEsc));
+  await page.evaluate(() => { CFG.notice_popup_version = 9; maybeShowNoticePopup(); });
+  await page.click('#noticePopup', { position: { x: 8, y: 8 } });
+  const popMask = await page.evaluate(() => {
+    maybeShowNoticePopup();
+    return { open: !!document.getElementById('noticePopup'), seen: localStorage.getItem('zx_notice_popup_seen') };
+  });
+  check('popup: overlay click closes and remembers that version', popMask.open === false && popMask.seen === '9', JSON.stringify(popMask));
   await page.goto(BASE + '/fuyan', { waitUntil: 'networkidle' });
   await page.waitForTimeout(700);
   const admN = await page.evaluate(() => ({
@@ -805,6 +877,16 @@ for (const w of [390, 360]) {
     path: location.pathname,
   }));
   check('notice: /fuyan has no bar', admN.notice === 0 && admN.footer === false && admN.path === '/fuyan', JSON.stringify(admN));
+  const admPop = await page.evaluate(() => {
+    CFG.notice_popup_enabled = '1';
+    CFG.notice_popup_title = '后台';
+    CFG.notice_popup_body = '不该出现';
+    CFG.notice_popup_version = 100;
+    localStorage.removeItem('zx_notice_popup_seen');
+    maybeShowNoticePopup();
+    return !!document.getElementById('noticePopup');
+  });
+  check('popup: /fuyan does not open', admPop === false);
   // 每个页面只打开一次，之后只改视口。重复进入会再要图形验证码，容易撞上 30 次/10 分钟的限流，控制台就会留下 429。
   const widths = [320, 375, 390, 430];
   async function measureWidths(label) {
@@ -818,9 +900,29 @@ for (const w of [390, 360]) {
   await page.setViewportSize({ width: 390, height: 900 });
   await page.goto(BASE + '/#/product/1', { waitUntil: 'networkidle' });
   await page.waitForSelector('.page-notice', { timeout: 10000 });
+  const prodPop = await page.evaluate(() => {
+    CFG.notice_popup_enabled = '1';
+    CFG.notice_popup_title = '商品';
+    CFG.notice_popup_body = '不该出现';
+    CFG.notice_popup_version = 101;
+    localStorage.removeItem('zx_notice_popup_seen');
+    maybeShowNoticePopup();
+    return !!document.getElementById('noticePopup');
+  });
+  check('popup: product page does not open', prodPop === false);
   await measureWidths('product');
   await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
   await page.waitForSelector('.page-notice', { timeout: 10000 });
+  const queryPop = await page.evaluate(() => {
+    CFG.notice_popup_enabled = '1';
+    CFG.notice_popup_title = '查单';
+    CFG.notice_popup_body = '不该出现';
+    CFG.notice_popup_version = 101;
+    localStorage.removeItem('zx_notice_popup_seen');
+    maybeShowNoticePopup();
+    return !!document.getElementById('noticePopup');
+  });
+  check('popup: query page does not open', queryPop === false);
   await measureWidths('query');
   await page.evaluate(() => {
     window.api = async function () {
@@ -897,6 +999,24 @@ for (const w of [390, 360]) {
     first.notice != null && first.amt != null && first.cd != null && first.qr != null && first.addr != null
     && first.notice < first.amt && first.amt <= first.vh && first.cd <= first.vh && first.qr <= first.vh && first.addr <= first.vh,
     JSON.stringify(first));
+  const payPop = await page.evaluate(async () => {
+    CFG.notice_popup_enabled = '1';
+    CFG.notice_popup_title = '付款';
+    CFG.notice_popup_body = '不该挡住付款';
+    CFG.notice_popup_version = 102;
+    localStorage.removeItem('zx_notice_popup_seen');
+    location.hash = '#/success/CI-NOTICE';
+    await new Promise((r) => setTimeout(r, 300));
+    maybeShowNoticePopup();
+    return {
+      open: !!document.getElementById('noticePopup'),
+      hash: location.hash,
+      amt: !!document.querySelector('.pay-amount'),
+      qr: !!document.querySelector('.pay-qr'),
+      addr: !!document.querySelector('.pay-addr'),
+    };
+  });
+  check('popup: payment page does not open', payPop.open === false && payPop.hash.indexOf('#/success/') === 0 && payPop.amt && payPop.qr && payPop.addr, JSON.stringify(payPop));
   await page.evaluate(() => { delete document.documentElement.dataset.theme; });
   await page.setViewportSize({ width: 1440, height: 900 });
 }

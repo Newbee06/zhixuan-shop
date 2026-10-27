@@ -173,6 +173,17 @@ label{font-size:13px;color:var(--sub);display:block;margin:12px 0 6px}
 .page-notice .ic{width:1.05em;height:1.05em;margin-right:4px;vertical-align:-0.12em;color:var(--zx-accent)}
 html[data-theme="dark"] .page-notice .ic{color:var(--zx-accent)}
 @media (prefers-color-scheme:dark){html:not([data-theme]) .page-notice .ic{color:var(--zx-accent)}}
+.notice-popup-backdrop{position:fixed;inset:0;z-index:140;display:flex;align-items:flex-end;justify-content:center;padding:14px;background:rgba(16,43,87,.42)}
+.notice-popup{width:100%;max-width:420px;max-height:min(70vh,520px);overflow:auto;background:var(--zx-surface);color:var(--zx-text-strong);border-radius:var(--zx-radius-lg);box-shadow:var(--zx-shadow-lg),inset 0 0 0 1px var(--zx-border);padding:18px 16px 14px}
+.notice-popup-title{margin:0 0 8px;font-size:17px;line-height:1.35;font-weight:700;color:var(--zx-text-strong)}
+.notice-popup-body{margin:0;font-size:14px;line-height:1.55;color:var(--zx-text-strong);white-space:pre-wrap;word-break:break-word}
+.notice-popup-actions{margin-top:14px}
+.notice-popup-actions .btn{width:100%;background:var(--zx-accent);color:var(--zx-on-accent)}
+.notice-popup-actions .btn:hover{background:var(--zx-accent-strong)}
+@media(min-width:641px){.notice-popup-backdrop{align-items:center;padding:24px}.notice-popup-actions{display:flex;justify-content:flex-end}.notice-popup-actions .btn{width:auto;min-width:128px}}
+html[data-theme="dark"] .notice-popup{background:var(--zx-bg-muted)}
+html[data-theme="dark"] .notice-popup-backdrop{background:rgba(0,0,0,.55)}
+@media (prefers-color-scheme:dark){html:not([data-theme]) .notice-popup{background:var(--zx-bg-muted)}html:not([data-theme]) .notice-popup-backdrop{background:rgba(0,0,0,.55)}}
 .breadcrumb{font-size:13px;color:var(--sub);margin:4px 0 12px}
 .breadcrumb a{color:var(--sub)}
 .detail-meta{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
@@ -489,7 +500,7 @@ async function api(p, m, b){
       }
       return { ok: false, error: (j && j.error) || '未登录或凭证已过期', _http: 401, _unauth: true };
     }
-    if (!res.ok && j && j.ok === undefined) return { ok: false, error: j.error || ('请求失败，状态 ' + res.status), _http: res.status };
+    if (!res.ok && j && j.ok === undefined) return { ok: false, error: j.error || ('请求失败，状态 ' + res.status), code: j.code || '', _http: res.status };
     return j;
   } catch (e) {
     if (timer) clearTimeout(timer);
@@ -557,7 +568,7 @@ function showDrawer(title, bodyHTML){
   return dr;
 }
 function closeDrawer(){ var b = el('drawerBackdrop'); if (b) b.remove(); var d = el('drawerPanel'); if (d) d.remove(); }
-document.addEventListener('keydown', function(e){ if (e.key === 'Escape') { closeModal(); closeDrawer(); } });
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape') { closeModal(); closeDrawer(); closeNoticePopup(true); } });
 function setBtnLoading(btn, loading){
   if (!btn) return;
   if (loading) { btn.classList.add('loading'); btn.disabled = true; }
@@ -723,6 +734,7 @@ function leaveAdmin(){
 function route(){
   stopCountdown();
   clearTurnstileWidgets();
+  closeNoticePopup(false);
   var p = storePath();
   var h = location.hash || '';
   // pathname /fuyan 优先于 hash。/admin、#/admin、#/fuyan 都规范到 /fuyan 再进后台。
@@ -767,6 +779,7 @@ function renderShop(){
   var ss = el('sortSel'); if (ss) ss.value = curSort;
   // 商城每次进入都重新拉商品（PRODUCTS 只在首次 load() 时取过一次；下单预留库存后 SPA 内导航回商城会显示过期库存计数）。失败时用旧数据渲染，不白屏。
   api('/api/products').then(function(pr){ if (pr.ok) PRODUCTS = pr.products; renderList(); }).catch(function(){ renderList(); });
+  maybeShowNoticePopup();
 }
 // 首页 Hero（版式沿用，视觉为凌策淡蓝）：左文案 + 右冰蓝倾斜卡 + 漂浮标签。
 function homeHeroHTML(){
@@ -779,6 +792,62 @@ function homeSectionHeadHTML(){
 // 交付提示只出现在商品页、付款页、查单页顶部，静态排在文档流里。首页和后台不加。
 function pageNoticeHTML(){
   return '<p class="page-notice"><span class="page-notice-ic" aria-hidden="true">' + ic('info') + '</span><span class="page-notice-text">虚拟商品一经交付不退换，下单前请仔细阅读商品说明。</span></p>';
+}
+// 首页通知弹窗。只读公开配置 notice_popup_enabled / title / body / version；缺字段或未开启则不弹。
+// 每个 version 用 localStorage 记一次。离开首页时卸掉遮罩，避免挡住付款页的金额、二维码和地址。
+var NOTICE_POPUP_SEEN_KEY = 'zx_notice_popup_seen';
+function noticePopupOn(v){ return v === true || v === 1 || v === '1'; }
+function noticePopupVersion(){
+  if (!CFG || CFG.notice_popup_version == null || CFG.notice_popup_version === '') return '';
+  return String(CFG.notice_popup_version);
+}
+function noticePopupActive(){
+  if (!CFG || !noticePopupOn(CFG.notice_popup_enabled) || !noticePopupVersion()) return false;
+  var title = String(CFG.notice_popup_title == null ? '' : CFG.notice_popup_title).trim();
+  var body = String(CFG.notice_popup_body == null ? '' : CFG.notice_popup_body).trim();
+  return !!(title || body);
+}
+function noticePopupSeen(){
+  try { return localStorage.getItem(NOTICE_POPUP_SEEN_KEY) === noticePopupVersion(); } catch (e) { return false; }
+}
+function markNoticePopupSeen(){
+  var v = noticePopupVersion();
+  if (!v) return;
+  try { localStorage.setItem(NOTICE_POPUP_SEEN_KEY, v); } catch (e) {}
+}
+function closeNoticePopup(mark){
+  var n = el('noticePopup');
+  if (!n) return;
+  if (mark) markNoticePopupSeen();
+  n.remove();
+}
+function isNoticePopupHome(){
+  if (typeof location === 'undefined') return false;
+  var p = storePath();
+  var h = location.hash || '';
+  if (p === '/fuyan' || p === '/admin' || h === '#/fuyan' || h === '#/admin') return false;
+  if (h.indexOf('#/product/') === 0 || h.indexOf('#/success/') === 0 || h === '#/query') return false;
+  return true;
+}
+function maybeShowNoticePopup(){
+  if (!isNoticePopupHome() || !noticePopupActive() || noticePopupSeen()) {
+    if (!isNoticePopupHome()) closeNoticePopup(false);
+    return;
+  }
+  if (el('noticePopup')) return;
+  var title = String(CFG.notice_popup_title == null ? '' : CFG.notice_popup_title).trim();
+  var body = String(CFG.notice_popup_body == null ? '' : CFG.notice_popup_body);
+  var bd = document.createElement('div');
+  bd.className = 'notice-popup-backdrop';
+  bd.id = 'noticePopup';
+  bd.setAttribute('role', 'dialog');
+  bd.setAttribute('aria-modal', 'true');
+  bd.setAttribute('aria-label', title || '通知');
+  bd.innerHTML = '<div class="notice-popup" role="document">' + (title ? '<h3 class="notice-popup-title">' + escH(title) + '</h3>' : '') + '<div class="notice-popup-body">' + escH(body) + '</div><div class="notice-popup-actions"><button type="button" class="btn" id="noticePopupOk">我知道了</button></div></div>';
+  bd.addEventListener('click', function(e){ if (e.target === bd) closeNoticePopup(true); });
+  document.body.appendChild(bd);
+  var ok = el('noticePopupOk');
+  if (ok) ok.addEventListener('click', function(){ closeNoticePopup(true); });
 }
 function filterStock(s){ curStock = s; renderList(); }
 function doSearch(){ curQ = el('q').value || ''; renderList(); }
@@ -976,6 +1045,7 @@ function detailCardHTML(titleInner, bodyHTML){
   return '<section class="detail-block"><h3 class="detail-block-title">' + titleInner + '</h3><div class="detail-rich">' + bodyHTML + '</div></section>';
 }
 async function renderProduct(id){
+  closeNoticePopup(false);
   var r = await api('/api/products/' + id);
   if (!r.ok){ el('app').innerHTML = pageNoticeHTML() + '<div class="muted">商品不存在 · <a href="#/">回商城</a></div>'; return; }
   var p = r.product;
@@ -1161,6 +1231,7 @@ async function submitOrder(pid){
   location.hash = '#/success/' + r.order.order_no;
 }
 async function renderSuccess(no){
+  closeNoticePopup(false);
   var o = window._lastOrder || null;
   // P1-13：刷新后内存订单已清空（o 为 null）时，渲染“恢复支付信息”表单：
   // 用订单号 + 图形验证码调查询接口恢复收款地址与精确应付金额（地址只写内存，不存 localStorage）。
@@ -1273,6 +1344,7 @@ async function submitTxid(no){
   toast(r.message || 'TXID 已提交', 'success');
 }
 function renderQuery(){
+  closeNoticePopup(false);
   var html = pageNoticeHTML() + '<div class="glass"><div class="h2">查询订单</div><p class="muted">输入订单号或下单邮箱查询订单；卡密需输入下单时设置的查询密码查看。邮箱 + 图形验证码仅可查订单概要，不代表邮箱所有权证明。</p><label>订单号或邮箱</label><input id="qkeywords" placeholder="订单号或下单邮箱" autocomplete="off"><label>图形验证码</label><div class="row" style="flex-wrap:nowrap;align-items:stretch"><input id="qCaptchaCode" placeholder="输入图中 4 位字符" maxlength="4" style="flex:1;min-width:0" autocomplete="off"><img id="qCaptchaImg" class="captcha-img" alt="验证码" title="点击刷新" style="width:120px;height:44px;border-radius:12px;cursor:pointer;flex:0 0 120px" onclick="loadQueryCaptcha()"></div><div style="margin-top:12px"><button class="btn" onclick="doQueryList()">查询</button></div><div id="qres" style="margin-top:14px"></div></div>';
   el('app').innerHTML = html;
   loadQueryCaptcha();
@@ -1372,6 +1444,7 @@ async function doQueryLegacy(no, tkInputId, capInputId){
 }
 // ===== 管理后台（SaaS 风格：信息密度优先，统一 Toast/Modal/Drawer） =====
 async function renderAdmin(){
+  closeNoticePopup(false);
   var me = await api('/api/admin/me');
   if (!me.ok){ var html = '<div class="glass admin-login-card"><div class="h2">后台登录</div><p class="muted">首次建站请使用建站令牌登录（部署时配置的环境变量 ZHIXUAN_SETUP_TOKEN），登录后设置管理员密码。已有密码时用密码登录。</p><label>密码（已有密码时填写）</label><input id="apwd" type="password" onkeydown="if(event.key===\'Enter\')adminLogin()"><label>建站令牌（仅首次建站时填写）</label><input id="asetup" type="password" placeholder="首次建站令牌" onkeydown="if(event.key===\'Enter\')adminLogin()"><div style="margin-top:12px"><button class="btn" id="loginBtn" onclick="adminLogin()">登录</button></div></div>'; el('app').innerHTML = html; return; }
   if (me.must_change_password){ var h2 = '<div class="glass"><div class="h2">首次登录请改密</div><p class="muted">为保护后台安全，首次登录必须修改初始密码。建站令牌登录时旧密码可留空。</p><label>旧密码（建站令牌登录可留空）</label><input id="oldpw" type="password"><label>新密码（至少8位）</label><input id="newpw" type="password"><div style="margin-top:12px"><button class="btn" id="changePwBtn" onclick="adminChangePw()">改密并进入后台</button></div></div>'; el('app').innerHTML = h2; return; }
@@ -2417,6 +2490,13 @@ async function renderAdminSettings(){
     + '<div><button class="btn ghost" id="testProdSellerBtn" onclick="adminTestProdSeller()">测试连接</button></div><div id="prodsellerTestRes" style="margin-top:8px"></div>'
     + '<p class="muted">测试连接只调一次 ProdSeller 只读接口（查余额），绝不下单；返回成功/失败 + 失败原因，不泄露 Key。</p></div>';
   h += '<div class="adm-card"><h3>上游与汇率</h3><p class="muted">导入默认使用这里的全局倍率。定价模板默认关闭；打开后，维护入口在「上游管理」的高级区，不是独立菜单。重新导入不会覆盖已保存售价。</p>' + adminSettingInput(sv, 'upstream_markup', '上游加价倍率', '导入售价 = cost × markup + fixed，默认 1.2', 'number') + adminSettingInput(sv, 'upstream_fixed', '上游固定加价', '默认 0', 'number') + adminSettingSelect01(sv, 'pricing_templates_enabled', '定价模板', '默认 0 关闭。打开后上游管理才出现模板下拉和高级区。关闭时导入忽略 template_id，只用全局倍率。') + adminSettingInput(sv, 'cny_rate', 'CNY 汇率', '前台 CNY 展示汇率，当前 7.2', 'number') + '</div>';
+  var noticeOn = sv.notice_popup_enabled === true || sv.notice_popup_enabled === 1 || String(sv.notice_popup_enabled) === '1';
+  h += '<div class="adm-card"><h3>首页通知弹窗</h3><p class="muted">只在首页弹出一次（按 version）。公开配置没有这些字段时前台保持关闭。version 由服务端在每次保存时 +1，这里不能手改。</p>'
+    + '<div class="adm-field"><label>开关（notice_popup_enabled）</label><select id="noticePopupEnabled"><option value="0"' + (noticeOn ? '' : ' selected') + '>0 关闭</option><option value="1"' + (noticeOn ? ' selected' : '') + '>1 开启</option></select><div class="hint">默认关闭。</div></div>'
+    + '<div class="adm-field"><label>标题（notice_popup_title）</label><input id="noticePopupTitle" value="' + escH(sv.notice_popup_title || '') + '"></div>'
+    + '<div class="adm-field"><label>正文（notice_popup_body，纯文本）</label><textarea id="noticePopupBody" rows="4">' + escH(sv.notice_popup_body || '') + '</textarea><div class="hint">正文里如果有收款地址，服务端会拒绝保存。</div></div>'
+    + '<div class="hint">当前 version：' + escH(sv.notice_popup_version == null || sv.notice_popup_version === '' ? '（尚未下发）' : String(sv.notice_popup_version)) + '</div>'
+    + '<div style="margin-top:10px"><button class="btn" id="saveNoticePopupBtn" type="button" onclick="adminSaveNoticePopup()">保存首页通知</button></div></div>';
   h += '<div><button class="btn" id="saveSettingsBtn" onclick="adminSaveSettings()">保存设置</button></div></div>';
   el('adminBody').innerHTML = h;
 }
@@ -2444,6 +2524,22 @@ async function adminTestProdSeller(){
   if (!r.ok){ box.innerHTML = '<div class="warn-box">测试失败：' + escH(r.error || '连接失败') + '</div>'; return; }
   box.innerHTML = '<div class="muted">测试成功：已连接 ProdSeller，余额：' + escH(JSON.stringify(r.balance == null ? '' : r.balance)) + '</div>';
 }
+function apiErrorText(r){
+  if (r && (r.code === 'notice_contains_address' || r.error === 'notice_contains_address')) return '通知正文不能包含收款地址';
+  return (r && r.error) || '请求失败';
+}
+async function adminSaveNoticePopup(){
+  var en = el('noticePopupEnabled') ? el('noticePopupEnabled').value : '0';
+  var title = el('noticePopupTitle') ? el('noticePopupTitle').value : '';
+  var body = el('noticePopupBody') ? el('noticePopupBody').value : '';
+  var btn = el('saveNoticePopupBtn');
+  setBtnLoading(btn, true);
+  var r = await api('/api/admin/settings', 'POST', { settings: { notice_popup_enabled: en === '1' ? '1' : '0', notice_popup_title: title, notice_popup_body: body } });
+  setBtnLoading(btn, false);
+  if (!r.ok){ toast(apiErrorText(r), 'error'); return; }
+  toast('首页通知已保存', 'success');
+  renderAdminSettings();
+}
 async function adminSaveSettings(){
   var obj = {};
   var tas = document.querySelectorAll('[data-sk]');
@@ -2457,7 +2553,7 @@ async function adminSaveSettings(){
   var btn = el('saveSettingsBtn'); setBtnLoading(btn, true);
   var r = await api('/api/admin/settings', 'POST', { settings: obj });
   setBtnLoading(btn, false);
-  if (!r.ok){ toast(r.error, 'error'); return; }
+  if (!r.ok){ toast(apiErrorText(r), 'error'); return; }
   await loadPricingTemplatesFlag();
   toast('已保存', 'success');
 }
