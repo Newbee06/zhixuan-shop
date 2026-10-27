@@ -162,6 +162,8 @@ jobs:
         run: node tests/payments-admin-list-test.mjs
       - name: Admin gaps (fields, pricing templates, categories)
         run: node tests/admin-gaps-test.mjs
+      - name: "Notice popup config fields and payment-address reject"
+        run: node tests/notice-popup-config-test.mjs
       - name: Review config test (CI secret scan patterns, .gitignore, untracked secrets)
         run: node tests/review-config-test.mjs
       - name: Admin entry path (/fuyan HTML, /admin redirect, /api/admin unchanged)
@@ -171,7 +173,7 @@ jobs:
         run: |
           {
             echo "## Business regression — ${{ job.status }}"
-            echo "- mock-test / stock-test / security-test / detail-data-image-test / upstream-data-image-test / concurrency-test / release-readiness-test / payment-whitelist-test / app-icons-test / review-fixes-test / review-p1-backend-test / txid-race-deterministic-test / review-config-test / pay-config-test / admin-entry-path-test / payments-admin-list-test / admin-gaps-test: see logs for counts"
+            echo "- mock-test / stock-test / security-test / detail-data-image-test / upstream-data-image-test / concurrency-test / release-readiness-test / payment-whitelist-test / app-icons-test / review-fixes-test / review-p1-backend-test / txid-race-deterministic-test / review-config-test / pay-config-test / admin-entry-path-test / payments-admin-list-test / admin-gaps-test / notice-popup-config-test: see logs for counts"
           } >> "$GITHUB_STEP_SUMMARY"
 
   migration:
