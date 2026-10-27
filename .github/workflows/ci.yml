@@ -140,7 +140,7 @@ jobs:
         run: node tests/security-test.mjs
       - name: Detail data-image block (fake payment QR in imported descriptions)
         run: node tests/detail-data-image-test.mjs
-      - name: Upstream import/sync strips data: images from description, usage notes, and spec text
+      - name: "Upstream import/sync strips data-URI images from description, usage notes, and spec text"
         run: node tests/upstream-data-image-test.mjs
       - name: Concurrency / failure-recovery / migration test
         run: node tests/concurrency-test.mjs
