@@ -1359,6 +1359,20 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
     check('notice: shop and admin do not render the bar', !shopSlice.includes('pageNoticeHTML') && !adminSlice.includes('pageNoticeHTML'));
   }
   {
+    const popCss = (frontendHtml.match(/\.notice-popup-backdrop\{[^}]*\}/) || [''])[0];
+    const popCard = (frontendHtml.match(/\.notice-popup\{[^}]*\}/) || [''])[0];
+    const popFn = frontendHtml.slice(frontendHtml.indexOf('var NOTICE_POPUP_SEEN_KEY'), frontendHtml.indexOf('function filterStock('));
+    const shopSlice = frontendHtml.slice(frontendHtml.indexOf('function renderShop()'), frontendHtml.indexOf('function homeHeroHTML('));
+    const prodSlice = frontendHtml.slice(frontendHtml.indexOf('async function renderProduct('), frontendHtml.indexOf('function selectPayOption('));
+    const succSlice = frontendHtml.slice(frontendHtml.indexOf('async function renderSuccess('), frontendHtml.indexOf('async function loadPayCaptcha('));
+    const querySlice = frontendHtml.slice(frontendHtml.indexOf('function renderQuery()'), frontendHtml.indexOf('async function loadQueryCaptcha('));
+    const adminSlice = frontendHtml.slice(frontendHtml.indexOf('async function renderAdmin()'), frontendHtml.indexOf('async function adminLogin('));
+    check('popup: overlay uses tokens and is not sticky', popCss.includes('position:fixed') && !/sticky/.test(popCss + popCard) && popCard.includes('var(--zx-surface)') && popCard.includes('var(--zx-text-strong)') && popCard.includes('var(--zx-border)'));
+    check('popup: copy goes through escH and closes with 我知道了', popFn.includes('escH(title)') && popFn.includes('escH(body)') && popFn.includes('我知道了') && popFn.includes('zx_notice_popup_seen') && popFn.includes('notice_popup_enabled'));
+    check('popup: only the shop page opens it', shopSlice.includes('maybeShowNoticePopup()') && prodSlice.includes('closeNoticePopup(false)') && succSlice.includes('closeNoticePopup(false)') && querySlice.includes('closeNoticePopup(false)') && adminSlice.includes('closeNoticePopup(false)') && !prodSlice.includes('maybeShowNoticePopup') && !succSlice.includes('maybeShowNoticePopup'));
+    check('popup: address error code is shown in Chinese', frontendHtml.includes("r.code === 'notice_contains_address'") && frontendHtml.includes('通知正文不能包含收款地址'));
+  }
+  {
     const heroStart = frontendHtml.indexOf('function homeHeroHTML(');
     const headEnd = frontendHtml.indexOf('function filterStock(', heroStart);
     check('home: no prodseller brand in homepage blocks', !/prodseller/i.test(frontendHtml.slice(heroStart, headEnd)));
