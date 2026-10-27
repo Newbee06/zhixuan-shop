@@ -140,6 +140,8 @@ jobs:
         run: node tests/security-test.mjs
       - name: Detail data-image block (fake payment QR in imported descriptions)
         run: node tests/detail-data-image-test.mjs
+      - name: "Upstream import/sync strips data-URI images from description, usage notes, and spec text"
+        run: node tests/upstream-data-image-test.mjs
       - name: Concurrency / failure-recovery / migration test
         run: node tests/concurrency-test.mjs
       - name: Release readiness test (payments ledger, scan cursor, gate, Turnstile, rate limits, sanitization)
@@ -169,7 +171,7 @@ jobs:
         run: |
           {
             echo "## Business regression — ${{ job.status }}"
-            echo "- mock-test / stock-test / security-test / detail-data-image-test / concurrency-test / release-readiness-test / payment-whitelist-test / app-icons-test / review-fixes-test / review-p1-backend-test / txid-race-deterministic-test / review-config-test / pay-config-test / admin-entry-path-test / payments-admin-list-test / admin-gaps-test: see logs for counts"
+            echo "- mock-test / stock-test / security-test / detail-data-image-test / upstream-data-image-test / concurrency-test / release-readiness-test / payment-whitelist-test / app-icons-test / review-fixes-test / review-p1-backend-test / txid-race-deterministic-test / review-config-test / pay-config-test / admin-entry-path-test / payments-admin-list-test / admin-gaps-test: see logs for counts"
           } >> "$GITHUB_STEP_SUMMARY"
 
   migration:
