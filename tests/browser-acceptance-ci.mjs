@@ -886,6 +886,17 @@ for (const w of [390, 360]) {
     && pay.qr === false && pay.amt === false && pay.addr === false && pay.chain === false && pay.tx === false && pay.cd === false;
   check('notice: pay shell one line and does not cover pay controls', payClear, JSON.stringify(pay));
   check('notice: light and dark use theme colors', pay && pay.lightBg === 'rgb(243, 246, 248)' && pay.lightColor === 'rgb(16, 43, 87)' && pay.darkBg === 'rgb(28, 28, 30)' && pay.darkColor === 'rgb(245, 245, 247)', JSON.stringify(pay));
+  check('notice: bar has an info icon', await page.evaluate(() => !!document.querySelector('.page-notice .ic')));
+  await page.setViewportSize({ width: 390, height: 844 });
+  const first = await page.evaluate(() => {
+    const vh = window.innerHeight;
+    const bottom = (sel) => { const el = document.querySelector(sel); return el ? el.getBoundingClientRect().bottom : null; };
+    return { vh, notice: bottom('.page-notice'), amt: bottom('.pay-amount'), cd: bottom('.pay-deadline'), qr: bottom('.pay-qr'), addr: bottom('.pay-addr') };
+  });
+  check('notice: 390 first screen keeps amount, countdown, QR and address',
+    first.notice != null && first.amt != null && first.cd != null && first.qr != null && first.addr != null
+    && first.notice < first.amt && first.amt <= first.vh && first.cd <= first.vh && first.qr <= first.vh && first.addr <= first.vh,
+    JSON.stringify(first));
   await page.evaluate(() => { delete document.documentElement.dataset.theme; });
   await page.setViewportSize({ width: 1440, height: 900 });
 }

@@ -1354,7 +1354,7 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
     const querySlice = frontendHtml.slice(frontendHtml.indexOf('function renderQuery()'), frontendHtml.indexOf('async function loadQueryCaptcha('));
     const shopSlice = frontendHtml.slice(frontendHtml.indexOf('function renderShop()'), frontendHtml.indexOf('function homeHeroHTML('));
     const adminSlice = frontendHtml.slice(frontendHtml.indexOf('async function renderAdmin()'), frontendHtml.indexOf('async function adminLogin('));
-    check('notice: helper is the delivery sentence', noticeFn.includes('虚拟商品一经交付不退换，下单前请仔细阅读商品说明。') && noticeFn.includes('class="page-notice"'));
+    check('notice: helper is the delivery sentence', noticeFn.includes('虚拟商品一经交付不退换，下单前请仔细阅读商品说明。') && noticeFn.includes('class="page-notice"') && noticeFn.includes("ic('info')"));
     check('notice: product, pay, and query render the bar', prodSlice.includes('pageNoticeHTML()') && succSlice.includes('pageNoticeHTML()') && querySlice.includes('pageNoticeHTML()'));
     check('notice: shop and admin do not render the bar', !shopSlice.includes('pageNoticeHTML') && !adminSlice.includes('pageNoticeHTML'));
   }
