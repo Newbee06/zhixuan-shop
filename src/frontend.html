@@ -813,15 +813,12 @@ function payOptionsHTML(){
   return h;
 }
 // 宝贝详情只把纯文本排成段落 / 列表 / 规格表。用户原文一律走 escH，不解析 HTML。
-// 单独一行的图片：同源路径和 data: 用 img；外域 https 只做成「查看图片」链接（CSP 的 img-src 不含外域）。
+// 单独一行的图片：同源路径用 img；外域 https 只做成「查看图片」链接（CSP 的 img-src 不含外域）。
+// 去掉前导空白后以 data: 开头（不区分大小写）的地址只当纯文本，避免上游描述嵌入假收款码。
 function detailImgExtOk(path){
   return /\.(png|jpe?g|gif|webp|avif)(\?[^#]*)?$/i.test(String(path || '').split('#')[0]);
 }
 function detailImgBad(s){ return /[\u0000-\u001f\s"'<>\\]/.test(s); }
-function detailIsDataImage(s){
-  if (!s || s.length > 5000 || detailImgBad(s)) return false;
-  return /^data:image\/(?:png|jpeg|jpg|gif|webp|avif)[;,]/i.test(s);
-}
 function detailParsedUrl(s){
   try { return new URL(s, (typeof location !== 'undefined' && location.href) ? location.href : 'https://local.invalid/'); } catch (e) { return null; }
 }
@@ -849,7 +846,7 @@ function detailImgFromLine(line){
   var alt = '', url = t;
   var md = t.match(/^!\[([^\]]*)\]\(([^)\s]+)\)\s*$/);
   if (md){ alt = md[1]; url = md[2]; }
-  if (detailIsDataImage(url)) return { src: url, alt: alt, external: false };
+  if (/^data:/i.test(String(url).replace(/^\s+/, ''))) return null;
   if (detailIsSameOriginImg(url)) return { src: url, alt: alt, external: false };
   if (detailIsExternalHttpsImg(url)) return { src: url, alt: alt, external: true };
   return null;
