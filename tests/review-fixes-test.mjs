@@ -1325,8 +1325,8 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   check('home: explore scrolls to browse anchor', frontendHtml.includes('id="shopBrowse"') && frontendHtml.includes("getElementById(\\x27shopBrowse\\x27)") && frontendHtml.includes('#shopBrowse{scroll-margin-top:72px}'));
   check('home: hero rendered on shop page', frontendHtml.includes('homeHeroHTML()') && frontendHtml.includes('homeSectionHeadHTML()'));
   check('home: section head copy + back-to-top', frontendHtml.includes('日常生活，升级版') && frontendHtml.includes('返回顶部 ↑') && !frontendHtml.includes('返回收藏夹'));
-  // 合集标题在最底：商品网格下方、紧贴底部声明上方（声明在 #app 之外的页脚，标题是 #app 内最后一个块）。
-  check('home: section head below grid (above footer)', frontendHtml.includes('id="list" class="grid shop-grid"></div>\' + homeSectionHeadHTML()'));
+  // 合集标题在商品网格下方（#app 内最后一个块）。底部「不退换」声明已从页脚移除。
+  check('home: section head below grid', frontendHtml.includes('id="list" class="grid shop-grid"></div>\' + homeSectionHeadHTML()'));
   // 新增配色与线条图标同色（.ic 蓝 #5b7bff 同色系），不留 #7c3aed 系紫色。
   check('home: accent matches line-icon blue', frontendHtml.includes('.home-h1-accent{color:#5b7bff}') && frontendHtml.includes('.home-cta{border:0;background:#5b7bff') && !/#7c3aed|#a78bfa|#6d28d9|#5b21b6/.test(frontendHtml));
   // 芯片符号用实心（▲/▶）：空心 △/▷ 在小字号 + 低对比下肉眼几乎看不见，用户反馈“不显示”。
@@ -1341,6 +1341,23 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   check('query: order no or email', workerCode.includes('LOWER(contact) = ?') && frontendHtml.includes('订单号或下单邮箱') && frontendHtml.includes('输入订单号或下单邮箱查询订单'));
   check('home: mobile section title fits one line', frontendHtml.includes('.home-section-title{font-size:20px}') && frontendHtml.includes('.home-section-star{font-size:22px}'));
   check('home: desktop hero/title fonts unchanged', frontendHtml.includes('.home-hero{display:flex;gap:24px;align-items:center;justify-content:space-between;background:var(--card2);border:1px solid var(--line);border-radius:28px;padding:36px 36px 28px') && frontendHtml.includes('.home-section-title{font-size:26px'));
+  check('home: mobile lockup keeps wrapped title with subtitle', frontendHtml.includes('.home-section-title-text') && frontendHtml.includes('grid-template-columns:subgrid') && frontendHtml.includes('.home-section-sub{grid-column:2'));
+  check('notice: footer disclaimer element removed', !frontendHtml.includes('class="footer"') && !frontendHtml.includes('<footer'));
+  {
+    const noticeCss = (frontendHtml.match(/\.page-notice\{[^}]*\}/) || [''])[0];
+    check('notice: bar is static single-line text', noticeCss.includes('white-space:nowrap') && noticeCss.includes('text-overflow:ellipsis') && noticeCss.includes('clamp(') && !/position:\s*(fixed|sticky)/.test(noticeCss));
+  }
+  {
+    const noticeFn = frontendHtml.slice(frontendHtml.indexOf('function pageNoticeHTML()'), frontendHtml.indexOf('function filterStock('));
+    const prodSlice = frontendHtml.slice(frontendHtml.indexOf('async function renderProduct('), frontendHtml.indexOf('function selectPayOption('));
+    const succSlice = frontendHtml.slice(frontendHtml.indexOf('async function renderSuccess('), frontendHtml.indexOf('async function loadPayCaptcha('));
+    const querySlice = frontendHtml.slice(frontendHtml.indexOf('function renderQuery()'), frontendHtml.indexOf('async function loadQueryCaptcha('));
+    const shopSlice = frontendHtml.slice(frontendHtml.indexOf('function renderShop()'), frontendHtml.indexOf('function homeHeroHTML('));
+    const adminSlice = frontendHtml.slice(frontendHtml.indexOf('async function renderAdmin()'), frontendHtml.indexOf('async function adminLogin('));
+    check('notice: helper is the delivery sentence', noticeFn.includes('虚拟商品一经交付不退换，下单前请仔细阅读商品说明。') && noticeFn.includes('class="page-notice"'));
+    check('notice: product, pay, and query render the bar', prodSlice.includes('pageNoticeHTML()') && succSlice.includes('pageNoticeHTML()') && querySlice.includes('pageNoticeHTML()'));
+    check('notice: shop and admin do not render the bar', !shopSlice.includes('pageNoticeHTML') && !adminSlice.includes('pageNoticeHTML'));
+  }
   {
     const heroStart = frontendHtml.indexOf('function homeHeroHTML(');
     const headEnd = frontendHtml.indexOf('function filterStock(', heroStart);

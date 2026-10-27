@@ -753,6 +753,134 @@ for (const w of [390, 360]) {
   await page.unrouteAll({ behavior: 'wait' });
 }
 
+// ===== 8c. 交付提示：页脚声明已删除；商品 / 付款 / 查单顶部静态单行，不挡住付款控件 =====
+{
+  const NOTICE_TEXT = '虚拟商品一经交付不退换，下单前请仔细阅读商品说明。';
+  async function readNotice() {
+    return page.evaluate((expected) => {
+      const n = document.querySelector('.page-notice');
+      const footer = document.querySelector('footer, .footer');
+      if (!n) return { missing: true, footer: !!footer, count: 0 };
+      const cs = getComputedStyle(n);
+      const rect = n.getBoundingClientRect();
+      const app = document.getElementById('app');
+      return {
+        missing: false,
+        footer: !!footer,
+        text: (n.textContent || '').trim(),
+        expected,
+        position: cs.position,
+        whiteSpace: cs.whiteSpace,
+        overflowX: cs.overflowX,
+        textOverflow: cs.textOverflow,
+        height: rect.height,
+        lineHeight: parseFloat(cs.lineHeight),
+        scrollWidth: n.scrollWidth,
+        clientWidth: n.clientWidth,
+        isFirst: !!(app && app.firstElementChild === n),
+        count: document.querySelectorAll('.page-notice').length,
+      };
+    }, NOTICE_TEXT);
+  }
+  function noticeOneLine(m) {
+    if (!m || m.missing) return false;
+    const hOk = Number.isFinite(m.lineHeight) && Math.abs(m.height - m.lineHeight) <= 1;
+    return m.text === NOTICE_TEXT && m.position === 'static' && m.whiteSpace === 'nowrap'
+      && m.overflowX === 'hidden' && m.textOverflow === 'ellipsis'
+      && m.count === 1 && m.isFirst && hOk && m.scrollWidth <= m.clientWidth && m.footer === false;
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(BASE + '/', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(600);
+  const homeN = await page.evaluate(() => ({
+    notice: document.querySelectorAll('.page-notice').length,
+    footer: !!document.querySelector('footer, .footer'),
+  }));
+  check('notice: homepage has no bar and no footer disclaimer', homeN.notice === 0 && homeN.footer === false, JSON.stringify(homeN));
+  await page.goto(BASE + '/fuyan', { waitUntil: 'networkidle' });
+  await page.waitForTimeout(700);
+  const admN = await page.evaluate(() => ({
+    notice: document.querySelectorAll('.page-notice').length,
+    footer: !!document.querySelector('footer, .footer'),
+    path: location.pathname,
+  }));
+  check('notice: /fuyan has no bar', admN.notice === 0 && admN.footer === false && admN.path === '/fuyan', JSON.stringify(admN));
+  for (const w of [320, 375, 390, 430]) {
+    await page.setViewportSize({ width: w, height: 900 });
+    await page.goto(BASE + '/#/product/1', { waitUntil: 'networkidle' });
+    await page.waitForSelector('.page-notice', { timeout: 10000 });
+    const product = await readNotice();
+    check(`notice: product ${w} one line`, noticeOneLine(product), JSON.stringify(product));
+    await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
+    await page.waitForSelector('.page-notice', { timeout: 10000 });
+    const query = await readNotice();
+    check(`notice: query ${w} one line`, noticeOneLine(query), JSON.stringify(query));
+    await page.goto(BASE + '/#/success/CI-NOTICE', { waitUntil: 'networkidle' });
+    await page.waitForSelector('.page-notice', { timeout: 10000 });
+    const recover = await readNotice();
+    check(`notice: pay ${w} one line`, noticeOneLine(recover), JSON.stringify(recover));
+  }
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(400);
+  const pay = await page.evaluate((expected) => {
+    window._lastOrder = {
+      order_no: 'CI-NOTICE',
+      total_usdt: 12.34,
+      actual_amount: 12.34,
+      pay_address: '0x1111111111111111111111111111111111111111',
+      wallet_address: '0x1111111111111111111111111111111111111111',
+      pay_method: 'OKX',
+      pay_chain: 'X Layer',
+      expires_at: new Date(Date.now() + 20 * 60 * 1000).toISOString(),
+      has_query_password: 1,
+    };
+    renderSuccess('CI-NOTICE');
+    const n = document.querySelector('.page-notice');
+    if (!n) return { missing: true };
+    const cs = getComputedStyle(n);
+    const nb = n.getBoundingClientRect();
+    function overlaps(sel) {
+      const el = document.querySelector(sel);
+      if (!el) return 'missing';
+      const b = el.getBoundingClientRect();
+      return !(nb.bottom <= b.top + 0.5 || b.bottom <= nb.top + 0.5 || nb.right <= b.left + 0.5 || b.right <= nb.left + 0.5);
+    }
+    document.documentElement.dataset.theme = 'dark';
+    const dark = getComputedStyle(n);
+    const darkBg = dark.backgroundColor;
+    const darkColor = dark.color;
+    document.documentElement.dataset.theme = 'light';
+    const light = getComputedStyle(n);
+    return {
+      text: (n.textContent || '').trim(),
+      expected,
+      position: cs.position,
+      height: nb.height,
+      lineHeight: parseFloat(cs.lineHeight),
+      scrollWidth: n.scrollWidth,
+      clientWidth: n.clientWidth,
+      qr: overlaps('.pay-qr'),
+      amt: overlaps('.pay-amount'),
+      addr: overlaps('.pay-addr'),
+      chain: overlaps('.pay-amount-sub'),
+      tx: overlaps('#txid'),
+      cd: overlaps('.pay-deadline'),
+      lightBg: light.backgroundColor,
+      lightColor: light.color,
+      darkBg,
+      darkColor,
+    };
+  }, NOTICE_TEXT);
+  const payClear = pay && !pay.missing && pay.text === NOTICE_TEXT && pay.position === 'static'
+    && Math.abs(pay.height - pay.lineHeight) <= 1 && pay.scrollWidth <= pay.clientWidth
+    && pay.qr === false && pay.amt === false && pay.addr === false && pay.chain === false && pay.tx === false && pay.cd === false;
+  check('notice: pay shell one line and does not cover pay controls', payClear, JSON.stringify(pay));
+  check('notice: light and dark use theme colors', pay && pay.lightBg === 'rgb(243, 246, 248)' && pay.lightColor === 'rgb(16, 43, 87)' && pay.darkBg === 'rgb(28, 28, 30)' && pay.darkColor === 'rgb(245, 245, 247)', JSON.stringify(pay));
+  await page.evaluate(() => { delete document.documentElement.dataset.theme; });
+  await page.setViewportSize({ width: 1440, height: 900 });
+}
+
 // ===== 9. 控制台与接口失败 =====
 check('no JS console errors', jsErrors.length === 0, jsErrors.slice(0, 3).join(' | '));
 check('no 5xx API responses during flow', apiFailures.length === 0, apiFailures.slice(0, 3).join(' | '));
