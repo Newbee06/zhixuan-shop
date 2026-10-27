@@ -379,6 +379,19 @@ html:not([data-theme="dark"]) .detail-img,html:not([data-theme="dark"]) .buy-box
 .pay-deadline-expired .pay-deadline-left{color:var(--red)}
 .pay-qr-box{padding:22px;border-radius:22px;background:#fff;border-color:var(--line)}
 .pay-addrbox{border:1px solid var(--line);border-radius:18px;background:var(--card2)}
+/* 窄屏付款页：公告 + 提示条之下，金额、倒计时、二维码、地址仍要落在 390×844 首屏里。桌面间距不动。 */
+@media(max-width:640px){
+  .pay-shell.glass{padding:10px 12px}
+  .pay-shell .h2{margin:0 0 6px}
+  .pay-shell .warn-box{margin:6px 0;padding:8px}
+  .pay-amount{margin:6px 0 2px}
+  .pay-toprow{margin:6px 0}
+  .pay-div{margin:6px 0}
+  .pay-row{margin:4px 0}
+  .pay-qr-box{padding:8px;margin:6px 0}
+  .pay-qr{margin:0}
+  .pay-addrbox{margin:6px 0;padding:8px 10px}
+}
 .pay-card{border:1px solid var(--line);border-radius:18px}
 .btn:not(.ghost):not(.danger):not(.green):hover{background:var(--zx-accent-strong)}
 .btn.ghost:hover{background:rgba(36,107,213,.10)}
