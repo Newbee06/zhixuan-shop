@@ -40,6 +40,72 @@ function computeTemplateSell(cost, tpl){
   if (ceiling != null && ceiling !== '' && isFinite(Number(ceiling)) && sell > Number(ceiling)) sell = Number(ceiling);
   return clampSell(sell);
 }
+// 上游文案里的 data: 图片（假收款码）在写入缓存 / 商品前换成纯文本。只处理简介、使用说明、规格文案，不动商品主图。
+var UPSTREAM_DATA_IMAGE_PLACEHOLDER = '[图片已移除]';
+var UPSTREAM_USAGE_KEYS = ['notice', 'usage', 'usage_notes', 'usageNotes', 'instructions', 'how_to_use', 'howToUse'];
+var UPSTREAM_SPEC_KEYS = ['spec', 'spec_text', 'specText', 'specification', 'specs'];
+var UPSTREAM_COPY_KEYS = ['description'].concat(UPSTREAM_USAGE_KEYS, UPSTREAM_SPEC_KEYS);
+function stripUpstreamDataImages(text) {
+  var s = String(text == null ? '' : text);
+  if (!s || !/data:/i.test(s)) return s;
+  var ph = UPSTREAM_DATA_IMAGE_PLACEHOLDER;
+  s = s.replace(/<img\b[^>]*>/gi, function (tag) {
+    var m = tag.match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    if (!m) return tag;
+    var src = String(m[1] != null ? m[1] : (m[2] != null ? m[2] : (m[3] || ''))).replace(/^\s+/, '');
+    if (/^data:/i.test(src)) return ph;
+    return tag;
+  });
+  s = s.replace(/!\[[^\]]*\]\(\s*data:[^)]*\)/gi, ph);
+  // 裸 data:image URL（大小写不敏感，允许前导空白）。紧挨在字母、数字或 URL 字符后的不替换，避免拆开 https 路径。
+  s = s.replace(/data:image\/[^\s"'<>)]+/gi, function (match, offset, whole) {
+    if (offset > 0 && /[A-Za-z0-9+.%:/_-]/.test(whole.charAt(offset - 1))) return match;
+    return ph;
+  });
+  return s;
+}
+function sanitizeUpstreamCopyValue(v) {
+  if (typeof v === 'string') return stripUpstreamDataImages(v);
+  if (!Array.isArray(v)) return v;
+  var next = [];
+  for (var i = 0; i < v.length; i++) next.push(typeof v[i] === 'string' ? stripUpstreamDataImages(v[i]) : v[i]);
+  return next;
+}
+function sanitizeUpstreamProductCopy(up) {
+  if (!up || typeof up !== 'object') return up;
+  for (var i = 0; i < UPSTREAM_COPY_KEYS.length; i++) {
+    var k = UPSTREAM_COPY_KEYS[i];
+    if (up[k] != null) up[k] = sanitizeUpstreamCopyValue(up[k]);
+  }
+  return up;
+}
+function sanitizeUpstreamCatalog(data) {
+  var list = Array.isArray(data) ? data : (data && Array.isArray(data.products) ? data.products : null);
+  if (!list) return data;
+  for (var i = 0; i < list.length; i++) sanitizeUpstreamProductCopy(list[i]);
+  return data;
+}
+function upstreamFieldText(up, keys) {
+  if (!up) return '';
+  for (var i = 0; i < keys.length; i++) {
+    var v = sanitizeUpstreamCopyValue(up[keys[i]]);
+    if (typeof v === 'string') return v;
+    if (Array.isArray(v)) {
+      var bits = [];
+      for (var j = 0; j < v.length; j++) if (typeof v[j] === 'string' && String(v[j]).trim()) bits.push(v[j]);
+      if (bits.length) return bits.join('\n');
+    }
+  }
+  return '';
+}
+function upstreamImportedCopy(up) {
+  // 商品表只有 description / notice。规格没有独立列，清洗后附在简介末尾，避免 data: 图片随原文入库。
+  var description = upstreamFieldText(up, ['description']);
+  var spec = upstreamFieldText(up, UPSTREAM_SPEC_KEYS);
+  // 规格是另一段文案。不能因为简介里已经有「[图片已移除]」就丢掉规格（两边都可能只剩占位符）。
+  if (spec.trim() && description !== spec && description.slice(-(spec.length + 1)) !== '\n' + spec) description = description ? (description + '\n' + spec) : spec;
+  return { description: description, notice: upstreamFieldText(up, UPSTREAM_USAGE_KEYS) };
+}
 var BUILTIN_CATEGORY_KEYS = { recharge: 1, account: 1, card: 1 };
 var FORM_FIELD_RESERVED_KEYS = { contact_email: 1, delivery_email: 1, activation_email: 1, activation_email_confirm: 1, activation_emails: 1, activation_emails_confirm: 1, activation_confirm: 1, query_password: 1 };
 // 商品自定义下单字段：前台只渲染 text / textarea（key、label、required、placeholder）。遗留联系方式字段原样保留（后台编辑器会滤掉，不再因它拒单）。
@@ -4004,6 +4070,7 @@ async function handleApi(req, env, url, ctx) {
     var settingsU = await getAllSettings(env);
     var r = await prodsellerFetch(env, settingsU, '/products', { method: 'GET' });
     if (!r.ok) return err('上游拉取失败 HTTP ' + r.status, 502);
+    if (r.data && typeof r.data === 'object') sanitizeUpstreamCatalog(r.data);
     await env.DB.prepare('INSERT INTO upstream_cache (key, payload, fetched_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, fetched_at = excluded.fetched_at').bind('products', JSON.stringify(r.data || {}), nowISO()).run();
     var cnt = Array.isArray(r.data) ? r.data.length : (r.data && Array.isArray(r.data.products) ? r.data.products.length : 0);
     return json({ ok: true, count: cnt, fetched_at: nowISO() });
@@ -4063,12 +4130,15 @@ async function handleApi(req, env, url, ctx) {
       var inSt = (up.inStock === false || up.in_stock === 0) ? 0 : 1;
       // 上游商品按标题自动匹配 App 图标（仅新导入时设置；冲突重导入不覆盖人工选的图标）。
       var upIconKey = matchAppIconKey(String(title || ''));
+      sanitizeUpstreamProductCopy(up);
+      var upCopy = upstreamImportedCopy(up);
       try {
         var existedUp = await env.DB.prepare('SELECT id FROM products WHERE slug = ?').bind(slug).first();
-        // 冲突时不覆盖 title/description/sell_price/price_usdt/app_icon_key：
+        // 冲突时不覆盖 title/description/notice/sell_price/price_usdt/app_icon_key：
         // 标题与简介可能已人工翻译；售价可能已管理员自定义（或上次套用模板后手改）。
         // 重新导入只刷新成本/库存/激活标记/上游 id，即使用了定价模板也不改已有售价。
-        await env.DB.prepare('INSERT INTO products (slug, title, category, price_usdt, sell_price, cost_price, source, prodseller_id, requires_email_activation, delivery_method, stock_type, description, notice, form_fields, image_emoji, app_icon_key, sort, is_active, in_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET cost_price=excluded.cost_price, prodseller_id=excluded.prodseller_id, requires_email_activation=excluded.requires_email_activation, in_stock=excluded.in_stock').bind(slug, title, 'recharge', sell, sell, cost, 'prodseller', String(up.id || ''), reqAct, 'both', 'manual', String(up.description || ''), '', '[]', 'box', upIconKey, 0, 1, inSt).run();
+        // 新导入的简介 / 使用说明 / 规格文案已去掉 data: 图片（见 upstreamImportedCopy）。
+        await env.DB.prepare('INSERT INTO products (slug, title, category, price_usdt, sell_price, cost_price, source, prodseller_id, requires_email_activation, delivery_method, stock_type, description, notice, form_fields, image_emoji, app_icon_key, sort, is_active, in_stock) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET cost_price=excluded.cost_price, prodseller_id=excluded.prodseller_id, requires_email_activation=excluded.requires_email_activation, in_stock=excluded.in_stock').bind(slug, title, 'recharge', sell, sell, cost, 'prodseller', String(up.id || ''), reqAct, 'both', 'manual', upCopy.description, upCopy.notice, '[]', 'box', upIconKey, 0, 1, inSt).run();
         imported++;
         if (existedUp) sellPreserved++;
       } catch (e) {}
