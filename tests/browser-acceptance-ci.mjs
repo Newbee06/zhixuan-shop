@@ -921,6 +921,7 @@ for (const w of [390, 360]) {
     && Math.abs((fuyanBox.app.l + fuyanBox.app.w / 2) - (login.l + login.w / 2)) <= 2
     && login.w <= fuyanBox.app.w + 2 && login.w <= 422);
   const shellFills = !!(fuyanBox.app && adminShell && Math.abs(adminShell.w - fuyanBox.app.w) <= 2 && Math.abs(adminShell.l - fuyanBox.app.l) <= 2);
+  // 已登录时 /fuyan 是后台壳，未登录才是登录卡。两者都算对齐。
   check('layout: /fuyan login stays centered, or the admin shell fills the column', loginCentered || shellFills, JSON.stringify(fuyanBox));
   // 每个页面只打开一次，之后只改视口。重复进入会再要图形验证码，容易撞上 30 次/10 分钟的限流，控制台就会留下 429。
   const widths = [320, 375, 390, 430];
