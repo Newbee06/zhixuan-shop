@@ -805,24 +805,33 @@ for (const w of [390, 360]) {
     path: location.pathname,
   }));
   check('notice: /fuyan has no bar', admN.notice === 0 && admN.footer === false && admN.path === '/fuyan', JSON.stringify(admN));
-  for (const w of [320, 375, 390, 430]) {
-    await page.setViewportSize({ width: w, height: 900 });
-    await page.goto(BASE + '/#/product/1', { waitUntil: 'networkidle' });
-    await page.waitForSelector('.page-notice', { timeout: 10000 });
-    const product = await readNotice();
-    check(`notice: product ${w} one line`, noticeOneLine(product), JSON.stringify(product));
-    await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
-    await page.waitForSelector('.page-notice', { timeout: 10000 });
-    const query = await readNotice();
-    check(`notice: query ${w} one line`, noticeOneLine(query), JSON.stringify(query));
-    await page.goto(BASE + '/#/success/CI-NOTICE', { waitUntil: 'networkidle' });
-    await page.waitForSelector('.page-notice', { timeout: 10000 });
-    const recover = await readNotice();
-    check(`notice: pay ${w} one line`, noticeOneLine(recover), JSON.stringify(recover));
+  // 每个页面只打开一次，之后只改视口。重复进入会再要图形验证码，容易撞上 30 次/10 分钟的限流，控制台就会留下 429。
+  const widths = [320, 375, 390, 430];
+  async function measureWidths(label) {
+    for (const w of widths) {
+      await page.setViewportSize({ width: w, height: 900 });
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      const m = await readNotice();
+      check(`notice: ${label} ${w} one line`, noticeOneLine(m), JSON.stringify(m));
+    }
   }
   await page.setViewportSize({ width: 390, height: 900 });
-  await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(400);
+  await page.goto(BASE + '/#/product/1', { waitUntil: 'networkidle' });
+  await page.waitForSelector('.page-notice', { timeout: 10000 });
+  await measureWidths('product');
+  await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
+  await page.waitForSelector('.page-notice', { timeout: 10000 });
+  await measureWidths('query');
+  await page.evaluate(() => {
+    window.api = async function () {
+      return { ok: true, captcha_id: 'ci-notice', svg: '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="44"></svg>' };
+    };
+    window._lastOrder = null;
+    renderSuccess('CI-NOTICE');
+  });
+  await page.waitForSelector('.page-notice', { timeout: 5000 });
+  await measureWidths('pay');
+  await page.setViewportSize({ width: 390, height: 900 });
   const pay = await page.evaluate((expected) => {
     window._lastOrder = {
       order_no: 'CI-NOTICE',
