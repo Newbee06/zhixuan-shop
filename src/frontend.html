@@ -17,6 +17,7 @@
   --zx-border:rgba(85,129,178,.15);--zx-border-solid:#c5d6e8;
   --zx-shadow-sm:0 1px 2px rgba(16,43,87,.06);--zx-shadow-md:0 8px 24px rgba(16,43,87,.08);--zx-shadow-lg:0 16px 40px rgba(23,52,91,.12);--zx-shadow-pill:0 8px 28px rgba(36,107,213,.18);
   --zx-radius-sm:10px;--zx-radius-md:16px;--zx-radius-lg:20px;--zx-radius-xl:24px;--zx-radius-pill:999px;
+  --zx-content:1180px;--zx-pad-x:14px;
   --zx-font:"Inter","PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;
   --zx-glass-blur:16px;
   --bg:var(--zx-bg);--card:var(--zx-surface-2);--card2:var(--zx-surface-3);--text:var(--zx-text);--sub:var(--zx-muted);--line:var(--zx-border);--accent:var(--zx-accent);--green:#34c759;--orange:#9a5b00;--red:#b42318;--radius:24px;
@@ -39,9 +40,9 @@ button,input,select,textarea{font-family:inherit}
 html:not([data-theme="dark"]) body{background:radial-gradient(1000px 480px at 0% -8%,rgba(52,124,231,.18),transparent 58%),radial-gradient(820px 420px at 100% 0%,rgba(36,107,213,.12),transparent 52%),var(--bg)}
 @media (prefers-color-scheme:dark){html:not([data-theme]) body{background:var(--bg)}}
 a{color:var(--accent);text-decoration:none}
-.wrap{max-width:1180px;margin:0 auto;padding:16px 14px 80px}
+.wrap{max-width:var(--zx-content);margin:0 auto;padding:16px var(--zx-pad-x) 80px}
 .top{position:sticky;top:0;z-index:10;backdrop-filter:blur(20px) saturate(180%);-webkit-backdrop-filter:blur(20px) saturate(180%);background:var(--card);border-bottom:1px solid var(--line)}
-.top-in{max-width:1180px;margin:0 auto;padding:12px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.top-in{max-width:var(--zx-content);margin:0 auto;padding:12px var(--zx-pad-x);display:flex;align-items:center;justify-content:space-between;gap:10px}
 .logo{font-weight:800;font-size:18px;text-decoration:none;color:var(--text);cursor:pointer}
 .nav{display:flex;gap:8px;flex-wrap:wrap}
 .nav a{padding:8px 12px;border-radius:999px;background:rgba(127,127,127,.12);color:var(--text);font-size:13px}
@@ -197,7 +198,8 @@ html[data-theme="dark"] .notice-popup-backdrop{background:rgba(0,0,0,.55)}
 .detail-img{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;min-height:380px;font-size:120px;background:var(--card2);border-radius:var(--radius);text-align:center;padding:24px;position:relative}
 @media(max-width:720px){.detail-img{min-height:240px;font-size:88px}}
 .detail-img-cap{font-size:17px;font-weight:700;line-height:1.5;max-width:100%}
-.detail-blocks{margin-top:32px;max-width:840px;min-width:0}
+/* 详情卡与上方主图、下方同类推荐同一内容宽。桌面不再单独缩到 840px。 */
+.detail-blocks{margin-top:32px;width:100%;max-width:none;min-width:0}
 .detail-sheet-title{font-size:28px;line-height:1.15;font-weight:700;letter-spacing:-.03em;margin:0 0 8px;color:var(--text)}
 .buy-box{position:sticky;top:64px}
 @media(max-width:720px){.buy-box{position:static}}
@@ -287,7 +289,7 @@ ol.detail-list li:before{content:none}
 .empty{background:var(--card);border:1px dashed rgba(127,127,127,.35);border-radius:18px;padding:22px;text-align:center;color:var(--sub);font-size:14px;margin:14px 0}
 .btn.danger{background:rgba(255,69,58,.12);color:var(--red)}
 /* ===== 管理后台 SaaS 风格（信息密度优先，克制玻璃感） ===== */
-.admin-page{max-width:1200px;margin:0 auto}
+.admin-page{width:100%;max-width:none;margin:0 auto}
 .admin-page-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:4px 0 14px}
 .admin-page-head h2{font-size:20px;font-weight:800;margin:0}
 .admin-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
