@@ -1524,6 +1524,15 @@ async function getTokenDecimals(fetchFn, rpcUrl, contract) {
   return null;
 }
 function isValidEvmAddress(s) { return /^0x[0-9a-fA-F]{40}$/.test(String(s || '')); }
+// 首页通知弹窗。文案里出现整段 EVM 地址（0x + 40 hex，X Layer / BEP20 同一格式）即视为收款地址。
+var NOTICE_POPUP_ADDRESS_ERROR = '通知正文不能包含收款地址';
+function noticePopupHasEvmAddress(text) { return /0x[0-9a-fA-F]{40}/i.test(String(text == null ? '' : text)); }
+function noticePopupStoredVersion(settings) {
+  var raw = String(settings && settings.notice_popup_version != null ? settings.notice_popup_version : '').trim();
+  if (!/^\d+$/.test(raw)) return 0;
+  var n = Number(raw);
+  return isFinite(n) ? n : 0;
+}
 // ---- 收款方式配置（后台可配 + 每链独立开关，冻结规格 1A/2A/3A/4A/5A/6/7A）----
 // 存储：复用 settings 键值表（pay_xlayer_address / pay_xlayer_enabled / pay_bep20_address / pay_bep20_enabled），不新增 D1 表结构迁移。
 // 旧 usdt_addresses JSON 自动迁移：新字段缺失时从旧 JSON 取地址；开关默认 = 旧地址合法则开、否则关（保持现有行为，升级不突然关闭收款）。
@@ -2953,7 +2962,12 @@ async function handleApi(req, env, url, ctx) {
       })(),
       // Turnstile：仅暴露开关与公开 site key（密钥绝不经公开接口返回）。
       turnstile_enabled: String(s.turnstile_enabled || '0') === '1',
-      turnstile_site_key: String(s.turnstile_site_key || '')
+      turnstile_site_key: String(s.turnstile_site_key || ''),
+      // 首页通知弹窗。未配置时关闭、文案为空、version 为 0。version 只由服务端在标题/正文变化时递增。
+      notice_popup_enabled: String(s.notice_popup_enabled || '0') === '1',
+      notice_popup_title: String(s.notice_popup_title || ''),
+      notice_popup_body: String(s.notice_popup_body || ''),
+      notice_popup_version: noticePopupStoredVersion(s)
     }});
   }
 
@@ -4249,6 +4263,10 @@ async function handleApi(req, env, url, ctx) {
       return null;
     }
     if (key === 'site_name') { if (!v.trim()) return 'site_name 不能为空'; if (v.length > 100) return 'site_name 过长（最多 100 字符）'; return null; }
+    if (key === 'notice_popup_enabled') { if (v !== '0' && v !== '1') return 'notice_popup_enabled 只能是 0 或 1'; return null; }
+    if (key === 'notice_popup_title') { if (v.length > 100) return 'notice_popup_title 过长（最多 100 个字符）'; if (noticePopupHasEvmAddress(v)) return NOTICE_POPUP_ADDRESS_ERROR; return null; }
+    if (key === 'notice_popup_body') { if (v.length > 2000) return 'notice_popup_body 过长（最多 2000 个字符）'; if (noticePopupHasEvmAddress(v)) return NOTICE_POPUP_ADDRESS_ERROR; return null; }
+    if (key === 'notice_popup_version') return 'notice_popup_version 由服务端维护，不能手动修改';
     if (key === 'binance_uid') { if (v && !/^[0-9]+$/.test(v.trim())) return 'binance_uid 必须是纯数字'; return null; }
     var lowerKey = key.toLowerCase();
     if (lowerKey.indexOf('password') !== -1 || lowerKey.indexOf('secret') !== -1 || lowerKey.indexOf('token') !== -1 || lowerKey.indexOf('api_key') !== -1 || lowerKey.indexOf('apikey') !== -1) return '设置 ' + key + ' 含敏感词，禁止经普通设置写入（请走 Secrets）';
@@ -4267,6 +4285,7 @@ async function handleApi(req, env, url, ctx) {
     // 先全部校验通过再写，避免一半有效一半无效造成配置半截生效
     for (var si = 0; si < keys.length; si++) {
       var vErr = validateSetting(keys[si], entries[keys[si]]);
+      if (vErr === NOTICE_POPUP_ADDRESS_ERROR) return json({ ok: false, error: vErr, code: 'notice_contains_address' }, 400);
       if (vErr) return err(vErr);
     }
     // 收款开关：经普通设置接口写入 pay_* 键时，同样按合并后配置校验——开启某链时必须有有效地址；审计记掩码首尾，不记全文。
@@ -4290,6 +4309,16 @@ async function handleApi(req, env, url, ctx) {
       if (String(mergedTurnstile.turnstile_enabled || '0') === '1') {
         if (!String(mergedTurnstile.turnstile_site_key || '').trim()) return err('开启 Turnstile 时必须配置 Site Key（turnstile_site_key），已拒绝保存启用');
         if (!(env && env.TURNSTILE_SECRET_KEY)) return err('开启 Turnstile 时服务端 Secret 未配置（TURNSTILE_SECRET_KEY），已拒绝保存启用');
+      }
+    }
+    // 标题或正文相对已存内容有变化才把 notice_popup_version +1。只改 enabled 不升版本。客户端传入的 version 已在校验阶段拒绝。
+    if (keys.indexOf('notice_popup_title') !== -1 || keys.indexOf('notice_popup_body') !== -1) {
+      var curNotice = await getAllSettings(env);
+      var nextTitle = keys.indexOf('notice_popup_title') !== -1 ? String(entries.notice_popup_title == null ? '' : entries.notice_popup_title) : String(curNotice.notice_popup_title || '');
+      var nextBody = keys.indexOf('notice_popup_body') !== -1 ? String(entries.notice_popup_body == null ? '' : entries.notice_popup_body) : String(curNotice.notice_popup_body || '');
+      if (nextTitle !== String(curNotice.notice_popup_title || '') || nextBody !== String(curNotice.notice_popup_body || '')) {
+        entries.notice_popup_version = String(noticePopupStoredVersion(curNotice) + 1);
+        keys = Object.keys(entries);
       }
     }
     for (var sj = 0; sj < keys.length; sj++) {
