@@ -916,11 +916,11 @@ for (const w of [390, 360]) {
   await atWidth(1440, 900);
   const fuyanBox = await columnBoxes(['.admin-login-card', '.admin-layout']);
   const login = fuyanBox['.admin-login-card'];
-  const shell = fuyanBox['.admin-layout'];
+  const adminShell = fuyanBox['.admin-layout'];
   const loginCentered = !!(fuyanBox.app && login
     && Math.abs((fuyanBox.app.l + fuyanBox.app.w / 2) - (login.l + login.w / 2)) <= 2
     && login.w <= fuyanBox.app.w + 2 && login.w <= 422);
-  const shellFills = !!(fuyanBox.app && shell && Math.abs(shell.w - fuyanBox.app.w) <= 2 && Math.abs(shell.l - fuyanBox.app.l) <= 2);
+  const shellFills = !!(fuyanBox.app && adminShell && Math.abs(adminShell.w - fuyanBox.app.w) <= 2 && Math.abs(adminShell.l - fuyanBox.app.l) <= 2);
   check('layout: /fuyan login stays centered, or the admin shell fills the column', loginCentered || shellFills, JSON.stringify(fuyanBox));
   // 每个页面只打开一次，之后只改视口。重复进入会再要图形验证码，容易撞上 30 次/10 分钟的限流，控制台就会留下 429。
   const widths = [320, 375, 390, 430];
