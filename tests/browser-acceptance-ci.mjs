@@ -821,8 +821,12 @@ for (const w of [390, 360]) {
     const card = node && node.querySelector('.notice-popup');
     document.documentElement.dataset.theme = 'light';
     const light = card ? getComputedStyle(card) : null;
+    const lightBg = light ? light.backgroundColor : '';
+    const lightColor = light ? light.color : '';
     document.documentElement.dataset.theme = 'dark';
     const dark = card ? getComputedStyle(card) : null;
+    const darkBg = dark ? dark.backgroundColor : '';
+    const darkColor = dark ? dark.color : '';
     if (prevTheme) document.documentElement.dataset.theme = prevTheme;
     else delete document.documentElement.dataset.theme;
     return {
@@ -834,10 +838,10 @@ for (const w of [390, 360]) {
       raw: node ? node.querySelectorAll('img,b,script').length : -1,
       position: node ? getComputedStyle(node).position : '',
       sticky: card ? getComputedStyle(card).position : '',
-      lightBg: light ? light.backgroundColor : '',
-      lightColor: light ? light.color : '',
-      darkBg: dark ? dark.backgroundColor : '',
-      darkColor: dark ? dark.color : '',
+      lightBg,
+      lightColor,
+      darkBg,
+      darkColor,
     };
   });
   check('popup: disabled or missing fields stay closed', popOpen.off === false && popOpen.missing === false, JSON.stringify(popOpen));
