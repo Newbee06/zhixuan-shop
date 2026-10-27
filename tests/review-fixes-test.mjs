@@ -1358,6 +1358,9 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
     check('notice: product, pay, and query render the bar', prodSlice.includes('pageNoticeHTML()') && succSlice.includes('pageNoticeHTML()') && querySlice.includes('pageNoticeHTML()'));
     check('notice: shop and admin do not render the bar', !shopSlice.includes('pageNoticeHTML') && !adminSlice.includes('pageNoticeHTML'));
   }
+  check('layout: storefront shares one content width', frontendHtml.includes('--zx-content:1180px') && frontendHtml.includes('--zx-pad-x:14px') && frontendHtml.includes('.wrap{max-width:var(--zx-content)') && frontendHtml.includes('.top-in{max-width:var(--zx-content)'));
+  check('layout: detail cards fill the content column', frontendHtml.includes('.detail-blocks{margin-top:32px;width:100%;max-width:none') && !frontendHtml.includes('max-width:840px'));
+  check('layout: pay shell stays a centered checkout card', frontendHtml.includes('.pay-shell{max-width:520px;margin-left:auto;margin-right:auto}'));
   {
     const popCss = (frontendHtml.match(/\.notice-popup-backdrop\{[^}]*\}/) || [''])[0];
     const popCard = (frontendHtml.match(/\.notice-popup\{[^}]*\}/) || [''])[0];

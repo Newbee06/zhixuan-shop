@@ -869,6 +869,32 @@ for (const w of [390, 360]) {
     return { open: !!document.getElementById('noticePopup'), seen: localStorage.getItem('zx_notice_popup_seen') };
   });
   check('popup: overlay click closes and remembers that version', popMask.open === false && popMask.seen === '9', JSON.stringify(popMask));
+  async function columnBoxes(sels) {
+    return page.evaluate((selectors) => {
+      function box(sel) {
+        const el = document.querySelector(sel);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { w: Math.round(r.width), l: Math.round(r.left) };
+      }
+      const out = { app: box('#app') };
+      for (const sel of selectors) out[sel] = box(sel);
+      return out;
+    }, sels);
+  }
+  function sharesColumn(m, sels) {
+    if (!m.app) return false;
+    return sels.every((sel) => m[sel] && Math.abs(m[sel].w - m.app.w) <= 2 && Math.abs(m[sel].l - m.app.l) <= 2);
+  }
+  async function atWidth(width, height) {
+    await page.setViewportSize({ width, height });
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  }
+  for (const w of [1440, 390, 375, 320]) {
+    await atWidth(w, w >= 800 ? 900 : 844);
+    const homeBox = await columnBoxes(['.home-hero', '.shop-grid', '.home-section-head']);
+    check(`layout: home ${w} blocks share the content width`, sharesColumn(homeBox, ['.home-hero', '.shop-grid', '.home-section-head']), JSON.stringify(homeBox));
+  }
   await page.goto(BASE + '/fuyan', { waitUntil: 'networkidle' });
   await page.waitForTimeout(700);
   const admN = await page.evaluate(() => ({
@@ -887,6 +913,13 @@ for (const w of [390, 360]) {
     return !!document.getElementById('noticePopup');
   });
   check('popup: /fuyan does not open', admPop === false);
+  await atWidth(1440, 900);
+  const loginBox = await columnBoxes(['.admin-login-card']);
+  const loginCentered = loginBox.app && loginBox['.admin-login-card']
+    && Math.abs((loginBox.app.l + loginBox.app.w / 2) - (loginBox['.admin-login-card'].l + loginBox['.admin-login-card'].w / 2)) <= 2
+    && loginBox['.admin-login-card'].w <= loginBox.app.w + 2
+    && loginBox['.admin-login-card'].w <= 422;
+  check('layout: /fuyan login card stays centered in the content column', loginCentered, JSON.stringify(loginBox));
   // 每个页面只打开一次，之后只改视口。重复进入会再要图形验证码，容易撞上 30 次/10 分钟的限流，控制台就会留下 429。
   const widths = [320, 375, 390, 430];
   async function measureWidths(label) {
@@ -910,6 +943,19 @@ for (const w of [390, 360]) {
     return !!document.getElementById('noticePopup');
   });
   check('popup: product page does not open', prodPop === false);
+  for (const w of [1440, 1024, 390, 375, 320]) {
+    await atWidth(w, w >= 800 ? 1000 : 844);
+    const prodBox = await columnBoxes(['.page-notice', '.detail-top', '.detail-blocks']);
+    const rel = await page.evaluate(() => {
+      const el = document.querySelector('.related');
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { w: Math.round(r.width), l: Math.round(r.left) };
+    });
+    if (rel) prodBox['.related'] = rel;
+    const sels = ['.page-notice', '.detail-top', '.detail-blocks'].concat(rel ? ['.related'] : []);
+    check(`layout: product ${w} cards share the content width`, sharesColumn(prodBox, sels), JSON.stringify(prodBox));
+  }
   await measureWidths('product');
   await page.goto(BASE + '/#/query', { waitUntil: 'networkidle' });
   await page.waitForSelector('.page-notice', { timeout: 10000 });
@@ -923,6 +969,11 @@ for (const w of [390, 360]) {
     return !!document.getElementById('noticePopup');
   });
   check('popup: query page does not open', queryPop === false);
+  for (const w of [1440, 390, 320]) {
+    await atWidth(w, w >= 800 ? 900 : 844);
+    const queryBox = await columnBoxes(['.page-notice', '#app > .glass']);
+    check(`layout: query ${w} fills the content width`, sharesColumn(queryBox, ['.page-notice', '#app > .glass']), JSON.stringify(queryBox));
+  }
   await measureWidths('query');
   await page.evaluate(() => {
     window.api = async function () {
@@ -1017,6 +1068,17 @@ for (const w of [390, 360]) {
     };
   });
   check('popup: payment page does not open', payPop.open === false && payPop.hash.indexOf('#/success/') === 0 && payPop.amt && payPop.qr && payPop.addr, JSON.stringify(payPop));
+  const payCol = await columnBoxes(['.page-notice', '.pay-shell']);
+  const payMobile = sharesColumn(payCol, ['.page-notice', '.pay-shell']);
+  check('layout: pay 390 notice and shell fill the content width', payMobile, JSON.stringify(payCol));
+  await atWidth(1440, 900);
+  const payDesk = await columnBoxes(['.page-notice', '.pay-shell', '.pay-amount', '.pay-qr', '.pay-addr']);
+  const shell = payDesk['.pay-shell'];
+  const payDeskOk = sharesColumn(payDesk, ['.page-notice']) && shell
+    && shell.w <= 522
+    && Math.abs((payDesk.app.l + payDesk.app.w / 2) - (shell.l + shell.w / 2)) <= 2
+    && payDesk['.pay-amount'] && payDesk['.pay-qr'] && payDesk['.pay-addr'];
+  check('layout: pay desktop shell stays centered and controls remain', payDeskOk, JSON.stringify(payDesk));
   await page.evaluate(() => { delete document.documentElement.dataset.theme; });
   await page.setViewportSize({ width: 1440, height: 900 });
 }
