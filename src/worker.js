@@ -866,6 +866,8 @@ async function recordPayment(env, p) {
   // 归属区分：现有行 order_id 为空（unmatched 观察行）时可由匹配订单收养；现有行已归属其他非空订单时
   // 返回 conflictOther（调用方必须拒绝/走对账，绝不把他单的账本行当作本订单的付款事实，也绝不覆盖其 order_id）。
   // 真正 DB 错误（INSERT 失败且重读无行）返回 ok:false，调用方不得继续履约。
+  // P1-C：扫描路径的 tx_hash 来自 RPC，同样先规范化，避免与 /pay 路径大小写不一致。
+  if (p && /^(0x)?[0-9a-fA-F]{64}$/.test(String(p.tx_hash || ''))) p.tx_hash = normalizeChainTxHash(p.tx_hash);
   var now = nowISO();
   var row = await env.DB.prepare('SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(p.chain || '', p.tx_hash || '', p.event_key || '').first().catch(function () { return null; });
   if (row) {
@@ -901,7 +903,11 @@ async function updatePayment(env, paymentId, fields) {
     confirmed: ['posted', 'mismatch', 'duplicate', 'manual_confirmed'],
     posted: [],
     mismatch: ['reconciled'],
-    unmatched: ['reconciled'],
+    // P1-A 修复（2026-10-29）：unmatched 是“扫描先发现、当时无归属订单”的观察行，
+    // 不是终态。匹配订单经链上核验后必须能收养它为 verified，否则账本写入被状态表
+    // 拒绝、订单卡死。收养的前提已由调用方保证：recordPayment 先判归属冲突，
+    // 已归属他单的行不会走到这里；本行只放行 verified + reconciled。
+    unmatched: ['verified', 'reconciled'],
     duplicate: ['reconciled'],
     reconciled: [],
     manual_confirmed: []
@@ -929,6 +935,8 @@ async function updatePayment(env, paymentId, fields) {
   return { ok: false, reason: '付款记录更新失败' };
 }
 async function getPaymentByEvent(env, chain, txHash, eventKey) {
+  // P1-C：按规范形查账本行。
+  txHash = normalizeChainTxHash(txHash);
   return await env.DB.prepare('SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(chain || '', txHash || '', eventKey || '').first().catch(function () { return null; });
 }
 async function getRequiredConfirmations(env, chain, orderAmount) {
@@ -1302,6 +1310,13 @@ function upstreamKeysOf(data) {
   if (!data) return '';
   var k = data.deliveredKey || data.delivered_key || data.key || data.code || '';
   var ks = data.deliveredKeys || data.delivered_keys || data.keys || data.codes || [];
+  // P1-B 修复（2026-10-29）：上游复数 keys 可能是字符串形式（单张或换行/逗号分隔），
+  // 旧代码只认数组，字符串会被直接丢弃，导致已 delivered 的订单被判 keys 不足、
+  // 永远卡在 pending_activation。字符串先按换行/逗号拆分、去空行，再拼回换行分隔。
+  if (typeof ks === 'string') {
+    var s = ks.trim();
+    if (s) return s.split(/\r?\n|,/).map(function (x) { return x.trim(); }).filter(function (x) { return x.length > 0; }).join('\n');
+  }
   if (Array.isArray(ks) && ks.length) return ks.join('\n');
   if (k) return String(k);
   return '';
@@ -1874,8 +1889,20 @@ async function checkChainPayment(env, fetchFn, order) {
   var reqConf = await getRequiredConfirmations(env, order.pay_chain, order.actual_amount || order.total_usdt);
   return await checkEvmPayment(fetchFn, rpcs, contract, order.pay_address || order.wallet_address, order.actual_amount || order.total_usdt, { requiredConfirmations: reqConf, chain: order.pay_chain });
 }
+// P1-C 修复（2026-10-29）：链上 TXID 规范化。EVM 哈希本身不区分大小写，
+// 但 txid_claims / payments 的 tx_hash 是字符串主键，大小写不同会被当成不同交易，
+// 同一笔钱可能被两个订单分别认领。所有链上路径统一转小写；0x 前缀有无原样保留
+// （不把裸哈希改写为带 0x 形，避免破坏已有裸哈希行与按原样查询的调用方；
+// 裸/带 0x 跨形态的认领由认领与快筛的双形态查询兜底）。
+// 非 64 位十六进制的站内凭证原样返回，不动（避免改动人工/站内凭证语义）。
+function normalizeChainTxHash(tx) {
+  var s = String(tx || '').trim();
+  if (/^(0x)?[0-9a-fA-F]{64}$/.test(s)) return s.toLowerCase();
+  return s;
+}
 async function checkTxidPayment(env, fetchFn, order, txid) {
   // 按需核验：用户主动提交 TXID 时复用同一链上核验（EVM 查 receipt 日志）。白名单封堵：非首期两种组合不核验。
+  txid = normalizeChainTxHash(txid);
   var settings = await getAllSettings(env);
   if (!validPayCombo(order.pay_method, order.pay_chain)) return null;
   try {
@@ -1967,6 +1994,8 @@ async function claimTxid(env, txHash, orderId, opts) {
   var source = opts.source === 'manual_confirmed' ? 'manual_confirmed' : 'chain_verified';
   var leaseToken = opts.leaseToken || '';
   if (!txHash) return { ok: true, created: false, claimToken: null, claimedAt: null, source: null };
+  // P1-C：链上哈希先规范化再查/写认领表，大小写变体不再产生第二行认领。
+  txHash = normalizeChainTxHash(txHash);
   await testHook(env, 'beforeTxidClaim', { txHash: txHash, orderId: orderId, source: source });
   // fail-closed：认领查询本身失败时不得把“查不到”当成“无认领”继续 INSERT。
   var existing = null, existingErr = null;
@@ -1978,13 +2007,28 @@ async function claimTxid(env, txHash, orderId, opts) {
     if (leaseToken) { try { await env.DB.prepare('UPDATE txid_claims SET order_lease_token = ? WHERE tx_hash = ? AND order_id = ?').bind(leaseToken, txHash, orderId).run(); } catch (e) {} }
     return { ok: true, created: false, claimToken: existing.claim_token || null, claimedAt: existing.claimed_at || null, source: existing.source || 'chain_verified' };
   }
+  // P1-C 遗留兼容：修复前已入库的大写认领行、或裸/带 0x 跨形态认领行，规范形精确查不到时，
+  // 用双形态（裸形 + 带 0x 形）查一次：他单直接拒绝，本单直接收养，不再另建一行认领
+  // （否则同一笔钱会出现两行认领，防重失效）。
+  if (/^(0x)?[0-9a-f]{64}$/.test(String(txHash))) {
+    var legacyCase = null;
+    var legacyBare = String(txHash).replace(/^0x/, '');
+    try { legacyCase = await env.DB.prepare('SELECT order_id, claimed_at, claim_token, source, tx_hash FROM txid_claims WHERE LOWER(tx_hash) IN (?, ?)').bind(legacyBare, '0x' + legacyBare).first(); } catch (e) { legacyCase = null; }
+    if (legacyCase) {
+      if (Number(legacyCase.order_id) !== Number(orderId)) return { ok: false, reason: '该交易哈希已用于其他订单（请勿重复提交；归属争议请在 D1 中核查 txid_claims 后手动处理）' };
+      if (leaseToken) { try { await env.DB.prepare('UPDATE txid_claims SET order_lease_token = ? WHERE LOWER(tx_hash) = ? AND order_id = ?').bind(leaseToken, String(txHash), orderId).run(); } catch (e) {} }
+      return { ok: true, created: false, claimToken: legacyCase.claim_token || null, claimedAt: legacyCase.claimed_at || null, source: legacyCase.source || 'chain_verified' };
+    }
+  }
   // 遗留兼容：v17 前人工确认只写 payments manual_confirmed 行、不写 txid_claims。无认领行时若遗留人工行归属他单，拒绝；
   // 归属本单时继续新建认领行（把遗留消耗收敛到全局认领表），之后以认领表为准。
   // 同理：旧版 /pay 曾先写 payments verified 行、后认领，崩溃时可能留下无认领行的 verified/confirmed/posted 账本；
   // 该类账本行归属他单时同样拒绝（不得只挡 manual_confirmed 行），归属本单时继续新建认领行收敛。
   // 遗留查询失败时 fail-closed，不继续 INSERT。
   var legacyRow = null, legacyErr = null;
-  try { legacyRow = await env.DB.prepare("SELECT order_id FROM payments WHERE tx_hash = ? AND status IN ('manual_confirmed', 'verified', 'confirmed', 'posted') LIMIT 1").bind(txHash).first(); }
+  var legacyBare2 = /^(0x)?[0-9a-f]{64}$/.test(String(txHash)) ? String(txHash).replace(/^0x/, '') : String(txHash);
+  var legacyForms2 = /^(0x)?[0-9a-f]{64}$/.test(String(txHash)) ? [legacyBare2, '0x' + legacyBare2] : [String(txHash), String(txHash)];
+  try { legacyRow = await env.DB.prepare("SELECT order_id FROM payments WHERE LOWER(tx_hash) IN (?, ?) AND status IN ('manual_confirmed', 'verified', 'confirmed', 'posted') LIMIT 1").bind(legacyForms2[0], legacyForms2[1]).first(); }
   catch (e) { legacyErr = e; }
   if (legacyErr) return { ok: false, reason: '认领查询失败，请重试', transient: true };
   if (legacyRow && Number(legacyRow.order_id) !== Number(orderId)) {
@@ -2025,10 +2069,14 @@ async function claimTxid(env, txHash, orderId, opts) {
 // 新消耗一律以 txid_claims 为准（人工与链上共享同一全局认领表）。
 async function txHashConsumedByOther(env, txHash, orderId) {
   if (!txHash) return null;
-  var c = await env.DB.prepare('SELECT order_id FROM txid_claims WHERE tx_hash = ?').bind(txHash).first().catch(function () { return null; });
+  // P1-C：先规范化（小写），再用双形态查遗留行（裸形 + 带 0x 形，大小写不敏感）。
+  txHash = normalizeChainTxHash(txHash);
+  var consumedBare = /^(0x)?[0-9a-f]{64}$/.test(String(txHash)) ? String(txHash).replace(/^0x/, '') : String(txHash);
+  var consumedForms = /^(0x)?[0-9a-f]{64}$/.test(String(txHash)) ? [consumedBare, '0x' + consumedBare] : [String(txHash), String(txHash)];
+  var c = await env.DB.prepare('SELECT order_id FROM txid_claims WHERE LOWER(tx_hash) IN (?, ?)').bind(consumedForms[0], consumedForms[1]).first().catch(function () { return null; });
   if (c && Number(c.order_id) !== Number(orderId)) return '该交易哈希已用于其他订单（请勿重复提交；归属争议请在 D1 中核查 txid_claims 后手动处理）';
   // 遗留账本行：manual_confirmed 与 verified/confirmed/posted 均视为他单消耗证据（只挡 manual_confirmed 会漏旧版先记账后认领的残留行）。
-  var m = await env.DB.prepare("SELECT order_id FROM payments WHERE tx_hash = ? AND status IN ('manual_confirmed', 'verified', 'confirmed', 'posted') LIMIT 1").bind(txHash).first().catch(function () { return null; });
+  var m = await env.DB.prepare("SELECT order_id FROM payments WHERE LOWER(tx_hash) IN (?, ?) AND status IN ('manual_confirmed', 'verified', 'confirmed', 'posted') LIMIT 1").bind(consumedForms[0], consumedForms[1]).first().catch(function () { return null; });
   if (m && Number(m.order_id) !== Number(orderId)) return '该交易哈希已用于其他订单（请勿重复提交；归属争议请在 D1 中核查 txid_claims 后手动处理）';
   return null;
 }
@@ -2259,6 +2307,8 @@ async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
   // 写 txid_claims 全局认领（source=manual_confirmed，与链上共享同一全局原子认领），绝不伪装成正常链上已付。
   var manualReason = String(opts.manualReason || '').trim();
   if (manualConfirm && (!manualReason || !opts.manualConfirmedFlag)) return { ok: false, reason: '人工确认需提供原因与确认标志' };
+  // P1-C：履约入口先规范化，后续订单租约、认领、账本、tx_hash 落库一律用规范形。
+  txHash = normalizeChainTxHash(txHash);
   var fresh = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(order.id).first();
   if (!fresh) return { ok: false, reason: '订单不存在' };
   if (fresh.status === 'completed' || fresh.status === 'cancelled') return { ok: false, reason: '订单已被处理' };
@@ -2549,6 +2599,8 @@ async function fulfillOrderByPayment(env, order, txHash, ctx, opts) {
 async function processVerifiedPayment(env, order, evidence, ctx, opts) {
   opts = opts || {};
   var txHash = String((evidence && evidence.txHash) || '');
+  // P1-C：本函数内所有 tx_hash 查询/写入一律用规范形。
+  txHash = normalizeChainTxHash(txHash);
   var source = (evidence && evidence.source) || 'chain';
   var isChainHash = !!txHash && /^(0x)?[0-9a-fA-F]{64}$/.test(txHash);
   var fresh = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(order.id).first().catch(function () { return null; });
@@ -3395,6 +3447,9 @@ async function handleApi(req, env, url, ctx) {
     if (!txid) return err('请填写 TXID（不填可直接等待自动发货）');
     if (txid.length < 6 || txid.length > 200) return err('TXID / 订单 ID 长度无效（6-200字符）');
     if (!/^[A-Za-z0-9_\-]+$/.test(txid)) return err('仅支持字母数字 _ -');
+    // P1-C：链上哈希在 /pay 入口即规范化，后续认领快筛、核验、候选存储一律用规范形。
+    // 非 64 位十六进制的站内凭证原样不动。
+    txid = normalizeChainTxHash(txid);
     var no2 = decodeURIComponent(mPay[1]);
     var o2 = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ?').bind(no2).first();
     if (!o2) return err('订单不存在', 404);
