@@ -1248,7 +1248,7 @@ check('P1-18: RUNBOOK rollback mentions v8 unique-index caveat + new-table list'
 check('P2-19: RELEASE_READINESS starts with history-snapshot banner', releaseReadiness.includes('§一–§八为第四轮历史快照'));
 
 // P2-20：d1-local-test.sh 口径（v18、真实下单 + /secret、精确 COUNT、查询密码术语）。
-check('P2-20: d1-local-test.sh comments say v20', d1LocalSh.includes('版本=20') && d1LocalSh.includes('迁移到 v20'));
+check('P2-20: d1-local-test.sh comments say v21', d1LocalSh.includes('版本=21') && d1LocalSh.includes('迁移到 v21'));
 check('P2-20: d1-local-test.sh has real fresh-DB order + /secret assertions', d1LocalSh.includes('/api/orders/$FRESH_NO/secret') && d1LocalSh.includes('FRESH-DB SECRET OK'));
 check('P2-20: d1-local-test.sh dedup uses precise COUNT parse, no grep -o \'1\'', !d1LocalSh.includes("grep -o '1'") && d1LocalSh.includes('DEDUP_COUNT'));
 check('P2-20: d1-local-test.sh uses 查询密码 terminology, no 查单凭证', d1LocalSh.includes('查询密码') && !d1LocalSh.includes('查单凭证'));
