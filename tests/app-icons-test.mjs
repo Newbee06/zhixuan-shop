@@ -284,7 +284,7 @@ for (let i = 0; i < 5; i++) await call('POST', '/api/orders/' + qfNo2 + '/secret
 r = await call('POST', '/api/orders/' + qfNo2 + '/secret', { password: 'newpw456' });
 check('P3-40: /secret correct password after 5 failures -> 429 (gate before password check)', r.status === 429, JSON.stringify(r.json));
 check('query-flow: frontend checkout has query_password field', html.includes('id="query_password"') && html.includes('设置查询订单的密码'));
-check('query-flow: frontend query page is keyword+list flow', html.includes('id="qkeywords"') && html.includes('doQueryList()') && html.includes('doQuerySecret(') && html.includes('doQueryLegacy('));
+check('query-flow: frontend query page is keyword+list flow', html.includes('id="qkeywords"') && html.includes('doQueryList(') && html.includes('doQuerySecret(') && html.includes('doQueryLegacy('));
 check('query-flow: frontend query page says dual query (order no or email)', html.includes('订单号或下单邮箱') && html.includes('邮箱 + 图形验证码仅可查订单概要'));
 check('query-flow: frontend success page no longer shows system token', !html.includes('_lastQueryToken') && html.includes('请牢记您设置的查询密码'));
 
