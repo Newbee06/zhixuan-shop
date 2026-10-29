@@ -140,7 +140,8 @@ async function orderCall(prod, contact, method, chain) {
 // /pay 自 P3-4 起须带图形验证码（captcha_id + captcha_code）：每次提交用新验证码。
 async function payCall(orderNo, txid) {
   const cid = await newCaptcha();
-  return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12' });
+  // 2026-10-30 新口径：/pay 未核验候选写入须带查询密码（与订单下单密码一致；已核验路径忽略该字段）。
+  return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12', query_password: 'rr-test-pw' });
 }
 
 // 历史 BEP20 订单（直接插库，不走 API）：账本测试（§1–§3）测的是 /pay 账本/去重/对账逻辑，与下单方式无关，故保留原断言。

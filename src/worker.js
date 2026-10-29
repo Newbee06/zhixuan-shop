@@ -5,6 +5,19 @@
 // 轮询原理：下单生成 actual_amount = 基础价 + 随机尾数 0.0001-0.0099，锁定 20 分钟；
 // cron 每 1 分钟查 D1 有无 pending_payment，无则零 RPC；有则查 EVM 公开 RPC 匹配 to+金额。仅支持 OKX X Layer 与币安 BEP20。
 
+// ---- 鉴权安全线硬性约束（2026-10-30 审计修复，勿擅自放宽）----
+// 1) 永不为管理端接口加 CORS：管理端用 httpOnly Cookie 会话，CSRF 防护依赖“浏览器跨站请求
+//    必须带同源证明”这一扇门（见 checkCsrf）。一旦为 /api/admin/* 加 Access-Control-Allow-Origin
+//    （尤其带 Credentials），跨站读写接口的隔离即被打开。本代码库任何位置不得出现
+//    Access-Control-Allow-Origin；回归测试断言其不存在。
+// 2) 建站令牌 ZHIXUAN_SETUP_TOKEN 是环境变量，代码无法作废它：首次改密后必须去 Cloudflare
+//    面板轮换或删除该 Secret（操作步骤见审计报告）。密码一旦设置，建站令牌登录路径即死
+//    （走密码分支）；轮换是纵深防御——防 D1 被清空重建后令牌复活。不要假装代码修掉了它。
+// 3) sessions.token 列存的是会话令牌的 SHA-256 摘要，不是令牌原文（令牌只在 Set-Cookie 里
+//    出现一次）。令牌本身是 32 字节随机值，摘要不可逆推、且拿摘要当令牌提交也通不过
+//    （服务端会对提交值再取摘要比对）。老会话因此失效是预期行为，不是回归。
+// 4) CSP 的 script-src/style-src unsafe-inline 是 SPA 内联脚本/样式所必需，属接受的取舍
+//    （详见 CSP_HTML 处注释）；渲染点一律走 escH（前端）/ esc（服务端），不得以 CSP 代替转义。
 var PBKDF2_ITERATIONS = 100000;
 var SESSION_MAX_AGE = 7 * 24 * 3600;
 var PAY_WHITELIST = [['OKX', 'X Layer'], ['Binance', 'BEP20']];
@@ -246,8 +259,14 @@ var DEFAULT_RPC_URLS = { 'X Layer': ['https://xlayerrpc.okx.com'], 'BEP20': ['ht
 // 各链确认数策略（可经 settings.chain_confirmations 以 JSON 覆盖）：未达确认数不入账、不履约，防链重组导致已发货但付款失效。
 // 审计修复（2026-10-30）：X Layer 默认确认数由 1 提高到 12，与大额默认 12 对齐，防浅确认重组后已发货但付款失效；BEP20 保持 15。仅支持这两条链。
 var DEFAULT_CHAIN_CONFIRMATIONS = { 'X Layer': 12, 'BEP20': 15 };
-// /pay 独立限流：同一订单 10 分钟最多 5 次提交；同一 IP 10 分钟最多 20 次提交。受限不影响后台轮询继续处理。
+// /pay 独立限流（2026-10-30 审计修复：按单+IP 双维，防路人刷满锁死货主）：
+//   同一订单+同一 IP：10 分钟最多 5 次；同一订单跨 IP 总量：10 分钟最多 20 次；
+//   同一 IP 跨订单：10 分钟最多 20 次。单 IP 最多占某单配额的 1/4，刷满总量需 4 个以上 IP，
+//   且核验成功后清零该单的按单计数（见 /pay 成功路径）。受限不影响后台轮询继续处理。
+//   取舍：总量 20 仍防分布式爆破（验证码 + 链上核验在前，纯刷配额收益低），但不再让单个路人
+//   用 5 次就锁死货主 10 分钟；绝不放宽到无限（按单+IP 的 5 次仍在）。
 var PAY_RATE_PER_ORDER = 5;
+var PAY_RATE_PER_ORDER_TOTAL = 20;
 var PAY_RATE_PER_IP = 20;
 var PAY_RATE_WINDOW_MS = 10 * 60 * 1000;
 // 登录全局限流（防换 IP 分布式暴力破解）：全站 15 分钟内失败超 30 次时，全部登录拒绝 5 分钟。
@@ -432,6 +451,27 @@ async function getAllSettings(env) {
   for (var i = 0; i < rows.length; i++) out[rows[i].key] = rows[i].value;
   return out;
 }
+// /pay 未核验候选写入前的查询密码校验（2026-10-30 审计修复，与 /secret 同口径）：
+//   salted PBKDF2 为主；遗留明文密码接受并顺手迁移为 salted（与 /lookup P2-2 同口径）；
+//   仅有旧系统凭证哈希（query_token_hash）的订单、或无任何凭证的订单一律不通过——
+//   与 /secret 的立场一致（凭证哈希订单不走密码路径，无密码订单只能走管理员重置）。
+//   返回 true=通过。调用方在通过前绝不写 pending_tx_hash。
+async function verifyOrderQueryPassword(env, order, pw) {
+  var raw = String(pw || '').trim();
+  if (!raw) return false;
+  if (order.query_password_salt && order.query_password_hash) {
+    try { var h = await hashPassword(raw, order.query_password_salt); return timingSafeEqual(h, order.query_password_hash); } catch (e) { return false; }
+  }
+  if (order.query_password && timingSafeEqual(raw, order.query_password)) {
+    try {
+      var s2 = bufToB64(crypto.getRandomValues(new Uint8Array(16)).buffer);
+      var h2 = await hashPassword(raw, s2);
+      await env.DB.prepare('UPDATE orders SET query_password_hash = ?, query_password_salt = ?, query_password = ? WHERE order_no = ?').bind(h2, s2, '', order.order_no).run();
+    } catch (e) {}
+    return true;
+  }
+  return false;
+}
 async function getAdminMeta(env, key) {
   var r = await env.DB.prepare('SELECT value FROM admin_meta WHERE key = ?').bind(key).first();
   return r ? r.value : null;
@@ -442,7 +482,8 @@ async function setAdminMeta(env, key, value) {
 async function getSession(env, req) {
   var token = getCookie(req, 'session_token');
   if (!token) return null;
-  var s = await env.DB.prepare('SELECT * FROM sessions WHERE token = ?').bind(token).first();
+  // sessions.token 列存的是令牌的 SHA-256 摘要：请求令牌先取摘要再比对，原文绝不入库。
+  var s = await env.DB.prepare('SELECT * FROM sessions WHERE token = ?').bind(await sha256Hex(token)).first();
   if (!s) return null;
   if (new Date(s.expires_at.replace(' ', 'T') + 'Z') < new Date()) return null;
   return s;
@@ -841,6 +882,10 @@ async function runMigrations(env) {
     await env.DB.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').bind(m.version).run();
     done.push(m.version);
   }
+  // 2026-10-30 审计补齐：实际执行了迁移才记一笔（只记版本号，不记数据）。无迁移时不记，避免每次请求刷审计。
+  if (done.length) {
+    try { await logAudit(env, null, 'migrate', '', '', '执行数据库迁移，应用版本：v' + done.join('、v')); } catch (e) {}
+  }
   return { ok: true, applied: done, current_version: MIGRATIONS.length };
 }
 // 每次 API 请求的轻量检查：只查一次迁移版本号（单条索引查询），版本已是最新时立即返回，不跑 PRAGMA/DDL/数据修复。
@@ -1014,9 +1059,13 @@ async function checkPayRateLimit(env, req, orderNo) {
     var winStart = new Date(Date.now() - PAY_RATE_WINDOW_MS).toISOString().replace('T', ' ').slice(0, 19);
     await env.DB.prepare('DELETE FROM pay_rate WHERE created_at < ?').bind(winStart).run().catch(function () {});
     // P3-5：原子记数（INSERT…SELECT…WHERE count < N，同 /secret 模式），消除先查后插的 TOCTOU 超限窗口。
-    // 先记订单维：超限则拒绝，不再记 IP 维；再记 IP 维：超限则拒绝（订单维已记一条，偏保守）。
-    var oi = await env.DB.prepare('INSERT INTO pay_rate (key, created_at) SELECT ?, ? WHERE (SELECT COUNT(*) FROM pay_rate WHERE key = ?) < ?').bind('order:' + orderNo, nowISO(), 'order:' + orderNo, PAY_RATE_PER_ORDER).run().catch(function () { return null; });
+    // 2026-10-30 双维：先记订单+IP 维（单 IP 占某单配额上限 5），再记订单总量维（跨 IP 上限 20，
+    // 单个路人 IP 再也刷不满整单配额），最后记 IP 维（跨单上限 20）。任一维超限即拒绝，
+    // 前面已记的维偏保守地保留（与旧行为一致）。成功路径由 /pay 在核验通过后清零订单维。
+    var oi = await env.DB.prepare('INSERT INTO pay_rate (key, created_at) SELECT ?, ? WHERE (SELECT COUNT(*) FROM pay_rate WHERE key = ?) < ?').bind('orderip:' + orderNo + ':' + ip, nowISO(), 'orderip:' + orderNo + ':' + ip, PAY_RATE_PER_ORDER).run().catch(function () { return null; });
     if (!oi || !oi.meta || oi.meta.changes !== 1) return '该订单提交 TXID 过于频繁，请稍后再试（后台轮询仍会继续核验）';
+    var ot = await env.DB.prepare('INSERT INTO pay_rate (key, created_at) SELECT ?, ? WHERE (SELECT COUNT(*) FROM pay_rate WHERE key = ?) < ?').bind('order:' + orderNo, nowISO(), 'order:' + orderNo, PAY_RATE_PER_ORDER_TOTAL).run().catch(function () { return null; });
+    if (!ot || !ot.meta || ot.meta.changes !== 1) return '该订单提交 TXID 过于频繁（多 IP 合计超限），请稍后再试（后台轮询仍会继续核验）';
     var ii = await env.DB.prepare('INSERT INTO pay_rate (key, created_at) SELECT ?, ? WHERE (SELECT COUNT(*) FROM pay_rate WHERE key = ?) < ?').bind('ip:' + ip, nowISO(), 'ip:' + ip, PAY_RATE_PER_IP).run().catch(function () { return null; });
     if (!ii || !ii.meta || ii.meta.changes !== 1) return '提交过于频繁，请稍后再试';
     return null;
@@ -1147,6 +1196,9 @@ function getClientIp(req) {
   if (xff) return String(xff).split(',')[0].trim() || 'unknown';
   return 'unknown';
 }
+// CSRF 硬性约束：管理端接口永不加 CORS（见文件顶部硬性约束第 1 条）。本函数是管理端写操作
+// 的同源证明扇门：浏览器请求必须 Origin 同源或 Sec-Fetch-Site: same-origin；非浏览器 API
+// 客户端须显式声明 X-Admin-API: 1（仍需有效会话）。删 CORS 不等于删本校验。
 function checkCsrf(req, url) {
   // CSRF：管理端写操作必须有明确的同源证明，缺失 Origin 不再自动等同于安全。
   // 浏览器：Origin 必须与本站同源（现代浏览器对 POST/PUT/DELETE 一律发送 Origin）。
@@ -3314,9 +3366,15 @@ async function verifyCaptcha(env, capId, capCode) {
 }
 async function cleanupExpired(env) {
   // fulfilled_at 超过 7 天的已完成订单：清空交付数据并标记 data_expired
-  await env.DB.prepare("UPDATE orders SET delivery_content = '', data_expired = 1 WHERE status = 'completed' AND data_expired = 0 AND fulfilled_at IS NOT NULL AND fulfilled_at < datetime('now', '-7 days')").run();
+  // 2026-10-30 审计补齐：实际清掉数据/会话时记一笔审计（只记数量，不记交付内容与会话令牌）。
+  var expiredRes = await env.DB.prepare("UPDATE orders SET delivery_content = '', data_expired = 1 WHERE status = 'completed' AND data_expired = 0 AND fulfilled_at IS NOT NULL AND fulfilled_at < datetime('now', '-7 days')").run();
+  var expiredCount = (expiredRes && expiredRes.meta && expiredRes.meta.changes) || 0;
   // 清理过期 session
-  await env.DB.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run();
+  var sessRes = await env.DB.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run();
+  var sessCount = (sessRes && sessRes.meta && sessRes.meta.changes) || 0;
+  if (expiredCount > 0 || sessCount > 0) {
+    await logAudit(env, null, 'cleanup_expired_data', '', '', '7天清理：清空 ' + expiredCount + ' 笔已完成订单的交付内容，清理 ' + sessCount + ' 个过期会话');
+  }
   // 释放已不在待付款状态的订单仍占用的卡密预留（异常兜底）
   await releaseStaleReservations(env);
   return true;
@@ -3693,6 +3751,14 @@ async function handleApi(req, env, url, ctx) {
     // P2-4：单订单 GET 同样加查单限流（与 /query 一致），防订单号枚举。
     var rateErrSingle = await checkLookupRateLimit(env, req);
     if (rateErrSingle) return err(rateErrSingle, 429);
+    // 2026-10-30 审计结论（已尝试后 revert，见报告第 6 项）：本接口刻意不加验证码。
+    // 尝试过与 /query 同口径的 captcha_id/captcha_code 校验，结果 4 个回归文件大面积失败
+    // （security/review-fixes/release-readiness/review-p1 的匿名摘要断言全部 401），且前台 SPA
+    // 根本不调用本接口（只用 /query + /lookup + /secret），没有可合理补齐验证码的 UI；
+    // 为对齐而破坏现有功能得不偿失。残留口径差异与补偿：本接口只返回摘要（无交付内容、
+    // 无联系方式、管理备注等敏感字段，见 sanitizeOrderForPublic summary），订单号为 64 位级
+    // 随机（genOrderNo：时间戳 + 16 位十六进制随机，不可枚举），且已有 IP 限流（同 IP 10 分钟 30 次）。
+    // 完整详情与卡密仍必须走带验证码 + 密码的 /lookup、/secret。
     var no = decodeURIComponent(mOrderNo[1]);
     var ord = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ?').bind(no).first();
     if (!ord) return err('订单不存在', 404);
@@ -3717,7 +3783,9 @@ async function handleApi(req, env, url, ctx) {
     var ipL = getClientIp(req);
     var winStartL = new Date(Date.now() - 10 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
     try { await env.DB.prepare('DELETE FROM lookup_attempts WHERE created_at < ?').bind(winStartL).run(); } catch (e) {}
-    var insL = await env.DB.prepare('INSERT INTO lookup_attempts (order_no, ip, created_at) SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM lookup_attempts WHERE order_no = ?) < 5').bind(noL, ipL, nowISO(), noL).run().catch(function () { return null; });
+    // 2026-10-30 双维（与 /secret、/pay 同口径）：同一订单+同一 IP 5 次，同一订单跨 IP 总量 20 次；
+    // 单个路人 IP 再也刷不满整单配额。成功后清零该单全部计数（下文两处成功路径已有）。
+    var insL = await env.DB.prepare('INSERT INTO lookup_attempts (order_no, ip, created_at) SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM lookup_attempts WHERE order_no = ? AND ip = ?) < 5 AND (SELECT COUNT(*) FROM lookup_attempts WHERE order_no = ?) < 20').bind(noL, ipL, nowISO(), noL, ipL, noL).run().catch(function () { return null; });
     if (!insL || !insL.meta || insL.meta.changes === 0) return err('该订单查单尝试次数过多，请 10 分钟后再试', 429);
     if (!cred) return err('请提供查单凭证（新订单）或旧查询密码（旧订单）', 401);
     // P3-18：/lookup 错误文案统一为“查单凭证错误”，不区分新旧订单（新订单仍须走 /secret + 查询密码）。
@@ -3805,7 +3873,9 @@ async function handleApi(req, env, url, ctx) {
     var ipS = (req.headers.get('cf-connecting-ip') || req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || 'unknown';
     var winStartS = new Date(Date.now() - 10 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
     try { await env.DB.prepare('DELETE FROM secret_attempts WHERE created_at < ?').bind(winStartS).run(); } catch (e) {}
-    var insS = await env.DB.prepare('INSERT INTO secret_attempts (order_no, ip, created_at) SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM secret_attempts WHERE order_no = ?) < 5').bind(noS, ipS, nowISO(), noS).run().catch(function () { return null; });
+    // 2026-10-30 双维（与 /lookup、/pay 同口径）：同一订单+同一 IP 5 次，同一订单跨 IP 总量 20 次；
+    // 单个路人 IP 再也刷不满整单配额。成功后清零该单全部计数（下文已有，B-P2-6）。
+    var insS = await env.DB.prepare('INSERT INTO secret_attempts (order_no, ip, created_at) SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM secret_attempts WHERE order_no = ? AND ip = ?) < 5 AND (SELECT COUNT(*) FROM secret_attempts WHERE order_no = ?) < 20').bind(noS, ipS, nowISO(), noS, ipS, noS).run().catch(function () { return null; });
     if (!insS || !insS.meta || insS.meta.changes === 0) return err('该订单密码尝试次数过多，请 10 分钟后再试', 429);
     // B-P2-5：认证前失败路径统一通用文案与状态码（401 + “查询密码错误”），不区分空密码 /
     // 旧系统凭证订单 / 无 salted 密码订单，不泄露订单状态与凭证方案。404（订单不存在）与
@@ -3852,7 +3922,8 @@ async function handleApi(req, env, url, ctx) {
     // P3-5：验证码不在限流/去重拒绝前消费。顺序：格式检查 → 限流预检查 → 冲突预检查
     //（TXID 已被他单认领/人工确认时直接 409，不消费验证码）→ 真正执行敏感操作前原子消费验证码
     //（verifyCaptcha 成功路径单条 DELETE 认领，防两并发共用）→ 链上核验。
-    // /pay 独立限流（第四轮 P0）：同一订单 10 分钟最多 5 次，同一 IP 10 分钟最多 20 次。
+    // /pay 独立限流（第四轮 P0，2026-10-30 改为按单+IP 双维）：同一订单+同一 IP 10 分钟最多 5 次，
+    // 同一订单跨 IP 总量 10 分钟最多 20 次，同一 IP 10 分钟最多 20 次。
     // 受限不影响后台轮询继续核验已到账的付款，订单不会因限流永久无法处理。
     var payRateErr = await checkPayRateLimit(env, req, no2);
     if (payRateErr) return err(payRateErr, 429);
@@ -3892,6 +3963,9 @@ async function handleApi(req, env, url, ctx) {
         }
         return err(pr2.reason || '付款处理失败');
       }
+      // 2026-10-30 审计修复：核验成功后清零该单的按单计数（订单维 + 订单+IP 维；IP 跨单维保留），
+      // 与 /secret、/lookup 的成功清零同口径——合法买家成功一次后不再被旧失败计数锁死。
+      try { await env.DB.prepare("DELETE FROM pay_rate WHERE key = ? OR key LIKE ?").bind('order:' + no2, 'orderip:' + no2 + ':%').run(); } catch (e) {}
       if (pr2.overpaid) return json({ ok: true, overpaid: true, message: '已记录额外付款，待人工对账处理（不重复发货）', auto: false });
       if (pr2.alreadySettled) return json({ ok: true, message: '该笔付款已处理，无需重复提交', auto: false });
       if (pr2.mode === 'completed') return json({ ok: true, message: '核验通过，已自动发货', auto: true });
@@ -3904,7 +3978,13 @@ async function handleApi(req, env, url, ctx) {
     // 未核验候选：只写候选字段 pending_tx_hash（B-P1-7 / 任务一.2），绝不写已消费 tx_hash；
     // 遗留 txid 列仅当为空时填入（兼容旧展示），且仅对 pending_payment 订单。
     // P3-3：核验失败不建账本行。
+    // 2026-10-30 审计修复（首选方案，与 /secret 同口径）：写候选前必须先校验 body.query_password
+    // （PBKDF2；遗留明文密码接受并顺手迁移）。缺失或错误 → 401 且不写候选，知订单号的路人
+    // 再也不能往他人订单里塞候选 TXID、干扰后续人工确认。已核验通过的路径不受此门影响
+    // （链上核验本身就是归属证明）；人工确认仍只认候选，但候选现已是买家密码认证过的。
     if (o2.status === 'pending_payment') {
+      var payPwOk = await verifyOrderQueryPassword(env, o2, b.query_password);
+      if (!payPwOk) return err('查询密码错误', 401);
       await env.DB.prepare("UPDATE orders SET pending_tx_hash = ?, txid = CASE WHEN txid IS NULL OR txid = '' THEN ? ELSE txid END WHERE order_no = ? AND status = 'pending_payment'").bind(txid, txid, no2).run();
     }
     return json({ ok: true, message: 'TXID 已提交，轮询会在 1-3 分钟内自动核验；若链上还未确认请稍后再查', auto: false });
@@ -3916,7 +3996,9 @@ async function handleApi(req, env, url, ctx) {
     var pw = String(lb.password || '');
     // 未设管理员密码时走建站令牌流程（密码可为空）；已设密码时密码必填。
     var storedHashPre = await getAdminMeta(env, 'password_hash');
-    if (!pw && storedHashPre) return err('请输入密码');
+    // 2026-10-30 审计修复：登录错误文案统一为“登录凭证错误”，不得以不同文案区分
+    // 是否已设密码 / 令牌是否错误（区分会泄露账号状态）；服务端日志里可区分（见下文 console.error）。
+    if (!pw && storedHashPre) return err('登录凭证错误', 401);
     // 登录限流：同一 IP 失败过多时封禁 15 分钟，防暴力破解
     var loginIp = getClientIp(req);
     var rateErr = await checkLoginRateLimit(env, loginIp);
@@ -3932,19 +4014,24 @@ async function handleApi(req, env, url, ctx) {
       // ZHIXUAN_SETUP_TOKEN 匹配的一次性建站令牌；未配置该环境变量时 fail-closed，拒绝登录并提示配置。
       // 已有密码哈希的数据库行为不变（走密码校验）。
       var setupToken = String((env && env.ZHIXUAN_SETUP_TOKEN) || '');
-      if (!setupToken) { await recordLoginFail(env, loginIp); await recordLoginFailGlobal(env); return err('未配置建站令牌（ZHIXUAN_SETUP_TOKEN），请管理员配置后重试', 503); }
-      if (!timingSafeEqual(String(lb.setup_token || ''), setupToken)) { await recordLoginFail(env, loginIp); await recordLoginFailGlobal(env); return err('建站令牌错误', 401); }
+      // 建站令牌是环境变量，代码无法作废它（见文件顶部硬性约束第 2 条）：首次改密后必须去
+      // Cloudflare 面板轮换或删除 ZHIXUAN_SETUP_TOKEN Secret；密码一旦设置，本分支即死。
+      if (!setupToken) { await recordLoginFail(env, loginIp); await recordLoginFailGlobal(env); try { console.error('admin login failed: ZHIXUAN_SETUP_TOKEN not configured'); } catch (e) {} return err('登录服务暂不可用，请联系管理员', 503); }
+      if (!timingSafeEqual(String(lb.setup_token || ''), setupToken)) { await recordLoginFail(env, loginIp); await recordLoginFailGlobal(env); return err('登录凭证错误', 401); }
       mustChange = true;
     } else {
       var h = await hashPassword(pw, storedSalt || '');
-      if (!timingSafeEqual(h, storedHash)) { await recordLoginFail(env, loginIp); await recordLoginFailGlobal(env); return err('密码错误', 401); }
+      if (!timingSafeEqual(h, storedHash)) { await recordLoginFail(env, loginIp); await recordLoginFailGlobal(env); return err('登录凭证错误', 401); }
     }
     await clearLoginAttempts(env, loginIp);
     // B-P3-5：登录成功同步清零全局窗口计数（失败计数不跨成功登录延续）。
     try { await setAdminMeta(env, 'login_global_fail_count', '0'); await setAdminMeta(env, 'login_global_fail_window', String(Date.now())); } catch (e) {}
     var token = randomHex(32);
     var exp = new Date(Date.now() + SESSION_MAX_AGE * 1000).toISOString().replace('T', ' ').slice(0, 19);
-    await env.DB.prepare('INSERT INTO sessions (token, expires_at) VALUES (?, ?)').bind(token, exp).run();
+    // 只存令牌的 SHA-256 摘要；Cookie 里仍是原文令牌（浏览器侧唯一一次出现）。
+    await env.DB.prepare('INSERT INTO sessions (token, expires_at) VALUES (?, ?)').bind(await sha256Hex(token), exp).run();
+    // 2026-10-30 审计补齐：成功登录记一笔（不记令牌、不记密码）。审计失败不阻塞登录。
+    await logAudit(env, null, 'admin_login', '', '', '管理员登录成功');
     var resp = json({ ok: true, must_change_password: mustChange });
     resp.headers.set('Set-Cookie', 'session_token=' + token + '; ' + cookieFlags(url) + '; Max-Age=' + SESSION_MAX_AGE);
     return resp;
@@ -3954,7 +4041,7 @@ async function handleApi(req, env, url, ctx) {
     var csrfErrLogout = checkCsrf(req, url);
     if (csrfErrLogout) return err(csrfErrLogout, 403);
     var tok = getCookie(req, 'session_token');
-    if (tok) await env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(tok).run();
+    if (tok) await env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(await sha256Hex(tok)).run();
     var r2 = json({ ok: true });
     r2.headers.set('Set-Cookie', 'session_token=; ' + cookieFlags(url) + '; Max-Age=0');
     return r2;
@@ -3991,9 +4078,14 @@ async function handleApi(req, env, url, ctx) {
     await setAdminMeta(env, 'password_salt', newSalt);
     await setAdminMeta(env, 'password_hash', newHash);
     await setAdminMeta(env, 'must_change_password', '0');
-    // 改密后作废除当前会话外的所有会话（防被盗会话继续使用），当前会话保留以免锁死管理员
+    // 改密后作废除当前会话外的所有会话（防被盗会话继续使用），当前会话保留以免锁死管理员；
+    // 比对同样按摘要（sessions.token 列存摘要，见文件顶部硬性约束第 3 条）。
     var curTok = getCookie(req, 'session_token');
-    if (curTok) await env.DB.prepare('DELETE FROM sessions WHERE token != ?').bind(curTok).run();
+    if (curTok) await env.DB.prepare('DELETE FROM sessions WHERE token != ?').bind(await sha256Hex(curTok)).run();
+    // 2026-10-30 审计补齐：改密记一笔（审计内容绝不含新旧密码）。审计失败时密码已改，
+    // 如实返回 audit_failed 警告，不得宣称完全成功。
+    var auditOkPw = await logAudit(env, null, 'admin_change_password', '', '', '管理员修改密码（已作废其他会话）');
+    if (!auditOkPw) { try { console.error('audit failed: admin_change_password'); } catch (e) {} return json({ ok: true, audit_failed: true, warning: '密码已修改，但审计记录写入失败，请立即检查 admin_audit 表并手动补记（操作：admin_change_password）' }); }
     return json({ ok: true });
   }
 
@@ -4265,7 +4357,10 @@ async function handleApi(req, env, url, ctx) {
     var newSalt = bufToB64(crypto.getRandomValues(new Uint8Array(16)).buffer);
     var newHash = await hashPassword(newPw, newSalt);
     // P3-6：同步清空遗留明文 query_password 列，并检查 logAudit 返回值。
-    await env.DB.prepare('UPDATE orders SET query_password_hash = ?, query_password_salt = ?, query_password = ? WHERE id = ?').bind(newHash, newSalt, '', rqId).run();
+    // 2026-10-30 审计修复补强：同时清空旧系统凭证哈希 query_token_hash——否则重置后 /secret
+    // 仍会因“凭证哈希订单不走密码路径”拒绝，重置等于没生效。重置后该订单只认新密码，
+    // 旧凭证即失效（管理员显式重置的预期语义）；审计行本身不记新密码。
+    await env.DB.prepare('UPDATE orders SET query_password_hash = ?, query_password_salt = ?, query_password = ?, query_token_hash = ? WHERE id = ?').bind(newHash, newSalt, '', '', rqId).run();
     var auditOkRQ = await logAudit(env, rqId, 'reset_query_password', rqO.status, rqO.status, '管理员重置了该订单的查询密码');
     if (!auditOkRQ) { console.error('audit failed: reset_query_password order=' + rqId); return json({ ok: true, message: '查询密码已重置，请将新密码告知买家', audit_failed: true, warning: auditFailMsg(rqId, 'reset_query_password') }); }
     return json({ ok: true, message: '查询密码已重置，请将新密码告知买家' });
@@ -4398,6 +4493,9 @@ async function handleApi(req, env, url, ctx) {
       if (!iconRowU) return err('App 图标不存在，请重新选择');
     }
     await env.DB.prepare('UPDATE products SET slug=?, title=?, category=?, price_usdt=?, sell_price=?, cost_price=?, source=?, prodseller_id=?, requires_email_activation=?, delivery_method=?, stock_type=?, description=?, notice=?, form_fields=?, image_emoji=?, image_data=?, app_icon_key=?, sort=?, is_active=?, in_stock=? WHERE id=?').bind(du.slug, du.title, du.category, du.sell_price, du.sell_price, du.cost_price, du.source, du.prodseller_id, du.requires_email_activation, du.delivery_method, du.stock_type, du.description, du.notice, du.form_fields, du.image_emoji, du.image_data, du.app_icon_key, du.sort, du.is_active, newInStock, pid).run();
+    // 2026-10-30 审计补齐：商品编辑（PUT）记一笔（只记 ID 与标题，不记图片/描述全文）。
+    var auditOkProdU = await logAudit(env, null, 'product_update', '', '', '编辑商品 #' + pid + '（' + String(du.title || '') + '）');
+    if (!auditOkProdU) { try { console.error('audit failed: product_update product=' + pid); } catch (e) {} return json({ ok: true, audit_failed: true, warning: '商品已保存，但审计记录写入失败，请立即检查 admin_audit 表并手动补记（操作：product_update）' }); }
     return json({ ok: true });
   }
   if (mAP && method === 'DELETE') {
@@ -4511,6 +4609,9 @@ async function handleApi(req, env, url, ctx) {
       var disAfter = await env.DB.prepare('SELECT is_disabled FROM cards WHERE id = ?').bind(disId).first();
       if (!disAfter || Number(disAfter.is_disabled) !== disTarget) return err('该卡密已被其他操作处理（已用/已预留），无法修改禁用状态', 409);
     }
+    // 2026-10-30 审计补齐：卡密禁用/启用记一笔（只记卡密 ID 与商品 ID，绝不记卡密正文）。
+    var auditOkDis = await logAudit(env, null, disTarget ? 'card_disable' : 'card_enable', '', '', '卡密ID：' + disId + '，商品ID：' + disCard.product_id + '，禁用态改为 ' + disTarget + '（不记卡密正文）');
+    if (!auditOkDis) { try { console.error('audit failed: card_disable card=' + disId); } catch (e) {} return json({ ok: true, audit_failed: true, warning: '卡密状态已修改，但审计记录写入失败，请立即检查 admin_audit 表并手动补记（操作：' + (disTarget ? 'card_disable' : 'card_enable') + '）' }); }
     return json({ ok: true });
   }
   var mCardDel = path.match(/^\/api\/admin\/cards\/(\d+)$/);
@@ -4524,6 +4625,9 @@ async function handleApi(req, env, url, ctx) {
     // B-P2-10：条件写——仅未用且未预留的卡可删，并校验 changes（预检与删除之间的竞态：卡恰好在此间被预留/使用时删不掉）。
     var delCardRes = await env.DB.prepare('DELETE FROM cards WHERE id = ? AND is_used = 0 AND reserved_order_id IS NULL').bind(delCardId).run();
     if (!delCardRes || !delCardRes.meta || delCardRes.meta.changes !== 1) return err('该卡密已被其他操作处理（已用/已预留），无法删除', 409);
+    // 2026-10-30 审计补齐：卡密删除记一笔（只记卡密 ID 与商品 ID，绝不记卡密正文）。
+    var auditOkDelCard = await logAudit(env, null, 'card_delete', '', '', '删除卡密ID ' + delCardId + '，商品ID ' + delCard.product_id + '（不记卡密正文）');
+    if (!auditOkDelCard) { try { console.error('audit failed: card_delete card=' + delCardId); } catch (e) {} return json({ ok: true, audit_failed: true, warning: '卡密已删除，但审计记录写入失败，请立即检查 admin_audit 表并手动补记（操作：card_delete）' }); }
     return json({ ok: true });
   }
 
@@ -4730,11 +4834,28 @@ async function handleApi(req, env, url, ctx) {
     // API Key 只返回“已配置/未配置”布尔值，绝不返回 Key 明文。
     return json({ ok: true, settings: settingsForAdmin, pricing_templates_enabled: isPricingTemplatesEnabled(settingsForAdmin), pay_config: { methods: payConfigMethods(settingsForAdmin), pay_available: payConfigMethods(settingsForAdmin).some(function (m) { return !!m.enabled && isValidEvmAddress(m.address); }) }, prodseller_api_key_configured: !!(env && env.PRODSELLER_API_KEY) });
   }
+  // 2026-10-30 审计修复：管理员设置写入口白名单——只允许代码里实际使用的 settings 键入库，
+  // 未知键（尤其 __proto__、constructor、prototype 这类原型污染键，以及任意拼写错误的键）一律拒绝。
+  // 取值口径：validateSetting 覆盖的键 + 前端设置页实际提交的键（site_name/announcement/order_notice 等）
+  // + 代码里直接读取的键（delivery_mode/large_order_*/usdt_addresses 等）。pay-config 入口不走此处，
+  // 它只写 4 个硬编码的 pay_* 键，键名不受请求体控制，无需另加白名单。
+  // 注意：notice_popup_version 在白名单里只为容纳服务端自增写入；人工提交仍由 validateSetting 拒绝。
+  // 遗留风险：库里若已有 __proto__ 行，getAllSettings 的字符串赋值对原型无实际影响（__proto__ setter
+  // 忽略非对象值），且本白名单阻止新增；如需彻底清理，人工在 D1 里删该行即可，无需迁移。
+  var SETTINGS_WHITELIST = { announcement: 1, order_notice: 1, site_name: 1, tg_link: 1, binance_uid: 1, pay_tutorials: 1, poll_enabled: 1, rpc_urls: 1, usdt_contracts: 1, chain_confirmations: 1, prodseller_base_url: 1, prodseller_enabled: 1, upstream_markup: 1, upstream_fixed: 1, pricing_templates_enabled: 1, cny_rate: 1, large_order_usdt: 1, large_order_confirmations: 1, delivery_mode: 1, usdt_addresses: 1, turnstile_enabled: 1, turnstile_site_key: 1, pay_xlayer_address: 1, pay_xlayer_enabled: 1, pay_bep20_address: 1, pay_bep20_enabled: 1, notice_popup_enabled: 1, notice_popup_title: 1, notice_popup_body: 1, notice_popup_version: 1 };
   if (path === '/api/admin/settings' && method === 'POST') {
     var sb = await parseJsonBody(req);
     var entries = sb.settings || {};
+    // 单键写法先验白名单。查表必须用 hasOwnProperty：直接写 SETTINGS_WHITELIST['__proto__']
+    // 会命中原型链（返回 Object.prototype，truthy），检查即被绕过——这正是本白名单要防的键。
+    // （entries[sb.key] = ... 对 __proto__ 的字符串赋值也会被原型 setter 静默丢弃，
+    // 不能靠“写不进去”蒙混——必须显式拒绝，让调用方知道请求未生效。）
+    if (sb.key && !Object.prototype.hasOwnProperty.call(SETTINGS_WHITELIST, sb.key)) return err('未知设置键：' + sb.key + '，已拒绝保存');
     if (sb.key) entries[sb.key] = sb.value;
     var keys = Object.keys(entries);
+    for (var wk2 = 0; wk2 < keys.length; wk2++) {
+      if (!Object.prototype.hasOwnProperty.call(SETTINGS_WHITELIST, keys[wk2])) return err('未知设置键：' + keys[wk2] + '，已拒绝保存');
+    }
     // 先全部校验通过再写，避免一半有效一半无效造成配置半截生效
     for (var si = 0; si < keys.length; si++) {
       var vErr = validateSetting(keys[si], entries[keys[si]]);
@@ -5195,6 +5316,14 @@ import FRONTEND_HTML from './frontend.html';
 
 // 安全响应头（staging 冒烟 S7）：所有 fetch 响应统一附加。CSP 兼容现有内联脚本/样式、onclick 处理器、
 // data: 图片（上传图、App 图标、SVG 验证码、本地生成的收款二维码）与 Turnstile（challenges.cloudflare.com）。
+// 2026-10-30 审计结论（接受的取舍，不再改）：script-src / style-src 的 'unsafe-inline' 是 SPA 内联
+// 脚本/样式所必需——本站是单文件 SPA（src/frontend.html 全量内联 <script>/<style> + onclick 处理器），
+// 去掉 unsafe-inline 须先上构建步骤或逐请求改写 HTML 插 nonce，当前无构建架构下无法根治。
+// 因此 CSP 在此只做纵深（禁外部脚本除 Turnstile、object-src 'none'、frame-ancestors 'none'、
+// base-uri/form-action 'self'），真正的 XSS 防线是渲染转义：前端所有动态插值一律走 escH
+// （src/frontend.html 的 escH，131 处调用，标题/描述/订单号/地址/通知正文等均经它转义），
+// 服务端 esc 同理。不得以“CSP 已开”代替转义，也不得以“已转义”再放宽 CSP。
+// HSTS 含 includeSubDomains（2026-10-30 补）；未加 preload（preload 是不可逆的域名级承诺，须用户另行决策）。
 var CSP_HTML = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com",
@@ -5216,7 +5345,7 @@ function withSecurityHeaders(resp) {
   h.set('X-Frame-Options', 'DENY');
   h.set('X-Content-Type-Options', 'nosniff');
   h.set('Referrer-Policy', 'no-referrer');
-  h.set('Strict-Transport-Security', 'max-age=31536000');
+  h.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   h.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
   return r;
 }

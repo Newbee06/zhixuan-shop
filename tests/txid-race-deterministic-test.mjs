@@ -167,7 +167,8 @@ function setup() {
   }
   async function payCall(orderNo, txid) {
     const cid = mkCaptcha('AB12');
-    return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12' });
+    // 2026-10-30 新口径：/pay 未核验候选写入须带查询密码（与订单下单密码一致）。
+    return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12', query_password: 'TestPass123' });
   }
   async function payCallWithCaptcha(orderNo, txid, capId, capCode) {
     return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: capId, captcha_code: capCode });
@@ -1172,14 +1173,20 @@ function expireLease(t, orderId) {
   let r = await t.call('POST', '/api/orders/' + o1.order_no + '/lookup', { credential: 'legacy-pw-999' });
   check('B-P1-6: /lookup without captcha -> 401', r.status === 401, JSON.stringify(r.json));
   // 5 次错凭证（每次新验证码）→ 第 6 次正确凭证 → 429。
+  // 2026-10-30 新口径（双维限流）：触顶须同单同 IP——本 harness 默认每调用轮换 IP，
+  // 故此处固定同一 IP；分布式（每 IP 1 次）不再锁单，见紧随其后的新断言。
   for (let i = 0; i < 5; i++) {
     const cid = t.mkCaptcha('AB12');
-    const rr = await t.call('POST', '/api/orders/' + o1.order_no + '/lookup', { credential: 'wrong', captcha_id: cid, captcha_code: 'AB12' });
+    const rr = await t.call('POST', '/api/orders/' + o1.order_no + '/lookup', { credential: 'wrong', captcha_id: cid, captcha_code: 'AB12' }, undefined, { 'CF-Connecting-IP': '10.88.6.6' });
     if (i === 0) check('B-P1-6: wrong cred still 401 (counted)', rr.status === 401, JSON.stringify(rr.json));
   }
   const cid6 = t.mkCaptcha('AB12');
-  r = await t.call('POST', '/api/orders/' + o1.order_no + '/lookup', { credential: 'legacy-pw-999', captcha_id: cid6, captcha_code: 'AB12' });
+  r = await t.call('POST', '/api/orders/' + o1.order_no + '/lookup', { credential: 'legacy-pw-999', captcha_id: cid6, captcha_code: 'AB12' }, undefined, { 'CF-Connecting-IP': '10.88.6.6' });
   check('B-P1-6: 6th attempt after 5 failures -> 429', r.status === 429, JSON.stringify(r.json));
+  // 双维新语义：同单被单 IP 刷满后，换一个新 IP 的正确凭证不受牵连（总量 5 < 20）。
+  const cidNewIp = t.mkCaptcha('AB12');
+  r = await t.call('POST', '/api/orders/' + o1.order_no + '/lookup', { credential: 'legacy-pw-999', captcha_id: cidNewIp, captcha_code: 'AB12' }, undefined, { 'CF-Connecting-IP': '10.88.9.9' });
+  check('B-P1-6: new IP not locked by single-IP bucket', r.json && r.json.ok === true, JSON.stringify(r.json));
   // 成功清零：新订单 2 错 → 成功 → 4 错 → 正确仍成功。
   const o2 = t.insertOrder({ query_password: 'legacy-pw-999' });
   for (let i = 0; i < 2; i++) { const cid = t.mkCaptcha('AB12'); await t.call('POST', '/api/orders/' + o2.order_no + '/lookup', { credential: 'wrong', captcha_id: cid, captcha_code: 'AB12' }); }
@@ -1218,8 +1225,9 @@ function expireLease(t, orderId) {
   // B-P2-6：真实 salted 订单（经下单接口建）5 错 → 第 6 次正确 → 429；成功清零后 4 错 + 正确仍不 429。
   let rr = await t.orderCall({ product_id: pM.id, quantity: 1, query_password: 'mypw1234' });
   const oReal = t.q('SELECT * FROM orders WHERE order_no=?', rr.json.order.order_no);
-  for (let i = 0; i < 5; i++) await t.call('POST', '/api/orders/' + oReal.order_no + '/secret', { password: 'wrongpw' });
-  r = await t.call('POST', '/api/orders/' + oReal.order_no + '/secret', { password: 'mypw1234' });
+  // 2026-10-30 新口径（双维限流）：触顶须同单同 IP，故固定同一 IP（harness 默认轮换 IP）。
+  for (let i = 0; i < 5; i++) await t.call('POST', '/api/orders/' + oReal.order_no + '/secret', { password: 'wrongpw' }, undefined, { 'CF-Connecting-IP': '10.88.6.7' });
+  r = await t.call('POST', '/api/orders/' + oReal.order_no + '/secret', { password: 'mypw1234' }, undefined, { 'CF-Connecting-IP': '10.88.6.7' });
   check('B-P2-6: 6th attempt after 5 failures -> 429', r.status === 429, JSON.stringify(r.json));
   rr = await t.orderCall({ product_id: pM.id, quantity: 1, query_password: 'mypw1234' });
   const oReal2 = t.q('SELECT * FROM orders WHERE order_no=?', rr.json.order.order_no);
