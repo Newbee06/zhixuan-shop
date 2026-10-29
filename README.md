@@ -19,7 +19,7 @@ AI 会员 / 代充 / 成品号 / 卡密商城，单 Worker + 单 D1，Cloudflare
   - `pending_activation`：上游已付款（paid），等待轮询到 delivered 才发货，deliveredKey 出现前不发。
   - `pending_upstream`：上游暂不可发货（402 余额不足 / 409 缺货 / 429 限速 / 500），后台置顶告警，不发货。
 - 商品来源自营 + 上游并存（见下“商品来源”）。
-- **邮件已移除**：`sendEmail` 直接返回 `email_removed`，不再发任何邮件。交付内容只在站内查单页可见；设置里的 `email_from / email_enabled / delivery_mode` 为历史残留，不再生效。
+- **邮件已废弃**：`sendEmail` 为 stub，直接返回 `email_removed`，不再发任何邮件。交付内容只在站内查单页可见；设置里的 `email_from / email_enabled` **仅为 API 兼容保留、已废弃**（值不代表可用邮箱配置，`email_from` 种子已清空）；`RESEND_API_KEY` 已废弃、**不要再配置**。
 - 后台（单管理员）：PBKDF2（100000 次）+ salt + httpOnly session cookie（HTTPS 下自动加 Secure，SameSite=Lax）；初始密码 `admin` 首次登录强制改密，**未改密的会话不能调用除改密/退出外的任何管理接口（后端拦截，不只靠前端隐藏）**；登录限流（同一 IP 15 分钟内失败 5 次封禁 15 分钟）；管理端写操作带 Origin 时必须同源（CSRF）；改密后作废除当前会话外的所有会话。左侧导航（数据总览 / 订单管理 / 商品管理 / 卡密库存 / 上游管理 / 系统设置 / 操作审计），进后台默认打开“数据总览”。订单按状态只显示合法操作按钮（后端同样独立校验）；商品为表格 + 弹窗表单；卡密支持筛选/分页/禁用/启用/导入统计；上游支持目录浏览 + 批量导入 + 售价预览；设置按类型分区并校验；所有关键操作（确认收款/发货/取消/上游重试/配置修改）记入 `admin_audit` 操作审计（不记密码、凭证、完整卡密、API Key）。
 - 7 天清理：cron 每天跑，`fulfilled_at` 超过 7 天的已完成订单清空卡密 / 账号交付数据并标记 `data_expired`，前台按同样规则隐藏；同时释放过期预留。
 - 支付：**CF 轮询自动发货**：下单生成 `actual_amount = 基础价 + 随机尾数 0.0001-0.0099`，锁定 20 分钟（`expires_at`），同地址同窗口唯一；cron 每 1 分钟查 D1 有无 `pending_payment`，无则零 RPC；有则查 EVM 公开 RPC 匹配 to + 金额（合约地址、Transfer 事件、收款地址、精确金额、确认数严格核验）。超时自动取消，释放金额占用与卡密预留。仅 OKX|X Layer（USDT0，6 位，1 确认）与 Binance|BEP20（USDT，18 位，15 确认）。
@@ -92,7 +92,7 @@ AI 会员 / 代充 / 成品号 / 卡密商城，单 Worker + 单 D1，Cloudflare
 
 ## CF 轮询自动收款（scheduled 分发）
 
-`wrangler.toml` 已有 2 个 cron：`0 2 * * *` 清理 + `*/1 * * * *` 轮询。`scheduled` 按 `event.cron` 分发：
+`wrangler.toml` 已有 2 个 cron：`0 2 * * *` 清理 + `*/1 * * * *` 轮询（**cron 一律按 UTC 解释：`0 2 * * *` = UTC 02:00 = 北京时间 10:00**）。`scheduled` 按 `event.cron` 分发：
 
 | cron | 动作 |
 |---|---|
@@ -120,9 +120,9 @@ AI 会员 / 代充 / 成品号 / 卡密商城，单 Worker + 单 D1，Cloudflare
 - 单 Worker + 单 D1 + 2 个 cron，Cloudflare 免费版，无付费功能，无 npm 构建链（vanilla JS + CSS 内嵌）。
 - `src/worker.js`：API + 路由（import 前端 HTML，Text 规则，无构建）。
 - `src/frontend.html`：前端（iOS 气泡琉璃风格：毛玻璃 + 大圆角 + 柔和高光 + 浅色/深色跟随系统 + 手机端适配）。
-- `schema.sql`：`products / cards / orders / settings / admin_meta / sessions / upstream_orders / upstream_cache / captcha_codes / order_rate / admin_audit / login_attempts / txid_claims / lookup_rate / schema_migrations / payments / scan_cursors / pay_rate / app_icons / secret_attempts`（含 `orders.query_token_hash`、`cards.reserved_order_id / reserved_at`）。
+- `schema.sql`：`products / cards / orders / settings / admin_meta / sessions / upstream_orders / upstream_cache / captcha_codes / order_rate / admin_audit / login_attempts / txid_claims / lookup_rate / schema_migrations / payments / scan_cursors / pay_rate / app_icons / secret_attempts / lookup_attempts / pricing_templates / categories`（含 `orders.query_token_hash`、`cards.reserved_order_id / reserved_at`、`orders.pending_tx_hash / payment_state`、`txid_claims.claim_token / source / order_lease_token`）。
 - 全部参数化查询，输入校验；PBKDF2 迭代 100000（Workers 生产 WebCrypto 上限，不要用 120000）。
-- ProdSeller / Resend 密钥只走 `wrangler secret`，绝不进代码 / 前端 / 日志。Resend 密钥已不再使用（邮件移除）。
+- ProdSeller 密钥只走 `wrangler secret`，绝不进代码 / 前端 / 日志。`RESEND_API_KEY` 已废弃、不要再配置（邮件已移除，`sendEmail` 为 stub）。
 
 ## 配置说明
 
@@ -138,7 +138,11 @@ printf '%s' "$VAL" | npx wrangler secret put PRODSELLER_API_KEY
 
 - `upstream_markup`：默认 `1.2`；`upstream_fixed`：默认 `0`。导入售价 = `cost × markup + fixed`。
 - `prodseller_base_url`：上游 Base URL（Env 优先于此设置）。
-- `poll_enabled`：`1` 开轮询 / `0` 关轮询（关了只走手动 TXID / 管理员确认）。
+- `poll_enabled`：`1` 开链上扫描 / `0` 关链上扫描（关了只走手动 TXID / 管理员确认；**过期清理不受它控制，`poll_enabled=0` 时仍清理过期未付款订单**）。
+  代码默认值：`settings` 里无 `poll_enabled` 行时（只走 BASE_TABLES + 迁移建库、settings 为空）默认 **`0`**——未配置前 cron 默认不开链上扫描；首次建库后先填收款地址/链上配置，再显式把 `poll_enabled` 置 `1` 才开扫描。已有 `settings` 行的库不受默认值影响（`schema.sql` 种子显式写 `1` 的库同样不受影响，部署后仍须先核对配置再放行 cron）。
+- 开关语义统一（数据线口径，代码与文档一致）：**开关只控制新建上游单与链上扫描，不控制已有上游单号的履约完成**。
+  `prodseller_enabled` 只控制新建上游单（`prodsellerCreateOrder` 门禁）；`poll_enabled` 只控制 `runPolling` 的链上支付扫描；已有 `prodseller_order_id` 的已付款订单无论两开关为何值，都会由上游轮询（`pollUpstreamActivations`，本身不受两开关控制）继续轮询到 delivered 并完成。**不要误以为关闸就停一切；也不要改成关闸后已付款订单也不发货（那会 stranded 已付款订单）。**
+- `turnstile_configured`（布尔值，只读标志）：`/api/config` 与 `GET /api/admin/settings` 均返回该标志——开关开 + Site Key 已配 + 服务端 Secret（`TURNSTILE_SECRET_KEY`）已配三者齐全才为真，**绝不返回 secret 本身**。未配 secret 时开启 Turnstile 会全站拒单（fail-closed），**启用前必须先配 secret**；前端凭此标志提示管理员补配置（前端显示由前端线配合）。
 - `site_name`：前台站名，当前为 `智选`。
 - `cny_rate`：前台 CNY 展示汇率，当前 `7.2`。
 
@@ -276,7 +280,29 @@ CSRF 防护依赖“浏览器跨站请求必须带同源证明”这一扇门；
 - v16：查询索引补齐（`idx_cards_product`、`idx_cards_used`、`idx_orders_no`、`idx_orders_status`、`idx_orders_created`、`idx_sessions_expires`；`IF NOT EXISTS` 幂等，不删历史数据）。
 - v17：TXID 认领令牌化 + 人工/链上共享全局认领（`txid_claims` 加 `claim_token`（每次新认领的 `randomHex(32)`）+ `source`（`chain_verified` / `manual_confirmed`）+ `order_lease_token`（认领时持有者的订单租约）；`ADD COLUMN` 幂等，现有认领行保留）。
 
-机制：每次 API 请求只轻量查 `schema_migrations` 当前版本；版本已最新时**不再执行 PRAGMA / DDL / 历史修复**；版本落后时才按序迁移，每个版本成功后才写入版本记录，失败抛带版本号的明确错误且**不标记成功**。管理员可经 `GET /api/admin/migrate` 查看版本、`POST /api/admin/migrate` 手动触发。
+机制：每次 API 请求先查 `schema_migrations` 当前版本；版本已最新时**只校验关键表/索引是否齐全**（不能只看 `MAX(version)`——版本号已是最新、但某表/索引被误删时，下一请求会自动自愈重跑迁移补齐；自愈失败则报 503 迁移失败），不再执行 PRAGMA / DDL / 历史修复；版本落后时才按序迁移，每个版本成功后才写入版本记录，失败抛带版本号的明确错误且**不标记成功**（自愈重跑失败时已有版本标记保持不变）。
+管理员可经 `GET /api/admin/migrate` 查看版本、`POST /api/admin/migrate` 手动触发。迁移失败时 API 返回 **503 + `code: migration_failed`**（与通用 500 区分，未登录调用方只给通用迁移失败文案，已登录管理员的响应里才附 `migration_detail`）；cron 迁移失败时记日志并跳过当次全部的分发支，不静默拖垮；cron 各分支（轮询 / 清理 / 上游轮询）各自 try/catch，一个分支失败记 `scheduled branch failed: <分支名>` 后继续跑下一个分支。
+
+### 干跑预检（真正的 dry-run）与备份副本预检
+
+- **干跑不升库**：`GET /api/admin/schema-check` 是真正的干跑——它在 `ensureMigrated` **之前**执行（仍须管理员鉴权：未登录 401、未改密 403），用 PRAGMA 与只读查询检查当前库结构（表/列/索引/关键唯一约束）与重复数据（重复待付款金额、重复待付款联系方式），**不应用任何迁移**；返回体含 `dry_run: true, migrated: false`。干跑报告另含 `v14_legacy_no_salt_orders`（见下）。
+- **正式迁移走 `POST /api/admin/migrate`**（或部署后首次请求自动迁移）。干跑有差异时先修数据再迁移，不得用干跑代替迁移。
+- **备份副本预检操作步骤**（正式迁移前必做，绝不在生产库上直接试迁移）：
+  1. 备份生产 D1：CF 面板快照，或 `npx wrangler d1 export <生产库名> --remote --output=backup-<日期>.sql`（不要把备份文件提交进仓库）。
+  2. 用备份建一个测试副本库（测试 D1 或本地 `--local` 库）：导入备份 SQL。
+  3. 在副本上跑干跑：登录管理端后 `GET /api/admin/schema-check`，确认 `issues` 为空；并在副本上直接查版本与重复数据：
+     ```sql
+     SELECT MAX(version) AS current_version FROM schema_migrations;
+     SELECT pay_address, actual_amount, COUNT(*) AS c FROM orders
+       WHERE status = 'pending_payment' GROUP BY pay_address, actual_amount HAVING c > 1;
+     SELECT contact, product_id, COUNT(*) AS c FROM orders
+       WHERE status = 'pending_payment' AND contact != '' GROUP BY contact, product_id HAVING c > 1;
+     SELECT COUNT(*) AS v14_no_salt FROM orders
+       WHERE query_password_hash != '' AND (query_password_salt IS NULL OR query_password_salt = '');
+     ```
+  4. 副本上 `POST /api/admin/migrate` 演练到最新版（当前最新 v21）且业务冒烟通过后，才在生产库执行正式迁移。
+- **v14 无 salt 订单**：干跑报告的 `v14_legacy_no_salt_orders` = `query_password_hash` 非空且 `salt` 为空的订单数（v14 遗留无 salt 哈希）。影响：这类订单**自助查单/取卡永久 401**（`/secret` 要求 salt + PBKDF2），**只能管理员人工处理**；本线不实现重设密码接口（那是鉴权线的活），不要用重设密码绕过。
+- **外键口径**：迁移路径开头尽力执行 `PRAGMA foreign_keys = ON`，但 D1 语句可能不共享连接、无法保证跨语句强制，故正式口径仍是**“外键只声明不强制、靠应用层守卫”**（产品删除、订单取消、认领等路径的条件写 + 预检），不得假装已强制。
 
 所有迁移不删表、不改列类型、不清空数据。部署后建议先在测试库验证：登录→改密→下单→查单（凭证）→取消释放预留→审计列表，全部通过后再上线。
 
@@ -286,21 +312,26 @@ CSRF 防护依赖“浏览器跨站请求必须带同源证明”这一扇门；
 2. 部署后第一次打开后台，用 `admin` 登录会强制改密（至少 8 位）；改密后旧会话全部作废。
 3. 旧订单（无 salt 哈希）仅走管理员流程：客户联系客服核实交付内容；新订单从部署后开始用查询密码。
 4. 部署前备份生产 D1（`wrangler d1 export` 或 CF 面板快照），以防回滚。
-5. 回滚方案：重新部署 main 分支的旧版 Worker 即可；旧库新增的列和表可保留（新增表：`upstream_orders` / `upstream_cache` / `captcha_codes` / `order_rate` / `admin_audit` / `login_attempts` / `txid_claims` / `lookup_rate` / `payments` / `scan_cursors` / `pay_rate` / `app_icons` / `secret_attempts`；新增列：`query_token_hash` / `query_password_hash` / `query_password_salt` / `reserved_*` / `claim_token` / `claimed_at` / `exception_reason` / `refund_*` / `upstream_lock` / `upstream_lock_expires_at` / `app_icon_key` / `schema_migrations` / `txid_claims.claim_token` / `txid_claims.source` / `txid_claims.order_lease_token`），旧版代码不读取它们，不影响旧版运行。**v8 唯一索引 caveat**：回滚后新库的 v8 唯一索引（`idx_orders_amount_claim` / `idx_orders_contact_pending`）仍会约束旧版下单——旧版无 INSERT 重试逻辑，高并发下金额/联系人冲突时旧版下单会直接报 500。回滚前确认无高并发下单场景，或先评估 DROP 索引（须先人工评估重复数据，见 `migrations/README.md`）。
+5. 回滚方案：重新部署 main 分支的旧版 Worker 即可；旧库新增的列和表可保留（新增表：`upstream_orders` / `upstream_cache` / `captcha_codes` / `order_rate` / `admin_audit` / `login_attempts` / `txid_claims` / `lookup_rate` / `payments` / `scan_cursors` / `pay_rate` / `app_icons` / `secret_attempts` / `lookup_attempts` / `pricing_templates` / `categories`；新增列：`query_token_hash` / `query_password_hash` / `query_password_salt` / `reserved_*` / `claim_token` / `claimed_at` / `exception_reason` / `refund_*` / `upstream_lock` / `upstream_lock_expires_at` / `app_icon_key` / `schema_migrations` / `txid_claims.claim_token` / `txid_claims.source` / `txid_claims.order_lease_token` / `orders.pending_tx_hash` / `orders.payment_state`），旧版代码不读取它们，不影响旧版运行。
+  **回滚不对称（必读，回滚前逐项检查）**：
+  - **v8 / v9 唯一索引会留下来继续约束旧代码下单**：回滚后新库的 `idx_orders_amount_claim`（v9 重建版，排除 BinanceUID）与 `idx_orders_contact_pending` 仍在，旧版无 INSERT 重试逻辑，高并发下金额/联系人冲突时旧版下单会直接报 500。回滚前确认无高并发下单场景，或先人工评估重复数据后再决定是否 `DROP INDEX`（DROP 前须先查干跑报告的重复待付款金额/联系方式，见上）。
+  - **新订单的 salted 查询密码旧代码不认**：v15 起新订单的查询密码是 salt + PBKDF2 哈希（`query_password_hash` + `query_password_salt`）；回滚到旧版 Worker 后，旧代码的查单/取卡路径不认 salted 哈希，新订单的自助查单/取卡会失败（旧订单的明文/旧凭证路径不受影响）。回滚前须确认：要么接受新订单暂时只能管理员人工处理，要么暂缓回滚。
+  - 回滚前检查项清单：① 已备份当前 D1；② 待付款订单数与进行中的上游单（`pending_activation / pending_upstream`）已人工确认去向；③ 干跑报告无未处理差异；④ 回滚后立即冒烟：下单、查单、取卡、取消释放预留。
 
 ## 目录
 
-- `wrangler.toml` — Worker 配置（name aisou-lite，D1 绑定，`[vars] PRODSELLER_BASE_URL`，cron 2 个：`0 2 * * *` 清理 + `*/1 * * * *` 轮询）
+- `wrangler.toml` — Worker 配置（name aisou-lite，D1 绑定，`[vars] PRODSELLER_BASE_URL`，cron 2 个：`0 2 * * *` 清理（UTC 02:00 = 北京时间 10:00）+ `*/1 * * * *` 轮询）
 - `schema.sql` — 建表 + 默认设置 + 4 个示例商品 + 演示卡密
 - `src/worker.js` — Worker + API + 路由（含 `fulfillAfterPayment / pollUpstreamActivations / prodseller*`）
 - `src/frontend.html` — 前端（独立 HTML，经 Text import 引入，无构建）
-- `tests/mock-test.mjs` — mock 全链路测试（ProdSeller / EVM RPC / Resend 均为 mock）
+- `tests/mock-test.mjs` — mock 全链路测试（ProdSeller / EVM RPC 均为 mock；邮件已废弃，不再 mock Resend 发邮件）
+- `tests/audit-data-fixes-test.mjs` — 数据与部署线审计修复回归测试（干跑、503 迁移失败、自愈、自定义分类编辑、v14 计数、7 天清理与 session 清理、cron 回退与分支隔离、v10→v21 升级、poll 默认关、Turnstile 配置标志）
 - `tests/stock-test.mjs` — 库存口径专项测试
 - `tests/security-test.mjs` — 安全专项测试（鉴权/订单状态机/查询密码/卡密预留/审计）
 - `tests/concurrency-test.mjs` — 并发 / 故障恢复 / 迁移专项测试（真并行 + 屏障，验最终 DB 状态）
 - `tests/txid-race-deterministic-test.mjs` — TXID 认领竞态确定性回归测试（v17：Barrier/Deferred 确定性交错，不依赖调度/时间窗口；覆盖同订单认领回滚竞态、租约接管、双管理员并发人工确认、人工/链上双向竞态、账本失败恢复）
 - `tests/browser-acceptance.mjs` — 浏览器验收（需 playwright-core + 本机 Chromium + 本地 wrangler dev，见文件头注释）
 - `tests/d1-local-test.sh` — Wrangler D1 本地环境迁移验证（仅 `--local`，不碰生产库）
-- `migrations/` — 版本化迁移 SQL（0001–0017）与说明
+- `migrations/` — 版本化迁移 SQL（0001–0021，只读镜像；唯一权威来源是 `src/worker.js` 的 `MIGRATIONS`）与说明
 - `translations-zh.json / translations-zh.sql` — 上游商品中文标题/简介翻译（品牌名保留英文，链接/格式原样保留）
 - `README.md` — 本文件

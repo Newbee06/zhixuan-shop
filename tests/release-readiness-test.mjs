@@ -275,7 +275,7 @@ function insertHistBEP20Order(orderNo, actualAmount, contact, cardCode) {
 {
   r = await call('GET', '/api/admin/schema-check', null, cookie);
   check('7. schema-check ok', r.json && r.json.ok === true && r.json.precheck && r.json.precheck.ok === true, JSON.stringify(r.json));
-  check('7. schema-check version 20', r.json && r.json.precheck && r.json.precheck.current_version === 20, JSON.stringify(r.json));
+  check('7. schema-check version 20', r.json && r.json.precheck && r.json.precheck.current_version === 21, JSON.stringify(r.json));
   // 模拟缺表：删 payments 表后预检应报告问题（随后重建）
   db.exec('DROP TABLE payments');
   r = await call('GET', '/api/admin/schema-check', null, cookie);
@@ -356,7 +356,7 @@ db.prepare('DELETE FROM order_rate').run();
   await ctxBad.drain();
   const txtBad = await resBad.text();
   let jBad = null; try { jBad = JSON.parse(txtBad); } catch {}
-  check('11. 500 sanitized (generic + request_id)', resBad.status === 500 && jBad && /服务器内部错误/.test(jBad.error || '') && /关联 ID/.test(jBad.error || '') && !/no such table/i.test(jBad.error || '') && !/sqlite/i.test(jBad.error || '') && !/at /i.test(jBad.error || ''), txtBad.slice(0, 400));
+  check('11. 503 migration_failed (structured, no DB leak)', resBad.status === 503 && jBad && jBad.code === 'migration_failed' && /schema-check/.test(jBad.error || '') && !/no such table/i.test(jBad.error || '') && !/sqlite/i.test(jBad.error || '') && !/at /i.test(jBad.error || ''), txtBad.slice(0, 400));
 }
 
 // ===== 12. ProdSeller 门禁：默认关闭，开启后可用 =====
@@ -437,7 +437,7 @@ db.prepare('DELETE FROM order_rate').run();
   const migV9 = await callV9('GET', '/api/config');
   check('15. v9..v18 migration applied (config ok)', migV9.json && migV9.json.ok === true, migV9.txt.slice(0, 200));
   const verV9 = dbV9.prepare('SELECT MAX(version) AS v FROM schema_migrations').get();
-  check('15. v9..v20 version marked', verV9 && verV9.v === 20, JSON.stringify(verV9));
+  check('15. v9..v21 version marked', verV9 && verV9.v === 21, JSON.stringify(verV9));
   const idxV9 = dbV9.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_orders_amount_claim'").get();
   check('15. v9 index excludes BinanceUID', idxV9 && /pay_method != 'BinanceUID'/.test(idxV9.sql || ''), (idxV9 && idxV9.sql) || '');
   const idxV16 = dbV9.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_orders_no'").get();

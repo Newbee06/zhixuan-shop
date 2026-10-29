@@ -7,7 +7,7 @@
 - `migrations/*.sql` 是只读镜像，仅供审计与 Schema 对照，**不得**用 `wrangler d1 migrations apply` 直接执行。
   原因：SQLite 的 `ALTER TABLE ADD COLUMN` 不支持 `IF NOT EXISTS`；部分迁移含去重/数据修复与失败不标记版本语义，
   文件版无法完整表达；0001–0006 不写版本记录，与内嵌迁移不互通（旧问题，已废止该用法）。
-- `schema.sql` 是新库建表脚本（已含全部终态表结构 + 预置 v1–v10），新库直接用它建库，不跑迁移。
+- `schema.sql` 是新库建表脚本（已含全部终态表结构 + 预置 v1–v10，含 v18 / v19 / v20 的表与 v21 索引），新库直接用它建库，不跑迁移（v11–v21 由 Worker 首次请求时按序执行为 no-op 或补种子）。
 - 旧库升级只走 Worker 的 `runMigrations`（幂等、失败不标记版本、下次重试）。
 
 禁止长期依赖人工同步两套迁移。新增迁移时只改 `MIGRATIONS` 数组，同时更新本目录的镜像文件与 `schema.sql`，并在 PR 中说明。
@@ -27,11 +27,26 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 
 ### 预检（第四轮新增，部署前必跑）
 
-`GET /api/admin/schema-check`（只读，不改数据）：校验实际 Schema 是否与目标版本一致——
+`GET /api/admin/schema-check`（真正的干跑，只读，不改数据、不升库）：它在 `ensureMigrated` **之前**执行
+（仍须管理员鉴权），用 PRAGMA 与只读查询校验实际 Schema 是否与目标版本一致——
 表、列、索引、关键唯一约束（`idx_upstream_orders_order_unique`、`idx_payments_event_unique`、
-`idx_orders_amount_claim`、`idx_orders_contact_pending`）、重复待付款金额。
+`idx_orders_amount_claim`、`idx_orders_contact_pending`、`idx_categories_key`、`idx_txid_claims_order`）、
+重复待付款金额、重复待付款联系方式；另报告 `v14_legacy_no_salt_orders`（v14 无 salt 订单数，见下）。
 
 版本号与 Schema 内容不一致时报告差异，不得静默放行。预检有问题时先按 `docs/RELEASE_READINESS.md` 修复，再部署。
+**干跑不升库、正式迁移走 `POST /api/admin/migrate`**（或部署后首次请求自动迁移）。
+正式迁移前的备份副本预检步骤（在测试副本库上演练，不得在生产库上直接试迁移）：
+1. 备份生产 D1（CF 面板快照，或 `wrangler d1 export <生产库名> --remote --output=backup-<日期>.sql`，备份文件不进仓库）；
+2. 用备份建测试副本库并导入；
+3. 在副本上跑 `GET /api/admin/schema-check` 干跑，并直接查版本与重复数据：
+   `SELECT MAX(version) FROM schema_migrations;`
+   重复待付款金额：`SELECT pay_address, actual_amount, COUNT(*) FROM orders WHERE status='pending_payment' GROUP BY pay_address, actual_amount HAVING COUNT(*)>1;`
+   重复待付款联系方式：`SELECT contact, product_id, COUNT(*) FROM orders WHERE status='pending_payment' AND contact!='' GROUP BY contact, product_id HAVING COUNT(*)>1;`
+   v14 计数：`SELECT COUNT(*) FROM orders WHERE query_password_hash!='' AND (query_password_salt IS NULL OR query_password_salt='');`
+4. 副本上 `POST /api/admin/migrate` 演练到最新版（当前 v21）且冒烟通过后，才在生产库正式迁移。
+
+**v14 无 salt 订单**：`query_password_hash` 非空且 `salt` 为空的订单，自助查单/取卡永久 401，只能管理员人工处理；
+本线不实现重设密码接口（鉴权线的活）。
 
 ## 版本总览
 
@@ -57,12 +72,15 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 | v18 | 资金安全（`orders.pending_tx_hash` 未核验候选 TXID + `orders.payment_state` 超额付款态（`''` / `'overpaid_pending'`）+ `lookup_attempts`（/lookup 按单原子记数，与 /secret 同口径）；`ADD COLUMN` / `CREATE TABLE IF NOT EXISTS` 幂等，旧库真正加列/建表、新库 schema.sql 已含为 no-op） |
 | v19 | 定价模板 `pricing_templates`（markup 倍率 + fixed_add + 可选 price_floor / price_ceiling）。与全局 `upstream_markup` / `upstream_fixed` 并存。重新导入不写 `sell_price`；`POST /api/admin/products/:id/apply-pricing-template` 才显式覆盖售价 |
 | v20 | 商品分类目录 `categories`（扁平列表）。种子 `recharge` / `account` / `card`（`INSERT OR IGNORE`，不重置已改名或已停用的内置分类）。内置 key 不可改；自定义 key 改名时同步 `products.category` |
+| v21 | `txid_claims` 加 `order_id` 索引 `idx_txid_claims_order`（按订单查认领；`CREATE INDEX IF NOT EXISTS`，幂等、可重试、失败不标记版本；不加列） |
 
 > v17 核对（与 `src/worker.js` MIGRATIONS v17 + `migrations/0017_txid_claim_token_source_lease.sql` 一致）：三列均为 `ADD COLUMN`；`claim_token` 为 `randomHex(32)`；`source` 默认 `'chain_verified'`（v17 前只有链上路径写认领表）；`order_lease_token` 默认空。`GET /api/admin/schema-check` 按 `expectedTables` 校验 `txid_claims` 六列齐全。预置版本仍为 10（`schema.sql` 只预置 v1–v10），v11–v18 由 Worker 按序执行，不得把预置版本改到 18（否则 v11 图标种子等会被跳过）。
 >
 > v18 核对（与 `src/worker.js` MIGRATIONS v18 + `migrations/0018_pending_tx_hash_payment_state_lookup_attempts.sql` 一致）：`orders.pending_tx_hash` / `orders.payment_state` 为 `ADD COLUMN`；`lookup_attempts` 为 `CREATE TABLE IF NOT EXISTS` + 索引 `idx_lookup_attempts_order`。`GET /api/admin/schema-check` 按 `expectedTables` 校验 `orders` 含 `pending_tx_hash` / `payment_state`、`lookup_attempts` 三列齐全。预置版本仍为 10（`schema.sql` 只预置 v1–v10），v11–v18 由 Worker 按序执行。
 >
-> v19 / v20 核对：`pricing_templates`、`categories` 及唯一索引 `idx_categories_key` 已写入 `schema.sql` 与 `expectedTables`。预置版本仍为 10，不得改到 20（否则 v11 图标种子会被跳过）。旧库首次请求由 Worker 升到 v20。
+> v19 / v20 核对：`pricing_templates`、`categories` 及唯一索引 `idx_categories_key` 已写入 `schema.sql` 与 `expectedTables`。预置版本仍为 10，不得改到 21（否则 v11 图标种子会被跳过）。旧库首次请求由 Worker 升到 v21。
+>
+> v21 核对（与 `src/worker.js` MIGRATIONS v21 + `migrations/0021_txid_claims_order_index.sql` 一致）：仅 `CREATE INDEX IF NOT EXISTS idx_txid_claims_order ON txid_claims(order_id)`，不加列、不改行；`GET /api/admin/schema-check` 按 `expectedIndexes` 校验该索引存在。
 
 ## 管理员首次建站（B-P0）
 
@@ -71,8 +89,9 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 ## 兼容性
 
 - 新版 Worker 可读旧库（迁移前版本号落后时自动升级；升级完成前请求会返回迁移错误，不得伪装成功）。
-- 旧版 Worker 可读新库（新表/新列/新索引旧版代码不读取，不影响旧版运行；但新库的 v8 唯一索引会约束旧版下单——
-  旧版无 INSERT 重试逻辑，金额冲突时旧版下单会直接报 500。回滚到旧版前需确认无高并发下单场景，见 RELEASE_READINESS 兼容矩阵）。
+- 旧版 Worker 可读新库（新表/新列/新索引旧版代码不读取，不影响旧版运行；但新库的 v8 / v9 唯一索引会约束旧版下单——
+  旧版无 INSERT 重试逻辑，金额/联系人冲突时旧版下单会直接报 500。回滚到旧版前需确认无高并发下单场景，见 RELEASE_READINESS 兼容矩阵）。
+- **回滚不对称（回滚前逐项检查）**：① v8 / v9 唯一索引留下来继续约束旧代码下单（见上）；② 新订单的 salted 查询密码（v15 起，salt + PBKDF2）旧代码不认，回滚后新订单自助查单/取卡会失败，只能管理员人工处理；③ 回滚前须已备份当前 D1，并人工确认待付款订单与进行中的上游单去向。
 - 只能向前修复，不能直接回滚 Schema：新表/新列不删除，回滚时保留；唯一索引如需回退，须人工评估重复数据后 `DROP INDEX`。
 
 ## 生产上线前（本任务不执行任何生产步骤）
@@ -80,5 +99,5 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 1. 备份生产 D1（`wrangler d1 export` 或 CF 面板快照）。
 2. 在测试 D1 上先演练迁移（见测试报告的迁移测试）。
 3. 部署前跑 `GET /api/admin/schema-check` 预检（只读），确认无差异。
-4. 部署新版 Worker，首次请求自动迁移；用 `GET /api/admin/migrate` 确认 `current_version = 20`。
+4. 部署新版 Worker，首次请求自动迁移；用 `GET /api/admin/migrate` 确认 `current_version = 21`。
 5. 回滚：重新部署旧版 Worker；新列/新表旧版代码不读取，不影响旧版运行。

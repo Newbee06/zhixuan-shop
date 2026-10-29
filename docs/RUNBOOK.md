@@ -103,7 +103,13 @@ PYTHONPATH=/opt/muse/skills/custom-connector-setup/bin python3 ~/workspace/custo
 
 重新部署 main 分支的旧版 Worker 即可。旧库新增的列和表（新增表：`upstream_orders` / `upstream_cache` / `captcha_codes` / `order_rate` / `admin_audit` / `login_attempts` / `txid_claims` / `lookup_rate` / `payments` / `scan_cursors` / `pay_rate` / `app_icons` / `secret_attempts` / `lookup_attempts`；新增列：`query_token_hash` / `query_password_hash` / `query_password_salt` / `reserved_*` / `claim_token` / `claimed_at` / `exception_reason` / `refund_*` / `upstream_lock` / `upstream_lock_expires_at` / `app_icon_key` / `schema_migrations` / `txid_claims.claim_token` / `txid_claims.source` / `txid_claims.order_lease_token` / `orders.pending_tx_hash` / `orders.payment_state`）可保留，旧版代码不读取它们，不影响旧版运行。回滚前备份 D1。
 
-**v8 唯一索引 caveat**：回滚后新库的 v8 唯一索引（`idx_orders_amount_claim` / `idx_orders_contact_pending`）仍会约束旧版下单——旧版无 INSERT 重试逻辑，高并发下金额/联系人冲突时旧版下单会直接报 500。回滚前确认无高并发下单场景，或先评估 DROP 索引（须先人工评估重复数据，见 `migrations/README.md`）。
+**v8 / v9 唯一索引 caveat**：回滚后新库的 v8 / v9 唯一索引（`idx_orders_amount_claim`（v9 重建版，排除 BinanceUID）/ `idx_orders_contact_pending`）仍会约束旧版下单——旧版无 INSERT 重试逻辑，高并发下金额/联系人冲突时旧版下单会直接报 500。回滚前确认无高并发下单场景，或先评估 DROP 索引（须先人工评估重复数据，见 `migrations/README.md`）。
+
+**回滚不对称（回滚前逐项检查）**：
+- v8 / v9 唯一索引会留下来继续约束旧代码下单（见上），DROP 前须先查干跑报告的重复待付款金额/联系方式。
+- 新订单的 salted 查询密码旧代码不认：v15 起新订单的查询密码是 salt + PBKDF2 哈希；回滚到旧版 Worker 后，旧代码的查单/取卡路径不认 salted 哈希，新订单的自助查单/取卡会失败，只能管理员人工处理。
+- 回滚前检查项：① 已备份当前 D1；② 待付款订单数与进行中的上游单（`pending_activation / pending_upstream`）已人工确认去向；③ 干跑（`GET /api/admin/schema-check`，干跑不升库、正式迁移走 `POST /api/admin/migrate`）无未处理差异；④ 回滚后立即冒烟：下单、查单、取卡、取消释放预留。
+- 开关语义（与代码一致）：`prodseller_enabled` 只控制新建上游单、`poll_enabled` 只控制链上扫描；已有上游单号的已付款订单无论两开关为何值都会继续轮询完成，关闸不等于停一切。
 
 ## 域名上线（zhixuanpro.com，仅清单与只读验证，不执行切换）
 

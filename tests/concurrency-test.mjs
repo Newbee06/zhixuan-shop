@@ -510,7 +510,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const cp = await callOld('POST', '/api/admin/change-password', { old_password: '', new_password: 'old-db-pass-123' }, ocookie);
   check('old-db change-password ok', cp.json && cp.json.ok === true, JSON.stringify(cp.json));
   const mg = await callOld('GET', '/api/admin/migrate', null, ocookie);
-  check('old-db migrated to v20', mg.json && mg.json.ok === true && mg.json.current_version === 20, JSON.stringify(mg.json));
+  check('old-db migrated to v20', mg.json && mg.json.ok === true && mg.json.current_version === 21, JSON.stringify(mg.json));
   check('old-db: old order preserved', !!dbOld.prepare("SELECT * FROM orders WHERE order_no='AISOLD001'").get());
   check('old-db: old card preserved', !!dbOld.prepare("SELECT * FROM cards WHERE code='OLD-CARD-1'").get());
   check('old-db: old product preserved', !!dbOld.prepare("SELECT * FROM products WHERE slug='old-prod'").get());
@@ -545,12 +545,14 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   await ctx.drain();
   const txt = await res.text();
   let j = null; try { j = JSON.parse(txt); } catch {}
-  check('migration failure -> 500 sanitized (generic + request_id, no DB leak)', res.status === 500 && /服务器内部错误/.test((j && j.error) || txt) && /关联 ID/.test((j && j.error) || txt) && !/数据库迁移失败/.test((j && j.error) || txt) && !/no such table/.test((j && j.error) || txt), 'status=' + res.status + ' body=' + txt.slice(0, 300));
+  check('migration failure -> 503 migration_failed (structured, no DB leak)', res.status === 503 && j && j.code === 'migration_failed' && /schema-check/.test(j.error || '') && !/no such table/.test((j && j.error) || txt), 'status=' + res.status + ' body=' + txt.slice(0, 300));
   check('migration failure: version not marked', dbBad.prepare('SELECT COUNT(*) AS c FROM schema_migrations WHERE version=1').get().c === 0);
 }
 
 // ===== 11. 审计写入失败不静默成功，也不伪装失败（P3-20）=====
-// 删除 admin_audit 表 → 关键操作（取消）仍返回成功（副作用已提交），但附带 audit_failed: true + warning 警告，
+// 审计写入失败不静默成功：注意自愈（2026-10-30 数据线）会重建被删的表，因此不能再用 DROP TABLE 注入
+// 失败——改用 DROP COLUMN note：表存在（自愈不重建），但 logAudit 的 INSERT 缺列必失败，仍能验证
+// 关键操作（取消）仍返回成功（副作用已提交），但附带 audit_failed: true + warning 警告，
 // 操作员不会误以为操作未生效而重复操作。
 {
   const dbNoAudit = new DatabaseSync(':memory:');
@@ -558,7 +560,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   // 注意：schema.sql 缺 CREATE TABLE schema_migrations 是代码侧缺陷（已在最终汇报中精确报告），测试侧按运行时行为先建表，不改 schema.sql。
     dbNoAudit.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
   dbNoAudit.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
-  dbNoAudit.exec('DROP TABLE admin_audit');
+  dbNoAudit.exec('ALTER TABLE admin_audit DROP COLUMN note');
   // 审计测试的订单走 OKX|X Layer，需有效收款地址（schema 种子为占位符，会拒单）
   dbNoAudit.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111' }));
   const envNoAudit = { ZHIXUAN_SETUP_TOKEN: 'test-setup-token', DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbNoAudit.prepare(sql); const rr = st.get(...params); return rr === undefined ? null : rr; } catch (e) { throw e; } }, async all() { const st = dbNoAudit.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbNoAudit.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes, last_row_id: info.lastInsertRowid } }; } }; return api; }, async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
