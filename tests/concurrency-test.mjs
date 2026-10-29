@@ -65,7 +65,8 @@ async function mockFetch(url, opts = {}) {
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: logs }), { status: 200 });
     }
     if (body.method === 'eth_getTransactionReceipt') {
-      if (!evmReceiptFor || evmReceiptFor.hash !== body.params[0]) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }), { status: 200 });
+      // 审计修复后 RPC 统一发 0x 形：mock 按归一化裸形比对（真实节点同样接受 0x 形），不按提交原形严格比对。
+      if (!evmReceiptFor || String(evmReceiptFor.hash).toLowerCase().replace(/^0x/, '') !== String(body.params[0]).toLowerCase().replace(/^0x/, '')) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }), { status: 200 });
       const raw = (() => { const parts = String(evmReceiptFor.amount).split('.'); const frac = ((parts[1] || '') + '0'.repeat(18)).slice(0, 18); return BigInt(parts[0] + frac); })();
       const log = { address: '0x55d398326f99059fF775485246999027B3197955', blockNumber: '0x' + (1000 - 20).toString(16), transactionHash: evmReceiptFor.hash, logIndex: '0x0',
         topics: ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', '0x' + '0'.repeat(24) + '33'.repeat(20), '0x' + '0'.repeat(24) + String(evmReceiptFor.to).slice(2).toLowerCase()],

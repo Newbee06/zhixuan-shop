@@ -171,7 +171,7 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   ('prodseller_enabled', '0'),
   ('turnstile_enabled', '0'),
   ('turnstile_site_key', ''),
-  ('chain_confirmations', '{"X Layer":1,"BEP20":15}');
+  ('chain_confirmations', '{"BEP20":15}');
 
 -- 种子商品：4 个示例，价格/说明均为占位，请替换为自己真实商品/价格/收款地址
 INSERT OR IGNORE INTO products (slug, title, category, price_usdt, stock_type, description, notice, form_fields, image_emoji, sort, is_active) VALUES
