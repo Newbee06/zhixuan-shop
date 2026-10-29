@@ -183,6 +183,24 @@ npx wrangler deploy
 3. 后台 → 商品：删除 / 替换示例商品；后台 → 卡密：删除演示卡密，导入真实卡密。
 4. 不要把真实密码 / secret 写进代码、日志或 README。
 
+### 建站令牌轮换（2026-10-30 审计修复，必做）
+
+新库首次登录不用默认密码，改用环境变量 `ZHIXUAN_SETUP_TOKEN`（建站令牌）登录，登录后强制改密。
+**代码无法作废环境变量**，所以首次改密后必须手动去 Cloudflare 面板处理令牌，否则令牌长期有效是残留风险：
+
+1. Cloudflare Dashboard → Workers & Pages → 找到本 Worker → Settings → Variables and Secrets。
+2. 找到 `ZHIXUAN_SETUP_TOKEN` → Rotate（换一个随机值）或 Delete（删除）。
+3. 点 Save / 重新部署（改 Secret 后 Worker 需重新部署才生效，按面板提示操作）。
+4. 验证：退出后台再登录，必须走“管理员密码”登录；建站令牌登录路径在密码设置后已失效（代码走密码分支），轮换是纵深防御——防止 D1 被清空重建后令牌复活。
+
+注意：轮换/删除前请确认你已牢记新管理员密码，否则将无法登录后台（只能重建 D1 或重新配置令牌恢复）。
+
+### 管理端 CORS 硬性约束
+
+永不为 `/api/admin/*` 加 `Access-Control-Allow-Origin`（尤其带 Credentials）：管理端用 httpOnly Cookie 会话，
+CSRF 防护依赖“浏览器跨站请求必须带同源证明”这一扇门；一旦加 CORS，跨站读写接口的隔离即被打开。
+本代码库任何位置不得出现该响应头，回归测试断言其不存在。
+
 ## API 列表
 
 | 方法 | 路径 | 说明 |

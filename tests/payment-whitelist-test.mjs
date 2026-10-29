@@ -192,7 +192,8 @@ async function newOrder(payMethod, payChain, contact) {
 function resetEvm() { evmState.latestBlock = 10000; evmState.logs = []; evmState.failAll = false; evmState.receipt = null; evmState.chainIds = null; evmState.hang = null; evmState.hung = false; evmState.abortAt = 0; evmState.calls = []; }
 async function payCall(orderNo, txid) {
   const cid = mkCaptcha('AB12');
-  return call('POST', '/api/orders/' + orderNo + '/pay', { txid: txid, captcha_id: cid, captcha_code: 'AB12' });
+  // 2026-10-30 新口径：/pay 未核验候选写入须带查询密码（与订单下单密码一致）。
+  return call('POST', '/api/orders/' + orderNo + '/pay', { txid: txid, captcha_id: cid, captcha_code: 'AB12', query_password: 'wl-test-pw' });
 }
 function setCursor(chain, block) {
   db.prepare("INSERT INTO scan_cursors (chain, last_block, updated_at) VALUES (?, ?, ?) ON CONFLICT(chain) DO UPDATE SET last_block=excluded.last_block").run(chain, block, '2026-01-01 00:00:00');

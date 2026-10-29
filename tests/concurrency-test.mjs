@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, pbkdf2Sync } from 'node:crypto';
 const dir = path.dirname(fileURLToPath(import.meta.url)) + '/..';
 const db = new DatabaseSync(':memory:');
 // schema.sql 自 v15 起不再建 schema_migrations 表（仅 INSERT 预置版本），与 Worker runMigrations 一致：先建表再执行 schema.sql。
@@ -113,7 +113,8 @@ async function orderCall(body) {
 // /pay 自 P3-4 起须带图形验证码（captcha_id + captcha_code）：每次提交用新验证码。
 async function payCall(orderNo, txid) {
   const cid = mkCaptcha('AB12');
-  return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12' });
+  // 2026-10-30 新口径：/pay 未核验候选写入须带查询密码（与订单下单密码一致）。
+  return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12', query_password: 'conc-test-pw' });
 }
 let pass = 0, fail = 0;
 function check(name, cond, extra = '') { if (cond) { pass++; console.log('PASS:', name); } else { fail++; console.log('FAIL:', name, extra); } }
@@ -666,6 +667,8 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   // BEP20 订单（直接插库）；测的是 /pay 按各链确认策略（BEP20 需 15 确认）
   const a04No = 'AISCONCA04';
   db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0055, '0x3333333333333333333333333333333333333333', datetime('now','+30 minutes'), ?, 'a04@test.example', 'Binance', 'BEP20', '0x3333333333333333333333333333333333333333', 'pending_payment', datetime('now'))").run(a04No, pTxA04.id, JSON.stringify({ contact_email: 'a04@test.example' }));
+  // 2026-10-30 新口径：直接插库的订单也须有 salted 查询密码，否则 /pay 未核验分支按新门拒绝（与 API 下单订单一致）。
+  { const a04Salt = Buffer.from('conc-a04-salt-1234'); db.prepare('UPDATE orders SET query_password_hash=?, query_password_salt=? WHERE order_no=?').run(pbkdf2Sync('conc-test-pw', a04Salt, 100000, 32, 'sha256').toString('base64'), a04Salt.toString('base64'), a04No); }
   const ordA04 = q('SELECT * FROM orders WHERE order_no=?', a04No);
   const toTopic = '0x' + '000000000000000000000000' + String(ordA04.pay_address).slice(2).toLowerCase();
   const amtHex = '0x' + (() => { const parts = String(ordA04.actual_amount).split('.'); const frac = ((parts[1] || '') + '0'.repeat(18)).slice(0, 18); return BigInt(parts[0] + frac); })().toString(16).padStart(64, '0');

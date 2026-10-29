@@ -146,7 +146,7 @@ async function payCall(orderNo, txid) {
   const cid = mkCaptcha('AB12');
   db.prepare('DELETE FROM pay_rate').run();
   const ip = '10.9.0.' + (++ipSeq);
-  return call('POST', '/api/orders/' + encodeURIComponent(orderNo) + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12' }, undefined, { 'x-forwarded-for': ip });
+  return call('POST', '/api/orders/' + encodeURIComponent(orderNo) + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12', query_password: 'test-query-password-123' }, undefined, { 'x-forwarded-for': ip });
 }
 async function adminCall(method, p, body, cookie) { return call(method, p, body, cookie); }
 
