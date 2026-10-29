@@ -3,16 +3,18 @@ main = "src/worker.js"
 compatibility_date = "2024-01-01"
 
 # Cloudflare 免费版：单 Worker + 单 D1 + 2 个 cron，无付费功能。
-# 0 2 * * * = 7 天清理；*/1 * * * * = 轮询自动发货（先查 D1 有无待付款，无则零 RPC）。
+# cron 时区：wrangler.toml 的 cron 一律按 UTC 解释（不是北京时间）。
+# 0 2 * * * = UTC 02:00 = 北京时间 10:00 的 7 天清理；*/1 * * * * = 轮询自动发货（先查 D1 有无待付款，无则零 RPC）。
 
 [[d1_databases]]
 binding = "DB"
 database_name = "aisou-lite-db"
 database_id = "c492fc6c-23d3-4c16-8c49-5a1a3cdf680c"
 
-# ProdSeller / Resend 密钥绝不写进本文件，走 wrangler secret：
+# 密钥绝不写进本文件，走 wrangler secret：
 #   printf '%s' "$VAL" | npx wrangler secret put PRODSELLER_API_KEY
-#   printf '%s' "$VAL" | npx wrangler secret put RESEND_API_KEY
+# 邮件已废弃：RESEND_API_KEY 已废弃、不要再配置（sendEmail 为 stub，不发任何邮件；
+# settings 里的 email_enabled / email_from 仅为 API 兼容保留）。
 # PRODSELLER_BASE_URL 可在 [vars] 覆盖，默认 https://prodseller.com/v1。
 [vars]
 PRODSELLER_BASE_URL = "https://prodseller.com/v1"
@@ -23,6 +25,7 @@ globs = ["**/*.html"]
 fallthrough = true
 
 # 生产 cron（顶层 [triggers]，不要删：合并后生产部署靠它触发轮询/清理；staging 用 [env.staging.triggers]）。
+# 时区重申：cron 按 UTC 解释，0 2 * * * = UTC 02:00 = 北京时间 10:00。
 [triggers]
 crons = ["0 2 * * *", "*/1 * * * *"]
 

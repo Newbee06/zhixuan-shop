@@ -1,12 +1,12 @@
 #!/bin/bash
 # D1 本地环境迁移验证（仅 --local，绝不碰 --remote 生产库）
 # 覆盖：
-#  1. 旧库（去掉 v6/v7 部分，无 schema_migrations）→ Worker 首次请求自动迁移 → 版本=20、旧数据保留
+#  1. 旧库（去掉 v6/v7 部分，无 schema_migrations）→ Worker 首次请求自动迁移 → 版本=21、旧数据保留
 #  2. 旧库重复 upstream_orders 去重（保留每个 order_id 的最新行）+ 唯一索引创建
-#  3. 迁移幂等：重复调用 POST /api/admin/migrate，版本仍为 20，不报错、不丢数据
-#  4. 迁移失败恢复：上游订单表结构损坏 → 迁移失败（500、不标版本）→ 修复后重试 → 成功到 v20
+#  3. 迁移幂等：重复调用 POST /api/admin/migrate，版本仍为 21，不报错、不丢数据
+#  4. 迁移失败恢复：上游订单表结构损坏 → 迁移失败（503 migration_failed、不标版本）→ 修复后重试 → 成功到 v21
 #  5. 新库（当前 schema.sql）→ 无需迁移、API 正常
-#  6. 真正空库（不导入任何 schema）→ Worker 首次请求自动建基表 + 迁移到 v20 + schema-check ok
+#  6. 真正空库（不导入任何 schema）→ Worker 首次请求自动建基表 + 迁移到 v21 + schema-check ok
 #  7. v16 索引：旧库/空库迁移后 6 个索引（idx_cards_product、idx_cards_used、idx_orders_no、idx_orders_status、idx_orders_created、idx_sessions_expires）必须存在；新库 schema.sql 自带 6 个索引，与迁移后结构一致
 #  8. v17 列：旧库/空库迁移后 txid_claims 必须有 claim_token / source / order_lease_token 三列；新库 schema.sql 自带三列，与迁移后结构一致；旧库预置的遗留认领行保留且三列为默认值
 #  9. v18：旧库/空库迁移后 orders 必须有 pending_tx_hash / payment_state 两列 + lookup_attempts 表 + 索引；新库 schema.sql 自带，与迁移后结构一致
@@ -178,8 +178,8 @@ curl -s -b "$COOKIE_JAR_FILE" -X POST "$BASE/api/admin/change-password" -H 'cont
 echo "--- old-db /api/admin/migrate ---"
 MIG=$(curl -s -b "$COOKIE_JAR_FILE" "$BASE/api/admin/migrate")
 echo "$MIG"
-check_migrate_version "$MIG" 20 "old-db migrate"
-echo "OLD-DB MIGRATION OK: version 20"
+check_migrate_version "$MIG" 21 "old-db migrate"
+echo "OLD-DB MIGRATION OK: version 21"
 # 旧数据保留（经 D1 直接查）
 $WR d1 execute aisou-lite-db --local --command="SELECT order_no, status FROM orders WHERE order_no='AISOLDD1001';" 2>&1 | grep -q "AISOLDD1001" || { echo "FAIL: old order lost"; exit 1; }
 $WR d1 execute aisou-lite-db --local --command="SELECT code FROM cards WHERE code='OLD-D1-CARD-1';" 2>&1 | grep -q "OLD-D1-CARD-1" || { echo "FAIL: old card lost"; exit 1; }
@@ -201,11 +201,11 @@ check_v17_claim_columns "old-db"
 # v18：旧库迁移后 orders 两列 + lookup_attempts 表必须存在
 check_v18 "old-db"
 check_v20 "old-db"
-# 幂等：重复迁移两次，版本仍 20，不报错
+# 幂等：重复迁移两次，版本仍 21，不报错
 for i in 1 2; do
   MIGX=$(curl -s -b "$COOKIE_JAR_FILE" -X POST "$BASE/api/admin/migrate" -H 'X-Admin-API: 1')
   echo "re-migrate $i: $MIGX"
-  check_migrate_version "$MIGX" 20 "re-migrate $i"
+  check_migrate_version "$MIGX" 21 "re-migrate $i"
   echo "$MIGX" | grep -q '"ok":true' || { echo "FAIL: re-migrate $i not ok"; exit 1; }
 done
 echo "IDEMPOTENT MIGRATION OK"
@@ -221,7 +221,7 @@ echo "OLD-DB LOOKUP OK"
 # v17 遗留兼容：模拟 v17 前认领行（仅 3 列写入，三列默认）→ 重复迁移 no-op 后行仍在且三列为默认值（不清空/不重建）
 $WR d1 execute aisou-lite-db --local --command="INSERT INTO txid_claims (tx_hash, order_id, claimed_at) VALUES ('legacy-v17-check-tx', (SELECT id FROM orders WHERE order_no='AISOLDD1001'), datetime('now'));" > /dev/null 2>&1
 MIGL=$(curl -s -b "$COOKIE_JAR_FILE" -X POST "$BASE/api/admin/migrate" -H 'X-Admin-API: 1')
-check_migrate_version "$MIGL" 20 "legacy-claim re-migrate"
+check_migrate_version "$MIGL" 21 "legacy-claim re-migrate"
 LEGACY_ROW=$($WR d1 execute aisou-lite-db --local --command="SELECT claim_token, source, order_lease_token FROM txid_claims WHERE tx_hash='legacy-v17-check-tx';" 2>&1)
 echo "$LEGACY_ROW" | grep -q "chain_verified" || { echo "FAIL: legacy claim row lost or source default wrong"; echo "$LEGACY_ROW"; exit 1; }
 echo "V17 LEGACY CLAIM ROW OK: pre-v17-style row preserved with defaults"
@@ -238,7 +238,7 @@ DEV_PID=$!
 trap "kill $DEV_PID 2>/dev/null; true" EXIT
 for i in $(seq 1 30); do
   HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/api/config" 2>/dev/null || echo "000")
-  if [ "$HTTP_CODE" = "500" ]; then echo "WORKER UP (migration failing as expected, HTTP 500)"; break; fi
+  if [ "$HTTP_CODE" = "503" ]; then echo "WORKER UP (migration failing as expected, HTTP 503 migration_failed)"; break; fi
   if [ "$HTTP_CODE" = "200" ]; then echo "FAIL: broken db unexpectedly migrated OK (HTTP 200)"; exit 1; fi
   sleep 2
 done
@@ -257,11 +257,11 @@ FIX_BODY=$(curl -s "$BASE/api/config")
 echo "fix body: $(echo "$FIX_BODY" | head -c 300)"
 echo "$FIX_BODY" | grep -q '"ok":true' || { echo "FAIL: migration did not recover after fix"; exit 1; }
 FIX_VER=$(d1_json_value "SELECT MAX(version) AS v FROM schema_migrations;" "v")
-[ "$FIX_VER" = "20" ] || { echo "FAIL: version != 20 after fix (got '$FIX_VER')"; exit 1; }
-echo "FAILURE RECOVERY OK: fixed db migrated to v20"
+[ "$FIX_VER" = "21" ] || { echo "FAIL: version != 21 after fix (got '$FIX_VER')"; exit 1; }
+echo "FAILURE RECOVERY OK: fixed db migrated to v21"
 kill $DEV_PID 2>/dev/null; trap - EXIT; wait $DEV_PID 2>/dev/null || true
 
-# --- 真正空库：不导入任何 schema，Worker 首次请求必须自动建基表 + 迁移到 v20 ---
+# --- 真正空库：不导入任何 schema，Worker 首次请求必须自动建基表 + 迁移到 v21 ---
 rm -rf .wrangler/state
 $WR dev --local --port $PORT --var ZHIXUAN_SETUP_TOKEN:test-setup-token > "$TMPDIR_D1/wrangler-dev-empty.log" 2>&1 &
 DEV_PID=$!
@@ -274,8 +274,8 @@ EMPTY_CFG=$(curl -s "$BASE/api/config")
 echo "$EMPTY_CFG" | grep -q '"ok":true' || { echo "FAIL: empty db /api/config not ok (base tables missing?)"; echo "$EMPTY_CFG" | head -c 300; exit 1; }
 echo "EMPTY-DB CONFIG OK: first request migrated empty db"
 EMPTY_VER=$(d1_json_value "SELECT MAX(version) AS v FROM schema_migrations;" "v")
-[ "$EMPTY_VER" = "20" ] || { echo "FAIL: empty db version != 20 after migration (got '$EMPTY_VER')"; exit 1; }
-echo "EMPTY-DB MIGRATION OK: version 20"
+[ "$EMPTY_VER" = "21" ] || { echo "FAIL: empty db version != 21 after migration (got '$EMPTY_VER')"; exit 1; }
+echo "EMPTY-DB MIGRATION OK: version 21"
 # 空库迁移后 6 个 v16 索引必须存在
 check_v16_indexes "empty-db"
 # v17：空库迁移后 txid_claims 三列必须存在

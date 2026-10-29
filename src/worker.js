@@ -202,8 +202,17 @@ function categoryJson(row){
   return { id: Number(row.id), key: String(row.cat_key || ''), name: String(row.name || ''), is_active: Number(row.is_active) ? 1 : 0, sort: Number(row.sort) || 0, builtin: BUILTIN_CATEGORY_KEYS[row.cat_key] ? 1 : 0, created_at: row.created_at || '', updated_at: row.updated_at || '' };
 }
 async function categoryGate(env, category, allowKey){
+  // allowKey = 编辑时商品的原分类（新建时传 ''）。
+  // 编辑豁免：若目标分类就是商品原分类，即使该分类已不在 categories 目录里
+  // （v20 前自由文本遗留分类、或目录行被删），编辑时保持原分类仍放行——
+  // 不得因“原分类不在内置三项 / 不在目录里”就拒绝编辑已有商品。
+  // 新商品（allowKey 为空）仍走目录门禁：分类须在目录中存在且启用（含管理员新建的自定义分类，
+  // 不得用未创建的自由文本分类）；改到另一分类时同样须过目录门禁。
   var row = await env.DB.prepare('SELECT cat_key, is_active FROM categories WHERE cat_key = ?').bind(category).first();
-  if (!row) return '分类不存在，请先在「商品分类」中创建';
+  if (!row) {
+    if (allowKey && category === allowKey) return null;
+    return '分类不存在，请先在「商品分类」中创建';
+  }
   if (Number(row.is_active) !== 1 && category !== allowKey) return '分类已停用，不能用于新商品或改到该分类';
   return null;
 }
@@ -852,24 +861,47 @@ var MIGRATIONS = [
     await env.DB.prepare("INSERT OR IGNORE INTO categories (cat_key, name, is_active, sort) VALUES ('recharge', '代充', 1, 10)").run();
     await env.DB.prepare("INSERT OR IGNORE INTO categories (cat_key, name, is_active, sort) VALUES ('account', '成品号', 1, 20)").run();
     await env.DB.prepare("INSERT OR IGNORE INTO categories (cat_key, name, is_active, sort) VALUES ('card', '卡密', 1, 30)").run();
+  } },
+  { version: 21, name: 'txid_claims 加 order_id 索引（按订单查认领）', up: async function (env) {
+    // 幂等：CREATE INDEX IF NOT EXISTS；失败不标记版本，下次重试（runMigrations 的失败语义）。
+    // 不加列、不改现有行：跨形态规范形列由支付线用代码层规范形落库解决，不在此处加列。
+    await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_txid_claims_order ON txid_claims(order_id)');
   } }
 ];
+// 外键口径（数据线核查结论）：SQLite 的 FOREIGN KEY 只在 PRAGMA foreign_keys=ON 的连接上强制。
+// 本函数在迁移路径开头尽力执行 PRAGMA foreign_keys = ON（失败则忽略、不阻塞迁移）；
+// 但 Cloudflare D1 的语句可能不共享同一连接，无法保证该 pragma 跨语句/跨请求持续生效，
+// 故“外键只声明不强制、靠应用层守卫”仍是正式口径（见 README / migrations/README）：
+// 删除/改动守卫在产品删除、订单取消、认领等代码路径里用条件写 + 预检实现，不得只依赖外键。
 // 执行待迁移：先建基表（空库首次迁移），再逐个版本 apply，成功才标记版本；任一失败抛错（带版本号与原因），不得伪装成功。
-async function runMigrations(env) {
+// opts.forceRepair：自愈路径专用——先用 BASE_TABLES 的 CREATE IF NOT EXISTS 补齐缺失基表，
+// 再忽略已标记版本、把全部迁移 up() 重跑一遍（各 up() 均为幂等设计），补齐被误删的迁移表/索引。
+// 注意：forceRepair 只在 ensureMigrated 已确认“版本已是最新、但关键表/索引缺失”时触发，
+// 且重建的表是空表（原表数据已丢失，重建只是让服务可恢复运行，管理员仍须从备份恢复数据）。
+async function runMigrations(env, opts) {
+  try { await env.DB.prepare('PRAGMA foreign_keys = ON').run(); } catch (e) {}
   await env.DB.prepare('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime(\'now\')))').run();
   // 空库首次迁移：仅当库内除迁移表与内部表外没有任何用户表时，才建基表（全新空库）。
   // 若已有部分表但缺基表（如 orders 被误删），不静默重建空表掩盖数据丢失，让 v1 的 ALTER 自然失败、版本不标记。
   // 排除：schema_migrations（迁移表）、sqlite_%（SQLite 内部）、_cf_%（Cloudflare D1 内部，如 _cf_METADATA）。
   var tblRows = await env.DB.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name != 'schema_migrations'").first();
   var isFreshDb = tblRows ? Number(tblRows.c || 0) === 0 : true;
-  if (isFreshDb) {
+  if (isFreshDb && !forceRepair) {
     for (var b = 0; b < BASE_TABLES.length; b++) {
       await env.DB.prepare(BASE_TABLES[b]).run();
     }
   }
+  var forceRepair = !!(opts && opts.forceRepair);
+  if (forceRepair) {
+    for (var fb = 0; fb < BASE_TABLES.length; fb++) {
+      await env.DB.prepare(BASE_TABLES[fb]).run();
+    }
+  }
   var applied = {};
-  var rows = await env.DB.prepare('SELECT version FROM schema_migrations').all();
-  (rows.results || []).forEach(function (r) { applied[Number(r.version)] = 1; });
+  if (!forceRepair) {
+    var rows = await env.DB.prepare('SELECT version FROM schema_migrations').all();
+    (rows.results || []).forEach(function (r) { applied[Number(r.version)] = 1; });
+  }
   var done = [];
   for (var i = 0; i < MIGRATIONS.length; i++) {
     var m = MIGRATIONS[i];
@@ -877,7 +909,7 @@ async function runMigrations(env) {
     try {
       await m.up(env);
     } catch (e) {
-      throw new Error('数据库迁移失败 v' + m.version + '（' + m.name + '）：' + (e && e.message ? e.message : String(e)) + '。版本未标记，请检查 D1 后重试；数据未被破坏。');
+      throw new Error('数据库迁移失败 v' + m.version + '（' + m.name + '）：' + (e && e.message ? e.message : String(e)) + (forceRepair ? '（自愈重跑失败，已有版本标记保持不变，请先修复重复数据/缺失对象后重试）' : '。版本未标记，请检查 D1 后重试；数据未被破坏。'));
     }
     await env.DB.prepare('INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)').bind(m.version).run();
     done.push(m.version);
@@ -888,13 +920,42 @@ async function runMigrations(env) {
   }
   return { ok: true, applied: done, current_version: MIGRATIONS.length };
 }
-// 每次 API 请求的轻量检查：只查一次迁移版本号（单条索引查询），版本已是最新时立即返回，不跑 PRAGMA/DDL/数据修复。
+// 自愈校验用的关键表/索引清单（与 precheckSchema 的 expectedTables / expectedIndexes 同口径，
+// 此处只列名、不列列定义，避免两处大表重复；新增表/索引时两处须同步）。
+var SCHEMA_SELFHEAL_TABLES = ['products', 'cards', 'orders', 'settings', 'admin_meta', 'sessions', 'upstream_orders', 'upstream_cache', 'captcha_codes', 'order_rate', 'admin_audit', 'login_attempts', 'txid_claims', 'lookup_rate', 'schema_migrations', 'payments', 'scan_cursors', 'pay_rate', 'app_icons', 'secret_attempts', 'lookup_attempts', 'pricing_templates', 'categories'];
+var SCHEMA_SELFHEAL_INDEXES = ['idx_upstream_orders_order_unique', 'idx_payments_event_unique', 'idx_orders_amount_claim', 'idx_orders_contact_pending', 'idx_cards_product', 'idx_cards_used', 'idx_orders_no', 'idx_orders_status', 'idx_orders_created', 'idx_sessions_expires', 'idx_categories_key', 'idx_txid_claims_order'];
+async function findMissingSchemaObjects(env) {
+  try {
+    var tRows = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all();
+    var iRows = await env.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all();
+    var tSet = {}; (tRows.results || []).forEach(function (r) { tSet[r.name] = 1; });
+    var iSet = {}; (iRows.results || []).forEach(function (r) { iSet[r.name] = 1; });
+    return {
+      tables: SCHEMA_SELFHEAL_TABLES.filter(function (t) { return !tSet[t]; }),
+      indexes: SCHEMA_SELFHEAL_INDEXES.filter(function (ix) { return !iSet[ix]; })
+    };
+  } catch (e) {
+    // 校验本身失败时不静默放行：当作缺失处理，触发 forceRepair；修复也失败时错误上抛、由调用方返回 503 迁移失败。
+    return { tables: ['<schema_check_failed>'], indexes: [] };
+  }
+}
+// 每次 API 请求的轻量检查：版本已是最新时先校验关键表/索引是否齐全（不能只看 MAX(version)，
+// 否则版本号已是最新、但某表/索引被误删时会被误判为健康、后续请求在缺失对象上随机失败）。
+// 齐全时立即返回（不跑 PRAGMA/DDL/数据修复）；缺失时走 forceRepair 自愈重跑迁移；自愈失败则抛错。
 async function ensureMigrated(env) {
   try {
     var row = await env.DB.prepare('SELECT MAX(version) AS v FROM schema_migrations').first();
     var cur = row ? Number(row.v || 0) : 0;
-    if (cur >= MIGRATIONS.length) return { ok: true, applied: [] };
-  } catch (e) { /* schema_migrations 表不存在 → 走完整迁移 */ }
+    if (cur >= MIGRATIONS.length) {
+      var missing = await findMissingSchemaObjects(env);
+      if (!missing.tables.length && !missing.indexes.length) return { ok: true, applied: [] };
+      try { console.error('migration self-heal: version=' + cur + ' but missing tables=' + missing.tables.join(',') + ' indexes=' + missing.indexes.join(',') + ' — re-running migrations (forceRepair)'); } catch (e2) {}
+      return await runMigrations(env, { forceRepair: true });
+    }
+  } catch (e) {
+    if (e && e.message && e.message.indexOf('数据库迁移失败') === 0) throw e;
+    /* schema_migrations 表不存在 → 走完整迁移 */
+  }
   return await runMigrations(env);
 }
 // 兼容：旧函数名保留为 ensureMigrated 的别名（测试与外部调用仍可使用），不再执行逐请求完整迁移。
@@ -1144,7 +1205,8 @@ async function precheckSchema(env) {
     { name: 'idx_orders_status', unique: 0 },
     { name: 'idx_orders_created', unique: 0 },
     { name: 'idx_sessions_expires', unique: 0 },
-    { name: 'idx_categories_key', unique: 1 }
+    { name: 'idx_categories_key', unique: 1 },
+    { name: 'idx_txid_claims_order', unique: 0 }
   ];
   var curRow = await env.DB.prepare('SELECT MAX(version) AS v FROM schema_migrations').first().catch(function () { return null; });
   var curV = curRow ? Number(curRow.v || 0) : 0;
@@ -1175,7 +1237,33 @@ async function precheckSchema(env) {
     var dup = await env.DB.prepare("SELECT pay_address, actual_amount, COUNT(*) as c FROM orders WHERE status = 'pending_payment' GROUP BY pay_address, actual_amount HAVING c > 1 LIMIT 5").all();
     (dup.results || []).forEach(function (r) { issues.push('重复待付款金额：地址 ' + r.pay_address + ' 金额 ' + r.actual_amount + ' 有 ' + r.c + ' 笔'); });
   } catch (e) {}
-  return { ok: issues.length === 0, current_version: curV, latest_version: MIGRATIONS.length, up_to_date: curV >= MIGRATIONS.length, issues: issues, checks: checks };
+  // 重复待付款联系方式检查（会影响 v8 联系方式部分唯一索引建立；与金额检查同口径，只读报告）
+  try {
+    var dupC = await env.DB.prepare("SELECT contact, product_id, COUNT(*) as c FROM orders WHERE status = 'pending_payment' AND contact != '' GROUP BY contact, product_id HAVING c > 1 LIMIT 5").all();
+    (dupC.results || []).forEach(function (r) { issues.push('重复待付款联系方式：联系方式 ' + r.contact + ' 商品 ' + r.product_id + ' 有 ' + r.c + ' 笔'); });
+  } catch (e) {}
+  // v14 无 salt 订单计数（只读发现项，不计入 issues、不影响 ok——它不是 Schema 缺失，而是凭证方案遗留）：
+  // query_password_hash 非空且 salt 为空 = v14 遗留无 salt 哈希。这类订单自助查单/取卡永久 401
+  // （/secret 要求 salt + PBKDF2；不实现重设密码接口，那是鉴权线的活），只能管理员人工处理。
+  // 计数为 0 时同样返回该字段，便于管理员确认“无遗留”。
+  var v14Count = 0;
+  try {
+    var v14Row = await env.DB.prepare("SELECT COUNT(*) AS c FROM orders WHERE query_password_hash != '' AND (query_password_salt IS NULL OR query_password_salt = '')").first();
+    v14Count = v14Row ? Number(v14Row.c || 0) : 0;
+  } catch (e) {}
+  checks.v14_no_salt_orders = v14Count;
+  var notes = [];
+  if (v14Count > 0) notes.push('v14 无 salt 订单 ' + v14Count + ' 笔：自助查单/取卡永久 401，只能管理员人工处理（不要用重设密码接口绕过，见 README 回滚/遗留一节）');
+  // 外键探针（只读、尽力而为）：返回本次连接上 PRAGMA foreign_keys 的观测值。
+  // D1 语句可能不共享连接，该值不等于“全站已强制”；正式口径仍是“外键只声明不强制、靠应用层守卫”。
+  var fkVal = null;
+  try {
+    var fkRow = await env.DB.prepare('PRAGMA foreign_keys').first();
+    if (fkRow) { var fkKeys = Object.keys(fkRow); fkVal = fkKeys.length ? Number(fkRow[fkKeys[0]]) : null; }
+  } catch (e) {}
+  checks.foreign_keys = fkVal;
+  if (fkVal === 0) notes.push('外键探针：本次连接 PRAGMA foreign_keys=0，外键只声明不强制，删除/改动须靠应用层守卫');
+  return { ok: issues.length === 0, current_version: curV, latest_version: MIGRATIONS.length, up_to_date: curV >= MIGRATIONS.length, issues: issues, checks: checks, v14_legacy_no_salt_orders: v14Count, notes: notes };
 }
 async function logAudit(env, orderId, action, beforeStatus, afterStatus, note) {
   // 返回 true=写入成功，false=写入失败。关键操作调用方必须检查返回值，审计失败不得宣称操作完全成功。
@@ -1307,6 +1395,10 @@ function normalizeActivationEmails(customerFields, qty) {
   return { ok: true, list: list };
 }
 async function prodsellerCreateOrder(env, settings, order, product, customerFields) {
+  // 开关语义（数据线统一口径，见 README 设置一节）：
+  // prodseller_enabled 只控制“新建上游单”（本函数）；不控制已有上游单号的履约完成——
+  // 已有 prodseller_order_id 的已付款订单仍由 pollUpstreamActivations 经 prodsellerGetOrder（无门禁）
+  // 轮询到 delivered 并完成，关闸绝不能把已付款订单 stranded 在 pending_activation。
   // P1-1：门禁单点。所有调用方（fulfillAfterPayment、pollUpstreamActivations、管理员重试）都经此入口，
   // 门禁关闭时一律不发起真实采购；调用方按 403/pending_upstream 处理，不重复下单。
   if (String((settings && settings.prodseller_enabled) || '0') !== '1') return { status: 403, ok: false, data: null, text: '', error: '上游门禁关闭（prodseller_enabled != 1），未发起真实采购', gatewayClosed: true };
@@ -1326,6 +1418,7 @@ async function prodsellerCreateOrder(env, settings, order, product, customerFiel
   return r;
 }
 async function prodsellerGetOrder(env, settings, psId) {
+  // 注意：本函数故意不查 prodseller_enabled 门禁——已有上游单号的履约查询不受开关控制（见上）。
   if (!(await checkUpstreamRateLimit(env))) return { status: 429, ok: false, data: null, text: '', error: '上游调用限流（300/15min），下次轮询重试' };
   return await prodsellerFetch(env, settings, '/orders/' + encodeURIComponent(psId), { method: 'GET' });
 }
@@ -1467,9 +1560,11 @@ async function upsertUpstreamOrder(env, orderId, psId, status, amount, keys, opt
   await env.DB.prepare('INSERT INTO upstream_orders (order_id, prodseller_order_id, status, amount, delivered_keys) VALUES (?, ?, ?, ?, ?) ON CONFLICT(order_id) DO UPDATE SET prodseller_order_id=CASE WHEN excluded.prodseller_order_id = \'\' THEN upstream_orders.prodseller_order_id ELSE excluded.prodseller_order_id END, status=CASE WHEN excluded.status = \'\' THEN upstream_orders.status ELSE excluded.status END, amount=CASE WHEN excluded.amount = 0 THEN upstream_orders.amount ELSE excluded.amount END, delivered_keys=CASE WHEN excluded.delivered_keys = \'\' THEN upstream_orders.delivered_keys ELSE excluded.delivered_keys END').bind(orderId, psId || '', status || '', Number(amount) || 0, keys || '').run();
   return { ok: true };
 }
-// ---- Resend 邮件（Workers 用 fetch，不用 SMTP）----
+// ---- 邮件（已废弃）：sendEmail 为 stub，不发任何邮件 ----
+// 历史 Resend 集成已移除：不再发邮件，交付只看站内查单页。settings 里的 email_enabled / email_from
+// 仅为 API 兼容保留（老测试/老配置读到它们不报错），值不代表可用邮箱配置；RESEND_API_KEY 已废弃、
+// 不要再配置。调用方收到 { ok:false, skipped:'email_removed' } 时不得误以为邮件已发出。
 async function sendEmail(env, to, subject, html) {
-  // 邮箱发货已移除：不再发邮件，交付只看站内查单页。
   return { ok: false, skipped: 'email_removed' };
 }
 function emailHtml(title, lines) {
@@ -1537,6 +1632,10 @@ async function escalateStaleUpstreamOrders(env) {
   } catch (e) {}
 }
 async function pollUpstreamActivations(env, ctx, opts) {
+  // 开关语义（数据线统一口径）：本函数本身不受 poll_enabled / prodseller_enabled 控制——
+  // poll_enabled 只控制 runPolling 的链上支付扫描；prodseller_enabled 只控制新建上游单（prodsellerCreateOrder）。
+  // 已有上游单号的订单（pending_activation / pending_upstream 且已有 prodseller_order_id）无论两开关为何值
+  // 都会继续轮询履约完成；管理员误以为“关闸就停一切”是错的，关闸只停新建、不停已有单的完成。
   // opts.orderId：管理员重试单笔订单时只处理该订单（避免误处理其他订单）；Cron 不传，处理全部待处理订单。
   var onlyOrderId = opts && opts.orderId ? Number(opts.orderId) : 0;
   var settings = await getAllSettings(env);
@@ -3197,8 +3296,11 @@ async function runPolling(env, fetchFn, ctx) {
   // 职责解耦（本轮修复）：poll_enabled 只控制“链上支付扫描 + 需要 RPC 的核验逻辑”，不再控制过期清理。
   // poll_enabled=0 时：跳过全部 RPC（零链上调用），但仍运行过期清理，避免过期未付款订单永久冻结卡密预留。
   // poll_enabled=1 时：先过期清理，再链上扫描。过期清理本身不启用真实收款、不调上游、不改 poll 语义。
+  // 默认值（数据线）：settings 里无 poll_enabled 行时默认 '0'（未配置前 cron 默认不开链上扫描；
+  // 首次建库后先填收款地址/链上配置、再显式把 poll_enabled 置 1 才开扫描）。已有 settings 行的库不受影响
+  // （行值是多少就是多少；schema.sql 种子显式写 '1' 的库同样不受代码默认值影响，见 README 说明）。
   var expired = await expireUnpaidOrders(env);
-  if (String(settings.poll_enabled || '1') === '0') return { ok: true, skipped: 'poll_scan_disabled', checked: 0, fulfilled: 0, expired: expired, expiry_cleanup: 1 };
+  if (String(settings.poll_enabled || '0') === '0') return { ok: true, skipped: 'poll_scan_disabled', checked: 0, fulfilled: 0, expired: expired, expiry_cleanup: 1 };
   // 审计修复（已 posted 单的重组复核）：轮询时对近期已 posted 单复查 receipt（1 小时节流），收据消失/
   // 区块变化即标异常（reconcile_status='reorg_suspect'）并审计；posted 本身为终态，不降级、不改订单状态。
   var recheckRes = { checked: 0, suspect: 0 };
@@ -3430,9 +3532,36 @@ function validPayCombo(method, chain) {
 async function handleApi(req, env, url, ctx) {
   var path = url.pathname;
   var method = req.method;
-  // 数据库迁移（版本化、轻量检查）：版本已是最新时只查一次版本号，不跑 PRAGMA/DDL/数据修复。
-  // 迁移失败时抛错，由顶层返回明确的迁移失败信息，不得伪装成功。
-  await ensureMigrated(env);
+  // ---- 干跑预检（数据线，ensureMigrated 之前）----
+  // GET /api/admin/schema-check 必须是真正的干跑：只读检查当前库结构与重复数据，
+  // 不应用任何迁移。把它放在 ensureMigrated 之前，否则“预检”本身会先把库升到最新版、
+  // 再报告“无差异”，干跑就失去了意义；且迁移已损坏时管理员仍能用干跑定位问题。
+  // 鉴权与下方管理网关同口径（登录 401、未改密 403），GET 不走 CSRF（写操作才校验）。
+  if (path === '/api/admin/schema-check' && method === 'GET') {
+    var dryAdmin = await requireAdmin(env, req);
+    if (!dryAdmin) return err('未登录', 401);
+    var dryMustCh = (await getAdminMeta(env, 'must_change_password')) === '1';
+    var dryHasH = !!(await getAdminMeta(env, 'password_hash'));
+    if ((dryMustCh || !dryHasH)) return err('请先修改初始密码', 403);
+    var preDry = await precheckSchema(env);
+    return json({ ok: true, dry_run: true, migrated: false, precheck: preDry, message: '干跑预检：只读检查，不应用任何迁移、不升库版本；正式迁移请用 POST /api/admin/migrate（迁移前请先备份 D1，见 README / migrations/README 的备份副本预检步骤）' });
+  }
+  // 数据库迁移（版本化、轻量检查）：版本已是最新时只查版本号 + 关键表/索引齐全性，不跑 PRAGMA/DDL/数据修复。
+  // 迁移失败时不得伪装成功、也不得与通用 500 混同：此处捕获后返回可区分的 503 + migration_failed，
+  // 管理员凭 code 与文案即可定位是迁移失败（再用干跑预检看具体差异）。完整错误只记日志，
+  // 已登录管理员的响应里才附 migration_detail；未登录调用方只给通用迁移失败文案，不泄露 DB 细节。
+  // 例外：/api/admin/migrate 本身就是“重试迁移”的入口，ensureMigrated 失败时放行到下方处理器
+  // （POST 会再跑一次 runMigrations 并同样以 503 报告失败；GET 只查版本号）。
+  var migErr = null;
+  try { await ensureMigrated(env); } catch (e) { migErr = e; }
+  if (migErr && !(path === '/api/admin/migrate')) {
+    try { console.error('migration failed on ' + method + ' ' + path + ' :: ' + (migErr && migErr.message ? migErr.message : String(migErr))); } catch (e2) {}
+    var migAdmin = null;
+    try { migAdmin = await requireAdmin(env, req); } catch (e3) {}
+    var migBody = { ok: false, error: '数据库迁移失败（migration_failed）：请管理员先跑 GET /api/admin/schema-check 干跑预检定位差异，修复重复数据/缺失对象后用 POST /api/admin/migrate 重试；正式迁移前请先备份 D1', code: 'migration_failed' };
+    if (migAdmin) migBody.migration_detail = (migErr && migErr.message ? migErr.message : String(migErr));
+    return json(migBody, 503);
+  }
 
   // ---- 公开：配置 ----
   if (path === '/api/config' && method === 'GET') {
@@ -3461,8 +3590,12 @@ async function handleApi(req, env, url, ctx) {
         return [{ key: 'recharge', name: '代充' }, { key: 'account', name: '成品号' }, { key: 'card', name: '卡密' }];
       })(),
       // Turnstile：仅暴露开关与公开 site key（密钥绝不经公开接口返回）。
+      // turnstile_configured（布尔值 only）：开关开 + Site Key 已配 + 服务端 Secret 已配三者齐全才为真；
+      // 任一缺失即为假，前端/管理员凭此判断“启用前是否已配齐”，绝不返回 secret 本身。
+      // 注意：未配 secret 时开启 Turnstile 会全站拒单（verifyTurnstile fail-closed），启用前必须先配 secret。
       turnstile_enabled: String(s.turnstile_enabled || '0') === '1',
       turnstile_site_key: String(s.turnstile_site_key || ''),
+      turnstile_configured: String(s.turnstile_enabled || '0') === '1' && !!String(s.turnstile_site_key || '').trim() && !!(env && env.TURNSTILE_SECRET_KEY),
       // 首页通知弹窗。未配置时关闭、文案为空、version 为 0。version 只由服务端在标题/正文变化时递增。
       notice_popup_enabled: String(s.notice_popup_enabled || '0') === '1',
       notice_popup_title: String(s.notice_popup_title || ''),
@@ -4832,7 +4965,7 @@ async function handleApi(req, env, url, ctx) {
   if (path === '/api/admin/settings' && method === 'GET') {
     var settingsForAdmin = await getAllSettings(env);
     // API Key 只返回“已配置/未配置”布尔值，绝不返回 Key 明文。
-    return json({ ok: true, settings: settingsForAdmin, pricing_templates_enabled: isPricingTemplatesEnabled(settingsForAdmin), pay_config: { methods: payConfigMethods(settingsForAdmin), pay_available: payConfigMethods(settingsForAdmin).some(function (m) { return !!m.enabled && isValidEvmAddress(m.address); }) }, prodseller_api_key_configured: !!(env && env.PRODSELLER_API_KEY) });
+    return json({ ok: true, settings: settingsForAdmin, pricing_templates_enabled: isPricingTemplatesEnabled(settingsForAdmin), pay_config: { methods: payConfigMethods(settingsForAdmin), pay_available: payConfigMethods(settingsForAdmin).some(function (m) { return !!m.enabled && isValidEvmAddress(m.address); }) }, prodseller_api_key_configured: !!(env && env.PRODSELLER_API_KEY), turnstile_configured: String(settingsForAdmin.turnstile_enabled || '0') === '1' && !!String(settingsForAdmin.turnstile_site_key || '').trim() && !!(env && env.TURNSTILE_SECRET_KEY) });
   }
   // 2026-10-30 审计修复：管理员设置写入口白名单——只允许代码里实际使用的 settings 键入库，
   // 未知键（尤其 __proto__、constructor、prototype 这类原型污染键，以及任意拼写错误的键）一律拒绝。
@@ -5294,20 +5427,31 @@ async function handleApi(req, env, url, ctx) {
     if (!auditOkRecon) { console.error('audit failed: payment_reconcile payment=' + payId); return json({ ok: true, audit_failed: true, warning: auditFailMsg(payRow.order_id, 'payment_reconcile') }); }
     return json({ ok: true });
   }
-  // GET /api/admin/schema-check —— Schema 预检（只读）：校验实际 Schema 与目标版本是否一致，版本号与内容不一致时报告差异。
+  // GET /api/admin/schema-check —— 兜底：顶部干跑分支已先行处理（ensureMigrated 之前、只读）。
+  // 正常流程不会走到此处；若走到此处，同样只读返回预检，绝不应用迁移。
   if (path === '/api/admin/schema-check' && method === 'GET') {
     var pre = await precheckSchema(env);
-    return json({ ok: true, precheck: pre });
+    return json({ ok: true, dry_run: true, migrated: false, precheck: pre });
   }
-  // 数据库迁移（显式触发）：返回本次应用的版本列表与当前版本。迁移失败时返回明确的版本号与原因，不伪装成功。
+  // 数据库迁移（显式触发）：返回本次应用的版本列表与当前版本。迁移失败时返回 503 + migration_failed
+  //（与通用 500 区分），带版本号与原因，不伪装成功；失败不标记版本，可修复后重试。
   if (path === '/api/admin/migrate' && method === 'POST') {
-    var migRes = await runMigrations(env);
-    return json({ ok: true, applied: migRes.applied, current_version: migRes.current_version, message: migRes.applied.length ? ('已应用迁移：v' + migRes.applied.join('、v')) : '数据库已是最新版本，无需迁移' });
+    try {
+      var migRes = await runMigrations(env);
+      return json({ ok: true, applied: migRes.applied, current_version: migRes.current_version, message: migRes.applied.length ? ('已应用迁移：v' + migRes.applied.join('、v')) : '数据库已是最新版本，无需迁移' });
+    } catch (migPostErr) {
+      try { console.error('migration failed on POST /api/admin/migrate :: ' + (migPostErr && migPostErr.message ? migPostErr.message : String(migPostErr))); } catch (e2) {}
+      return json({ ok: false, error: '数据库迁移失败（migration_failed）', code: 'migration_failed', migration_detail: (migPostErr && migPostErr.message ? migPostErr.message : String(migPostErr)) }, 503);
+    }
   }
   if (path === '/api/admin/migrate' && method === 'GET') {
-    var curRow = await env.DB.prepare('SELECT MAX(version) AS v FROM schema_migrations').first().catch(function () { return null; });
-    var curV = curRow ? Number(curRow.v || 0) : 0;
-    return json({ ok: true, current_version: curV, latest_version: MIGRATIONS.length, up_to_date: curV >= MIGRATIONS.length });
+    try {
+      var curRow = await env.DB.prepare('SELECT MAX(version) AS v FROM schema_migrations').first().catch(function () { return null; });
+      var curV = curRow ? Number(curRow.v || 0) : 0;
+      return json({ ok: true, current_version: curV, latest_version: MIGRATIONS.length, up_to_date: curV >= MIGRATIONS.length });
+    } catch (migGetErr) {
+      return json({ ok: false, error: '数据库迁移状态读取失败（migration_failed）', code: 'migration_failed', migration_detail: (migGetErr && migGetErr.message ? migGetErr.message : String(migGetErr)) }, 503);
+    }
   }
   return err('接口不存在', 404);
 }
@@ -5374,15 +5518,31 @@ const app = {
     return new Response('Not found', { status: 404 });
   },
   async scheduled(event, env, ctx) {
-    // 定时任务先做轻量迁移检查（版本落后时才执行迁移），迁移失败时抛错进入 Worker 日志，不得静默。
-    await ensureMigrated(env);
+    // 定时任务先做轻量迁移检查（版本落后时才执行迁移）。
+    // 迁移失败时记日志并直接返回（不跑任何分支）：DB 不可用时轮询/清理只会连锁失败，
+    // 且失败必须可定位（console.error + migration_failed），不得静默、不得伪装成功。
+    try { await ensureMigrated(env); } catch (migCronErr) {
+      try { console.error('scheduled migration failed :: ' + (migCronErr && migCronErr.message ? migCronErr.message : String(migCronErr))); } catch (e2) {}
+      return;
+    }
+    // 分支隔离：runPolling / cleanupExpired / pollUpstreamActivations 各自 try/catch，
+    // 一个分支失败记日志（console.error，带分支名）后继续跑下一个分支，不得静默拖垮另一个。
+    // 注意：pollUpstreamActivations 不受 poll_enabled / prodseller_enabled 控制（已有上游单号的履约
+    // 完成不因关闸而停）；poll_enabled 只控制 runPolling 内的链上扫描（见 runPolling 注释）。
+    // cron 时区：wrangler.toml 的 cron 一律按 UTC 解释，'0 2 * * *' = UTC 02:00 = 北京时间 10:00。
+    async function runCronBranch(name, fn) {
+      try { await fn(); } catch (branchErr) {
+        try { console.error('scheduled branch failed: ' + name + ' :: ' + (branchErr && branchErr.message ? branchErr.message : String(branchErr))); } catch (e2) {}
+      }
+    }
     var cron = (event && event.cron) || '';
-    if (cron === '*/1 * * * *') { ctx.waitUntil((async function () { await runPolling(env, fetch, ctx); await pollUpstreamActivations(env, ctx); })()); return; }
-    if (cron === '0 2 * * *') { ctx.waitUntil((async function () { await cleanupExpired(env); await pollUpstreamActivations(env, ctx); })()); return; }
-    // 无 event.cron 时按时间判断：UTC 02:00 跑清理，否则跑轮询（两者都顺带跑上游激活轮询）
+    if (cron === '*/1 * * * *') { ctx.waitUntil((async function () { await runCronBranch('runPolling', async function () { await runPolling(env, fetch, ctx); }); await runCronBranch('pollUpstreamActivations', async function () { await pollUpstreamActivations(env, ctx); }); })()); return; }
+    if (cron === '0 2 * * *') { ctx.waitUntil((async function () { await runCronBranch('cleanupExpired', async function () { await cleanupExpired(env); }); await runCronBranch('pollUpstreamActivations', async function () { await pollUpstreamActivations(env, ctx); }); })()); return; }
+    // 无 event.cron 时按时间判断（回退分支）：UTC 02:00 跑清理，否则跑轮询（两者都顺带跑上游激活轮询）。
+    // 该回退分支同样走分支隔离：清理/轮询失败不得拖垮上游轮询。
     var d = new Date();
-    if (d.getUTCHours() === 2 && d.getUTCMinutes() === 0) { ctx.waitUntil((async function () { await cleanupExpired(env); await pollUpstreamActivations(env, ctx); })()); }
-    else { ctx.waitUntil((async function () { await runPolling(env, fetch, ctx); await pollUpstreamActivations(env, ctx); })()); }
+    if (d.getUTCHours() === 2 && d.getUTCMinutes() === 0) { ctx.waitUntil((async function () { await runCronBranch('cleanupExpired', async function () { await cleanupExpired(env); }); await runCronBranch('pollUpstreamActivations', async function () { await pollUpstreamActivations(env, ctx); }); })()); }
+    else { ctx.waitUntil((async function () { await runCronBranch('runPolling', async function () { await runPolling(env, fetch, ctx); }); await runCronBranch('pollUpstreamActivations', async function () { await pollUpstreamActivations(env, ctx); }); })()); }
   }
 };
 

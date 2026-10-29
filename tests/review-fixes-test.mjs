@@ -1072,10 +1072,12 @@ for (const termStatus of ['cancelled', 'failed']) {
 
 // ================= 独立库测试 =================
 // P3-20：审计失败不再返回 500 — 全部审计点返回成功 + audit_failed: true + warning，副作用照常提交。
+// 注入方式注意（2026-10-30 数据线自愈）：自愈会重建被删的表，DROP TABLE 已不能注入失败，
+// 改用 DROP COLUMN note（表存在、自愈不重建，logAudit INSERT 缺列必失败），断言的性质不变。
 {
   const { db: dbA, env: envA, worker: workerA } = makeEnv();
   const qA = (sql, ...p) => dbA.prepare(sql).get(...p);
-  dbA.exec('DROP TABLE admin_audit');
+  dbA.exec('ALTER TABLE admin_audit DROP COLUMN note');
   async function callA(method, p, body, cookieA, extra) {
     const ctx = makeCtx();
     const headers = { 'content-type': 'application/json', 'X-Admin-API': '1', 'CF-Connecting-IP': nextIp() };

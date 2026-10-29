@@ -3,7 +3,11 @@
 --     upstream_orders, upstream_cache, captcha_codes, order_rate,
 --     admin_audit, login_attempts, txid_claims, lookup_rate,
 --     schema_migrations, payments, scan_cursors, pay_rate,
---     app_icons, secret_attempts
+--     app_icons, secret_attempts, lookup_attempts（v18）,
+--     pricing_templates（v19）, categories（v20）
+-- 本文件已含 v18 / v19 / v20 的表与 v21 的 txid_claims order_id 索引（见文末）；
+-- 但 schema_migrations 预置版本仍只到 v10，v11–v21 由 Worker 首次请求时按序执行（不得把预置版本改到 21，
+-- 否则 v11 图标种子等会被跳过）。新库用本文件建库后，v11–v21 执行为 no-op 或补种子。
 -- 全部 IF NOT EXISTS，可重复执行；不要在此文件放任何真实 secret / 密码。
 
 CREATE TABLE IF NOT EXISTS products (
@@ -163,7 +167,9 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
   -- 定价模板功能开关：默认 0。缺行或空值同样按关闭。不删 pricing_templates，不回滚 v19。
   ('pricing_templates_enabled', '0'),
   ('prodseller_base_url', 'https://prodseller.com/v1'),
-  ('email_from', 'noreply@your-domain.example'),
+  -- 邮件已废弃（数据线口径）：sendEmail 为 stub，不发任何邮件；email_enabled / email_from 仅为 API 兼容保留，
+  -- 值不代表可用邮箱配置。email_from 种子已清空，不要再填真实发件地址；RESEND_API_KEY 已废弃、不要再配置。
+  ('email_from', ''),
   ('email_enabled', '0'),
   ('delivery_mode', 'both'),
   ('cny_rate', '7.2'),
@@ -231,6 +237,8 @@ CREATE TABLE IF NOT EXISTS txid_claims (
   source TEXT NOT NULL DEFAULT 'chain_verified',
   order_lease_token TEXT NOT NULL DEFAULT ''
 );
+-- v21：txid_claims 按订单查认领的索引（MIGRATIONS v21；旧库由 Worker 迁移补建，新库本文件已含；紧贴表定义，旧库剥离脚本删表时连同删索引，避免孤索引建在不存在的表上）。
+CREATE INDEX IF NOT EXISTS idx_txid_claims_order ON txid_claims(order_id);
 
 -- 公开查单限流：按 IP 记查单次数
 CREATE TABLE IF NOT EXISTS lookup_rate (
@@ -239,10 +247,11 @@ CREATE TABLE IF NOT EXISTS lookup_rate (
 );
 CREATE INDEX IF NOT EXISTS idx_lookup_rate_ip ON lookup_rate(ip, created_at);
 
--- 数据库迁移版本：schema.sql 只建结构（已含 v11–v17 的表/列/索引），版本预置到 v10；
--- v11–v17 迁移在 Worker 首次请求时幂等运行（v11 种子 58 张图标、v12/v13 暗版刷新、v14/v15 列/表、v16 补 6 索引、v17 txid_claims 加 3 列）。
--- 不要把预置版本改到 17：否则 v11 迁移被跳过，新库 app_icons 为空表，图标选择器无数据。
--- 新库用本文件建库后 6 个 v16 索引已存在，v16 执行为 no-op；旧库升级时 v16 真正建索引。v17 在新库为 no-op（列已存在），旧库真正加列。
+-- 数据库迁移版本：schema.sql 只建结构（已含 v11–v21 的表/列/索引），版本预置到 v10；
+-- v11–v21 迁移在 Worker 首次请求时幂等运行（v11 种子图标、v12/v13 暗版刷新、v14/v15 列/表、v16 补 6 索引、
+-- v17 txid_claims 加 3 列、v18 pending_tx_hash / payment_state / lookup_attempts、v19 定价模板、v20 分类目录、v21 txid_claims order_id 索引）。
+-- 不要把预置版本改到 21：否则 v11 迁移被跳过，新库 app_icons 为空表，图标选择器无数据。
+-- 新库用本文件建库后 v16 索引与 v21 索引已存在，执行为 no-op；旧库升级时真正建索引/加列。
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT (datetime('now'))
