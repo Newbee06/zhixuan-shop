@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [fix/review-findings-2026-10-18, fix/txid-race-safety-2026-10-18]
+    branches: [main, fix/review-findings-2026-10-18, fix/txid-race-safety-2026-10-18]
   workflow_dispatch:
 
 # 默认只读。除非有经证实的必要需求，不授予写权限。
@@ -158,10 +158,22 @@ jobs:
         run: node tests/txid-race-deterministic-test.mjs
       - name: Pay config test (per-chain switches, old-JSON migration, address validation, ProdSeller test-connection)
         run: node tests/pay-config-test.mjs
+      - name: P1 payment fixes test
+        run: node tests/p1-payment-fixes-test.mjs
       - name: Payments admin list test (reconcile filters, order join, derived contract)
         run: node tests/payments-admin-list-test.mjs
       - name: Admin gaps (fields, pricing templates, categories)
         run: node tests/admin-gaps-test.mjs
+      - name: Pricing templates flag test
+        run: node tests/pricing-templates-flag-test.mjs
+      - name: Audit pay fixes test
+        run: node tests/audit-pay-fixes-test.mjs
+      - name: Audit auth fixes test
+        run: node tests/audit-auth-fixes-test.mjs
+      - name: Audit front fixes test
+        run: node tests/audit-front-fixes-test.mjs
+      - name: Audit data fixes test
+        run: node tests/audit-data-fixes-test.mjs
       - name: "Notice popup config fields and payment-address reject"
         run: node tests/notice-popup-config-test.mjs
       - name: Review config test (CI secret scan patterns, .gitignore, untracked secrets)
@@ -173,7 +185,7 @@ jobs:
         run: |
           {
             echo "## Business regression — ${{ job.status }}"
-            echo "- mock-test / stock-test / security-test / detail-data-image-test / upstream-data-image-test / concurrency-test / release-readiness-test / payment-whitelist-test / app-icons-test / review-fixes-test / review-p1-backend-test / txid-race-deterministic-test / review-config-test / pay-config-test / admin-entry-path-test / payments-admin-list-test / admin-gaps-test / notice-popup-config-test: see logs for counts"
+            echo "- mock-test / stock-test / security-test / detail-data-image-test / upstream-data-image-test / concurrency-test / release-readiness-test / payment-whitelist-test / app-icons-test / review-fixes-test / review-p1-backend-test / txid-race-deterministic-test / review-config-test / pay-config-test / p1-payment-fixes-test / admin-entry-path-test / payments-admin-list-test / admin-gaps-test / pricing-templates-flag-test / audit-pay-fixes-test / audit-auth-fixes-test / audit-front-fixes-test / audit-data-fixes-test / notice-popup-config-test: see logs for counts"
           } >> "$GITHUB_STEP_SUMMARY"
 
   migration:
