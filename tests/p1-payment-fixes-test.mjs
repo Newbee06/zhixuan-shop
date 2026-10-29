@@ -158,11 +158,11 @@ let ordA;
   assert(r.json && r.json.ok && /已自动发货/.test(r.json.message || ''), 'A /pay uppercase TXID fulfills: ' + JSON.stringify(r.json));
   const afterA = q('SELECT * FROM orders WHERE order_no=?', ordA.order_no);
   assert(afterA && afterA.status === 'completed' && (afterA.delivery_content || '').startsWith('P1FIX-KEY-'), 'A order completed with card key: ' + (afterA && afterA.status));
-  assert(afterA && afterA.tx_hash === TX_CANON, 'A order tx_hash stored canonical lowercase: ' + (afterA && afterA.tx_hash));
-  const ledA = q("SELECT * FROM payments WHERE tx_hash=? AND event_key=''", TX_CANON);
+  assert(afterA && afterA.tx_hash === 'a'.repeat(64), 'A order tx_hash stored canonical bare lowercase (no 0x): ' + (afterA && afterA.tx_hash));
+  const ledA = q("SELECT * FROM payments WHERE tx_hash=? AND event_key=''", 'a'.repeat(64));
   assert(ledA && ledA.status !== 'unmatched' && Number(ledA.order_id) === Number(ordA.id), 'A unmatched ledger adopted (status=' + (ledA && ledA.status) + ', order_id=' + (ledA && ledA.order_id) + ')');
-  const claimsA = db.prepare('SELECT * FROM txid_claims WHERE LOWER(tx_hash)=?').all(TX_CANON);
-  assert(claimsA.length === 1 && claimsA[0].tx_hash === TX_CANON, 'A exactly one txid_claim, canonical: ' + JSON.stringify(claimsA.map((x) => x.tx_hash)));
+  const claimsA = db.prepare('SELECT * FROM txid_claims WHERE tx_hash=?').all('a'.repeat(64));
+  assert(claimsA.length === 1 && claimsA[0].tx_hash === 'a'.repeat(64), 'A exactly one txid_claim, canonical bare: ' + JSON.stringify(claimsA.map((x) => x.tx_hash)));
 }
 // ===== P1-C：同一笔钱第二单再提交（小写）必须 409 =====
 {
@@ -176,7 +176,7 @@ let ordA;
   assert(r.status === 409 && /已用于其他订单/.test((r.json && r.json.error) || ''), 'B /pay same tx lowercase rejected 409: ' + r.status + ' ' + JSON.stringify(r.json));
   const afterB = q('SELECT * FROM orders WHERE order_no=?', ordB.order_no);
   assert(afterB && afterB.status === 'pending_payment', 'B order still pending_payment after 409');
-  const claimsB = db.prepare('SELECT * FROM txid_claims WHERE LOWER(tx_hash)=?').all(TX_CANON);
+  const claimsB = db.prepare('SELECT * FROM txid_claims WHERE tx_hash=?').all('a'.repeat(64));
   assert(claimsB.length === 1, 'still exactly one txid_claim after B 409');
 }
 // ===== P1-C 跨形态：裸哈希认领后，带 0x 形态再提交同一笔必须 409 =====

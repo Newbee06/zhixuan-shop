@@ -439,8 +439,9 @@ check('P1-3: settings enable persisted', t.q("SELECT value FROM settings WHERE k
   const o2 = t.insertOrder({ product_id: pM.id, pay_method: 'OKX', pay_chain: 'X Layer', pay_address: addr, actual_amount: 6.0066, status: 'pending_payment', contact: freshContact(), customer_fields: JSON.stringify({ contact_email: freshContact() }) });
   const txS = 'e2'.repeat(32);
   t.db.prepare("INSERT INTO payments (order_id, chain, asset, pay_address, tx_hash, event_key, amount, amount_unit, block_number, confirmations, first_seen_at, status, reconcile_status, reconcile_note, created_at, updated_at) VALUES (?, ?, 'USDT', ?, ?, '', ?, 'USDT', NULL, 0, ?, 'submitted', '', '', ?, ?)").run(o2.id, 'X Layer', addr, txS, 6.0066, nowStr(), nowStr(), nowStr());
-  t.db.prepare('INSERT INTO scan_cursors (chain, last_block, updated_at) VALUES (?, ?, ?) ON CONFLICT(chain) DO UPDATE SET last_block=excluded.last_block').run('X Layer|' + addr, 8900, nowStr());
-  M.logs = [t.evmLogFor(o2, txS, 9000, '0x3')];
+  // 审计修复后逐单回溯 2000 区块：日志块 7500 在逐单窗口 [8000, ...] 之外、仅扫描命中（游标 7000），避免逐单抢先建第二行
+  t.db.prepare('INSERT INTO scan_cursors (chain, last_block, updated_at) VALUES (?, ?, ?) ON CONFLICT(chain) DO UPDATE SET last_block=excluded.last_block').run('X Layer|' + addr, 7000, nowStr());
+  M.logs = [t.evmLogFor(o2, txS, 7500, '0x3')];
   await t.scheduled();
   const rowsS = t.qa('SELECT * FROM payments WHERE tx_hash=?', txS);
   check('P2-1: empty event_key backfill keeps single row', rowsS.length === 1, JSON.stringify(rowsS));

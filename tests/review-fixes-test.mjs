@@ -826,7 +826,8 @@ for (const termStatus of ['cancelled', 'failed']) {
 
 // P3-15：大额分级确认数（X Layer）+ BEP20 保持 15 + 设置校验。
 {
-  // 小额 X Layer：amount 5，默认 1 确认 → latest 100 暂存，101 接受
+  // 小额 X Layer：amount 5，审计修复后默认 12 确认（原默认 1 已上调，与大额默认对齐）→ latest 100 暂存，
+  // 101（1 确认）仍暂存，112（12 确认）接受
   const oSmall = insertOrder({ status: 'pending_payment', pay_method: 'OKX', pay_chain: 'X Layer', pay_address: '0x1111111111111111111111111111111111111111', actual_amount: 5 });
   evm.receipt = evmReceiptFor(oSmall, 'f0'.repeat(32), 100);
   evm.latest = 100;
@@ -834,7 +835,10 @@ for (const termStatus of ['cancelled', 'failed']) {
   check('P3-15: X Layer small order 0 confirmations deferred (auto:false)', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
   evm.latest = 101;
   r = await payCall(oSmall.order_no, 'f0'.repeat(32));
-  check('P3-15: X Layer small order 1 confirmation accepted', r.json && r.json.ok === true && (r.json.auto === true || q('SELECT status FROM orders WHERE id=?', oSmall.id).status === 'completed'), JSON.stringify(r.json));
+  check('P3-15: X Layer small order 1 confirmation deferred (new default 12)', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
+  evm.latest = 112;
+  r = await payCall(oSmall.order_no, 'f0'.repeat(32));
+  check('P3-15: X Layer small order 12 confirmations accepted', r.json && r.json.ok === true && (r.json.auto === true || q('SELECT status FROM orders WHERE id=?', oSmall.id).status === 'completed'), JSON.stringify(r.json));
   // 大额 X Layer：amount 150 >= 100 → 默认 12 确认 → latest 111 暂存，112 接受
   const oLarge = insertOrder({ status: 'pending_payment', pay_method: 'OKX', pay_chain: 'X Layer', pay_address: '0x1111111111111111111111111111111111111111', actual_amount: 150 });
   evm.receipt = evmReceiptFor(oLarge, 'a2'.repeat(32), 100);
@@ -991,11 +995,11 @@ for (const termStatus of ['cancelled', 'failed']) {
   evm.latest = 115; // BEP20 需 15 确认
   r = await payCall(o.order_no, '3'.repeat(64));
   check('P3-27: /pay blocked by live lease writes no ledger (claim-before-ledger)', r.json && !r.json.ok && qa('SELECT * FROM payments WHERE tx_hash=?', '3'.repeat(64)).length === 0, JSON.stringify(r.json));
-  // 解除认领 + 种子“账本已写、履约前崩溃”的 event_key='' 行；预置扫描游标到 9700（早于逐单路径的 latest-200=9800），日志块 9750 仅扫描命中
+  // 解除认领 + 种子“账本已写、履约前崩溃”的 event_key='' 行；预置扫描游标到 7000（日志块 7500 早于逐单路径的 latest-2000=8000，仅扫描命中）
   db.prepare("UPDATE orders SET claim_token='', claimed_at=NULL WHERE id=?").run(o.id);
   db.prepare("INSERT INTO payments (order_id, chain, pay_address, tx_hash, event_key, amount, status) VALUES (?, 'BEP20', '0x2222222222222222222222222222222222222222', ?, '', 9.0066, 'verified')").run(o.id, '3'.repeat(64));
-  db.prepare("INSERT OR REPLACE INTO scan_cursors (chain, last_block) VALUES (?, ?)").run('BEP20|0x2222222222222222222222222222222222222222', 9700);
-  const log = evmLogFor(o, '3'.repeat(64), 9750, '0x7');
+  db.prepare("INSERT OR REPLACE INTO scan_cursors (chain, last_block) VALUES (?, ?)").run('BEP20|0x2222222222222222222222222222222222222222', 7000);
+  const log = evmLogFor(o, '3'.repeat(64), 7500, '0x7');
   evm.logs = [log];
   evm.receipt = null; // 清空收据：逐单路径不再命中，迫使扫描路径回填 event_key
   evm.latest = 10000;

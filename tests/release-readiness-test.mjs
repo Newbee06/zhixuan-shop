@@ -58,7 +58,9 @@ async function mockFetch(url, opts = {}) {
     }
     if (body.method === 'eth_getTransactionReceipt') {
       const tx = body.params[0];
-      const log = evmLogs.find((l) => l.transactionHash === tx);
+      // 审计修复后 RPC 统一发 0x 形：按归一化裸形匹配（真实节点同样接受 0x 形）
+      const norm = (v) => String(v).toLowerCase().replace(/^0x/, '');
+      const log = evmLogs.find((l) => norm(l.transactionHash) === norm(tx));
       if (!log) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }), { status: 200 });
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { status: '0x1', blockNumber: log.blockNumber, logs: [log] } }), { status: 200 });
     }

@@ -1011,7 +1011,8 @@ function expireLease(t, orderId) {
   const origPrepare = t.env.DB.prepare.bind(t.env.DB);
   t.env.DB.prepare = (sql) => {
     const st = origPrepare(sql);
-    if (String(sql) === 'SELECT 1 AS x FROM txid_claims WHERE tx_hash = ? AND order_id = ? LIMIT 1') {
+    // 审计修复后旧认领查询改为双形态（遗留行收养）：注入串同步到新查询，fail-closed 语义不变
+    if (String(sql) === 'SELECT 1 AS x FROM txid_claims WHERE LOWER(tx_hash) IN (?, ?) AND order_id = ? LIMIT 1') {
       st.first = async () => { throw new Error('injected old-claim query failure (A1.1)'); };
     }
     return st;
