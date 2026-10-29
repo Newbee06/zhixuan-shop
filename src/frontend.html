@@ -1309,6 +1309,9 @@ async function submitTxid(no){
   var txEl = el('txid') || el('qtxid-' + no) || el('qtxid');
   // P3-18：提交最前面规范化——去首尾空白后再长度与格式校验，载荷用规范化串。
   var tx = txEl ? txEl.value.trim() : '';
+  // P1-C：前端同样规范化链上哈希（小写 + 0x），与后端规范形一致；站内凭证不动。
+  if (/^0x[0-9a-fA-F]{64}$/.test(tx)) tx = tx.toLowerCase();
+  else if (/^[0-9a-fA-F]{64}$/.test(tx)) tx = '0x' + tx.toLowerCase();
   if (!tx){ toast('请先填写 TXID（不填可直接等待自动发货）', 'error'); return; }
   if (tx.length < 6 || tx.length > 200){ toast('TXID 长度无效（6-200字符）', 'error'); return; }
   if (!/^[A-Za-z0-9_-]+$/.test(tx)){ toast('TXID 仅支持字母数字 _ -', 'error'); return; }
