@@ -167,6 +167,18 @@ let completedOrder;
   const secondRow = q('SELECT * FROM payments WHERE tx_hash=?', SECOND);
   assert(secondRow && secondRow.status === 'verified' && secondRow.reconcile_status === 'overpaid_pending' && Number(secondRow.order_id) === Number(completedOrder.id), 'P4 second row overpaid_pending');
   assert(q('SELECT delivery_content FROM orders WHERE id=?', completedOrder.id).delivery_content === deliveryBefore, 'P4 second payment does not duplicate delivery');
+  // P4 幂等例外（E4a 回归）：本单已认领的第二笔 TXID 重提时，即使链上复核此时失败，
+  // 也不得 409——orders.tx_hash 只保留第一笔，第二笔只在 txid_claims 里，故以本单认领行为准。
+  // 认领行是被测分支的直接输入，此处显式落行以锁定该分支（若过付分流已建行则复用）。
+  if (!q('SELECT * FROM txid_claims WHERE tx_hash=? AND order_id=?', SECOND, completedOrder.id)) {
+    db.prepare('INSERT INTO txid_claims (tx_hash, order_id, claimed_at, claim_token, source) VALUES (?,?,?,?,?)').run(SECOND, completedOrder.id, '2026-10-30 00:00:00', 'PAYOPS-SECOND', 'chain_verified');
+  }
+  const claimsBeforeDup = q('SELECT COUNT(*) AS n FROM txid_claims WHERE order_id=?', completedOrder.id).n;
+  evmState = { tx: '0x' + SECOND, amount: Number(completedOrder.actual_amount) + 1, block: 9000, addr: ADDR_LOWER };
+  r = await payCall(completedOrder.order_no, SECOND);
+  assert(r.json && r.json.ok === true && r.json.auto === false, 'P4 own-claim second TXID resubmit idempotent ok (not 409): ' + JSON.stringify(r.json));
+  assert(q('SELECT COUNT(*) AS n FROM txid_claims WHERE order_id=?', completedOrder.id).n === claimsBeforeDup, 'P4 own-claim resubmit creates no new claim');
+  assert(q('SELECT delivery_content FROM orders WHERE id=?', completedOrder.id).delivery_content === deliveryBefore, 'P4 own-claim resubmit does not duplicate delivery');
 }
 
 // ===== P4：待履约单提交未核验 TXID 同样 409；待付款单候选路径不受影响 =====
