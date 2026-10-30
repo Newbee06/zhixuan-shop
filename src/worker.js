@@ -2419,6 +2419,11 @@ async function claimTxid(env, txHash, orderId, opts) {
       // 见 canonicalizeClaimRow）；收养的租约 UPDATE 必须按实际查到的行形态绑定——此处 UPDATE 用
       // LOWER(tx_hash) 匹配，两种形态都命中，不会静默影响 0 行。
       legacyCase = await canonicalizeClaimRow(env, legacyCase);
+      // P2（拦路修复）：canonicalize 可能返回另一行——规范形行在 legacy SELECT 与 canonicalize
+      // 查询之间被他单并发写入时，canon 查询命中的就是他单行。返回前必须复核归属，与
+      // recordPayment 的 canonicalizePaymentRow 后复核保持一致；不等则拒绝，绝不把他单认领
+      // 当成本单认领成功返回（否则双认领）。
+      if (!legacyCase || Number(legacyCase.order_id) !== Number(orderId)) return { ok: false, reason: '该交易哈希已用于其他订单（请勿重复提交；归属争议请在 D1 中核查 txid_claims 后手动处理）' };
       if (leaseToken) { try { await env.DB.prepare('UPDATE txid_claims SET order_lease_token = ? WHERE LOWER(tx_hash) = ? AND order_id = ?').bind(leaseToken, String(txHash), orderId).run(); } catch (e) {} }
       return { ok: true, created: false, claimToken: legacyCase.claim_token || null, claimedAt: legacyCase.claimed_at || null, source: legacyCase.source || 'chain_verified' };
     }
@@ -3169,7 +3174,10 @@ async function tryExpireOrder(env, orderId) {
     if (expMs == null || expMs >= Date.now()) return { expired: false };
     if (await orderHasConsumedPayment(env, orderId)) return { expired: false, reason: 'consumed_payment' };
     var fallbackNote = isLegacyExpiryFallback(o) ? '（历史回退：expires_at 缺失/无效，按 created_at + 20 分钟判定）' : '';
-    var upd = await env.DB.prepare("UPDATE orders SET status='cancelled', admin_note=?, claim_token='', upstream_lock='', upstream_lock_expires_at=NULL WHERE id=? AND status='pending_payment' AND NOT EXISTS (SELECT 1 FROM txid_claims WHERE order_id = orders.id) AND NOT EXISTS (SELECT 1 FROM payments WHERE order_id = orders.id AND status IN ('verified', 'confirmed', 'posted', 'manual_confirmed')) AND ((paid_at IS NULL AND (claim_token IS NULL OR claim_token='')) OR (claimed_at IS NOT NULL AND claimed_at < datetime('now', '-" + CLAIM_LEASE_MINUTES + " minutes')))").bind('支付超时自动取消（20分钟未到账）' + fallbackNote, orderId).run();
+    // P3（拦路修复）：租约有效性以 claim_token 为准，不以 paid_at 为准。paid_at 只是租约获取时
+    // 的时间戳残留：崩溃后 claim_token 已清空、claimed_at 已清空的订单，paid_at 残留不应永久
+    // 钉死取消；真付款仍由上方 orderHasConsumedPayment 预检 + 本句 NOT EXISTS 双重守卫挡住。
+    var upd = await env.DB.prepare("UPDATE orders SET status='cancelled', admin_note=?, claim_token='', upstream_lock='', upstream_lock_expires_at=NULL WHERE id=? AND status='pending_payment' AND NOT EXISTS (SELECT 1 FROM txid_claims WHERE order_id = orders.id) AND NOT EXISTS (SELECT 1 FROM payments WHERE order_id = orders.id AND status IN ('verified', 'confirmed', 'posted', 'manual_confirmed')) AND ((claim_token IS NULL OR claim_token='') OR (claimed_at IS NOT NULL AND claimed_at < datetime('now', '-" + CLAIM_LEASE_MINUTES + " minutes')))").bind('支付超时自动取消（20分钟未到账）' + fallbackNote, orderId).run();
     if (upd.meta && upd.meta.changes > 0) {
       await releaseReservation(env, orderId);
       await releaseClaimedButUndeliveredCards(env, orderId);
@@ -3243,20 +3251,27 @@ async function recheckPostedPayments(env, fetchFn) {
         var crow = await env.DB.prepare('SELECT payload FROM upstream_cache WHERE key = ?').bind(cacheKey).first();
         if (crow) { var at = Number(parseJsonSafe(crow.payload || '{}', {}).at) || 0; if (at && Date.now() - at < 3600000) continue; }
       } catch (e) {}
-      try { await env.DB.prepare('INSERT INTO upstream_cache (key, payload, fetched_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, fetched_at = excluded.fetched_at').bind(cacheKey, JSON.stringify({ at: Date.now() }), nowISO()).run(); } catch (e) {}
       var ord = null;
       try { ord = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(Number(row.order_id)).first(); } catch (e) { ord = null; }
       if (!ord) continue;
       var rpcMap = parseJsonSafe(settings.rpc_urls, {});
       var rpcs = rpcMap[row.chain] || DEFAULT_RPC_URLS[row.chain] || [];
       var receipt = null;
+      // P5（拦路修复）：“RPC 全挂” ≠ “收据消失”。只有至少一次 RPC 成功返回（哪怕返回
+      // null，即节点明确说无此收据）才算收据消失证据；全部抛错时跳过本行，不标嫌疑、
+      // 不计 checked、不写节流缓存，下轮仍可复核。原代码在 RPC 前就写缓存且不分成功
+      // 与否，RPC 全挂会批量误标嫌疑且 1 小时内无法再证。
+      var rpcOk = false;
       for (var ri = 0; ri < rpcs.length; ri++) {
         try {
           await assertRpcChainId(fetchFn, rpcs[ri], row.chain);
           var rc = await rpcCall(fetchFn, rpcs[ri], 'eth_getTransactionReceipt', ['0x' + bare]);
+          rpcOk = true;
           if (rc) { receipt = rc; break; }
         } catch (e) { continue; }
       }
+      if (!rpcOk) continue;
+      try { await env.DB.prepare('INSERT INTO upstream_cache (key, payload, fetched_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET payload = excluded.payload, fetched_at = excluded.fetched_at').bind(cacheKey, JSON.stringify({ at: Date.now() }), nowISO()).run(); } catch (e) {}
       out.checked++;
       var receiptBn = receipt ? parseInt(receipt.blockNumber, 16) : NaN;
       var bad = !receipt || receipt.status !== '0x1' || (row.block_number != null && (!isFinite(receiptBn) || receiptBn !== Number(row.block_number)));
@@ -4489,7 +4504,11 @@ async function handleApi(req, env, url, ctx) {
     if (co.status !== 'pending_payment') {
       return err('已付款订单不能通过普通取消接口取消（当前状态：' + co.status + '）。如无法交付请走异常处理（标记退款待处理），本系统不执行真实退款，须在系统外退款后点“确认已退款”。', 409);
     }
-    var leaseExpired = !!co.claimed_at && (new Date(String(co.claimed_at).replace(' ', 'T') + 'Z').getTime() < Date.now() - CLAIM_LEASE_MINUTES * 60000);
+    // P3（拦路修复）：租约有效性以 claim_token 为准。claim_token 为空即无有效租约，
+    // paid_at 残留不构成“处理中”；token 非空 + claimed_at 为空仍视为租约未过期（原 P1-3
+    // 语义，防 token 悬空时误放），真付款仍由下方 orderHasConsumedPayment + UPDATE 内
+    // NOT EXISTS 双重守卫挡住。
+    var leaseExpired = !co.claim_token || (!!co.claimed_at && (new Date(String(co.claimed_at).replace(' ', 'T') + 'Z').getTime() < Date.now() - CLAIM_LEASE_MINUTES * 60000));
     if (co.paid_at && !leaseExpired) {
       return err('该订单已确认付款（处理中），不能普通取消。如无法交付请走异常处理流程。', 409);
     }
@@ -4500,7 +4519,9 @@ async function handleApi(req, env, url, ctx) {
     }
     var cancelReason = String(cb2.reason || cb2.admin_note || '').trim();
     // 条件取消：未付款未认领的待付款订单，或租约过期的陈旧认领。并发下付款认领与取消只允许一个成功。
-    var upC = await env.DB.prepare("UPDATE orders SET status='cancelled', admin_note=? WHERE id=? AND status='pending_payment' AND NOT EXISTS (SELECT 1 FROM txid_claims WHERE order_id = orders.id) AND NOT EXISTS (SELECT 1 FROM payments WHERE order_id = orders.id AND status IN ('verified', 'confirmed', 'posted', 'manual_confirmed')) AND (((paid_at IS NULL) AND (claim_token IS NULL OR claim_token='')) OR (claimed_at IS NOT NULL AND claimed_at < datetime('now', '-" + CLAIM_LEASE_MINUTES + " minutes')))").bind(cancelReason, cid).run();
+    // P3（拦路修复，与 tryExpireOrder 同款守卫）：租约有效性以 claim_token 为准，paid_at
+    // 残留 + token 为空 + claimed_at 为空的订单可取消；真付款仍由 NOT EXISTS 守卫挡住。
+    var upC = await env.DB.prepare("UPDATE orders SET status='cancelled', admin_note=? WHERE id=? AND status='pending_payment' AND NOT EXISTS (SELECT 1 FROM txid_claims WHERE order_id = orders.id) AND NOT EXISTS (SELECT 1 FROM payments WHERE order_id = orders.id AND status IN ('verified', 'confirmed', 'posted', 'manual_confirmed')) AND ((claim_token IS NULL OR claim_token='') OR (claimed_at IS NOT NULL AND claimed_at < datetime('now', '-" + CLAIM_LEASE_MINUTES + " minutes')))").bind(cancelReason, cid).run();
     if (!upC.meta || upC.meta.changes === 0) return err('当前状态不可取消（可能已被其他操作处理或已确认付款）');
     // 取消时释放本订单的卡密预留（仅 is_used=0 的预留卡）与陈旧认领已标记未交付的卡。
     await releaseReservation(env, cid);
@@ -5421,6 +5442,11 @@ async function handleApi(req, env, url, ctx) {
     }
     var fact = await getChainReceiptLog(env, getFetch(env), ao, txBare);
     if (!fact) return err('链上重验未通过（收据缺失/确认数不足/收款地址或合约不匹配），拒绝恢复', 409);
+    // P1（拦路修复）：mismatch->verified 转换前先查 TXID 是否已被他单消耗。转换本身不可逆地
+    // 改变账本归属语义，processVerifiedPayment 内部的他单检查发生在转换之后，拦不住已翻转的行；
+    // 故此处前置拦截，转换前就 409，且不触碰账本行、不复活订单、不转退款待处理。
+    var adoptConsumed = await txHashConsumedByOther(env, txBare, aid);
+    if (adoptConsumed) return err(adoptConsumed, 409);
     var expectedAmt = Number(ao.actual_amount || ao.total_usdt);
     var amountMatches = amountsEqual(fact.amount, expectedAmt);
     var evKeyAdopt = payRow ? String(payRow.event_key || '') : String(fact.logIndex || '');
@@ -5458,12 +5484,22 @@ async function handleApi(req, env, url, ctx) {
       if (!revive.meta || revive.meta.changes !== 1) return err('订单状态已变化，请刷新后重试', 409);
       ao = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(aid).first();
     }
+    var adoptConvertedMismatch = false;
     if (payRow && String(payRow.status) === 'mismatch') {
       var conv = await updatePayment(env, Number(payRow.id), { status: 'verified', order_id: aid, amount: fact.amount, reconcile_status: 'pending', reconcile_note: (String(payRow.reconcile_note || '') ? String(payRow.reconcile_note) + '；' : '') + '管理员重验通过（链上实收与订单预期一致），转为 verified' }, { adminReverify: true });
       if (!conv || !conv.ok) return err('账本 mismatch 重验转换失败：' + ((conv && conv.reason) || ''), 409);
+      adoptConvertedMismatch = true;
     }
     var prAdopt = await processVerifiedPayment(env, ao, { txHash: txBare, amount: fact.amount, blockNumber: fact.blockNumber, confirmations: fact.confirmations, eventKey: evKeyAdopt, source: 'chain' }, ctx, { fetchFn: getFetch(env) });
-    if (!prAdopt.ok) return err(prAdopt.reason || '恢复履约失败');
+    if (!prAdopt.ok) {
+      // P1（拦路修复）：后续履约失败时，已翻转的行必须恢复为 mismatch，不得留一条
+      // “已验证、但未履约、且转换原因已失效”的 verified 行误导对账。若行已被履约标为
+      // posted，verified->mismatch 属非法转换，updatePayment 会拒绝，属安全 no-op。
+      if (adoptConvertedMismatch && payRow) {
+        try { await updatePayment(env, Number(payRow.id), { status: 'mismatch', reconcile_status: 'pending', reconcile_note: (String(payRow.reconcile_note || '') ? String(payRow.reconcile_note) + '；' : '') + '管理员恢复失败，已恢复为 mismatch' }); } catch (e) {}
+      }
+      return err(prAdopt.reason || '恢复履约失败');
+    }
     var afterAdopt = await env.DB.prepare('SELECT status FROM orders WHERE id = ?').bind(aid).first();
     await logAudit(env, aid, 'admin_adopt_payment', ao.status, (afterAdopt && afterAdopt.status) || ao.status, '管理员恢复：链上付款事实已核验并履约/转入处理（模式 ' + (prAdopt.mode || '') + '）');
     return json({ ok: true, mode: prAdopt.mode || 'adopted', message: '已恢复并履约/转入处理' });
@@ -5483,6 +5519,10 @@ async function handleApi(req, env, url, ctx) {
     var rvFact = await getChainReceiptLog(env, getFetch(env), rvOrd, String(rvRow.tx_hash || ''));
     if (!rvFact) return err('链上重验未通过（收据缺失/确认数不足/收款地址或合约不匹配）', 409);
     if (!amountsEqual(rvFact.amount, Number(rvOrd.actual_amount || rvOrd.total_usdt))) return err('重验实收仍与订单预期不符，不得转为 verified（请走 adopt-payment 转退款待处理）', 409);
+    // P1（拦路修复）：reverify 没有后续 processVerifiedPayment 把关，转换前必须先查他单消耗；
+    // 否则他单 TXID 会被本单直接翻转为 verified，且无任何后续检查能纠回。
+    var rvConsumed = await txHashConsumedByOther(env, String(rvRow.tx_hash || ''), Number(rvRow.order_id));
+    if (rvConsumed) return err(rvConsumed, 409);
     var rvConv = await updatePayment(env, rvId, { status: 'verified', amount: rvFact.amount, reconcile_status: 'pending', reconcile_note: (String(rvRow.reconcile_note || '') ? String(rvRow.reconcile_note) + '；' : '') + '管理员重验通过（链上实收与订单预期一致），转为 verified' }, { adminReverify: true });
     if (!rvConv || !rvConv.ok) return err('重验转换失败：' + ((rvConv && rvConv.reason) || ''), 409);
     await logAudit(env, Number(rvRow.order_id), 'payment_reverify', 'mismatch', 'verified', '管理员重验付款记录 #' + rvId + ' 通过，转为 verified');
@@ -5526,6 +5566,26 @@ async function handleApi(req, env, url, ctx) {
     }
     var auditOkRecon = await logAudit(env, payRow.order_id, 'payment_reconcile', payRow.status, 'reconciled', '人工对账付款记录 #' + payId + '：' + rNote);
     if (!auditOkRecon) { console.error('audit failed: payment_reconcile payment=' + payId); return json({ ok: true, audit_failed: true, warning: auditFailMsg(payRow.order_id, 'payment_reconcile') }); }
+    return json({ ok: true });
+  }
+  // POST /api/admin/payments/:id/clear-reorg-suspect —— P5（拦路修复）：管理员清除重组嫌疑。
+  // 仅 posted + reconcile_status='reorg_suspect' 的行可清除（posted 终态本身不降级，只清嫌疑
+  // 标记为 resolved；若收据确实消失，下轮复核仍会凭新证据重新标嫌疑，不会永久压住）。
+  // 鉴权走上方 /api/admin/* 网关（requireAdmin + CSRF），未登录 401。清除时同步删除本行
+  // 的节流缓存，使下轮复核能立即凭新证据重判，而不是被旧时间戳再挡 1 小时。
+  var mClearReorg = path.match(/^\/api\/admin\/payments\/(\d+)\/clear-reorg-suspect$/);
+  if (mClearReorg && method === 'POST') {
+    var cbClear = await parseJsonBody(req);
+    var clearId = Number(mClearReorg[1]);
+    var clearRow = await env.DB.prepare('SELECT * FROM payments WHERE id = ?').bind(clearId).first();
+    if (!clearRow) return err('付款记录不存在', 404);
+    if (String(clearRow.status) !== 'posted' || String(clearRow.reconcile_status) !== 'reorg_suspect') return err('仅已入账且标记为重组嫌疑（reorg_suspect）的账本行可清除', 409);
+    var clearNote = String(cbClear.note || '').trim();
+    var clearNoteFull = (String(clearRow.reconcile_note || '') ? String(clearRow.reconcile_note) + '；' : '') + '管理员复核通过，清除重组嫌疑标记' + (clearNote ? '：' + clearNote : '');
+    var clearUp = await updatePayment(env, clearId, { reconcile_status: 'resolved', reconcile_note: clearNoteFull });
+    if (!clearUp || !clearUp.ok) return err('清除重组嫌疑标记失败：' + ((clearUp && clearUp.reason) || ''), 409);
+    try { await env.DB.prepare('DELETE FROM upstream_cache WHERE key = ?').bind('posted_recheck:' + clearId).run(); } catch (e) {}
+    await logAudit(env, clearRow.order_id, 'payment_reorg_cleared', 'reorg_suspect', 'resolved', '管理员复核清除已 posted 账本行 #' + clearId + ' 的重组嫌疑标记' + (clearNote ? '，备注：' + clearNote : ''));
     return json({ ok: true });
   }
   // GET /api/admin/schema-check —— 兜底：顶部干跑分支已先行处理（ensureMigrated 之前、只读）。
