@@ -746,7 +746,10 @@ await t.call('POST', '/api/admin/products', { title: '手动商品-P2-2', catego
     check('P3-6: expires_at ' + name + ' audit notes history fallback', !!note && /历史回退/.test(note.note || ''));
   }
   check('P3-6: valid future expires_at stays pending', t.q('SELECT status FROM orders WHERE id=?', oFuture.id).status === 'pending_payment');
-  check('P3-6: paid order not cancelled by timeout', t.q('SELECT status FROM orders WHERE id=?', oPaid.id).status === 'pending_payment');
+  // P3 拦路修复后的口径：paid_at 只是租约时间戳、不是付款证据（见 orderHasConsumedPayment 注释）；
+  // 本单无认领、无已入账账本、无有效租约，仅 paid_at 残留，超时应可取消；真付款仍由
+  // orderHasConsumedPayment + NOT EXISTS 双重守卫挡住（见 blockers-payment-test 的反向用例）。
+  check('P3-6: paid_at-only residual order (no claim, no ledger) timeout-cancelled per P3 fix', t.q('SELECT status FROM orders WHERE id=?', oPaid.id).status === 'cancelled');
   check('P3-6: valid lease not cancelled by timeout', t.q('SELECT status FROM orders WHERE id=?', oLease.id).status === 'pending_payment');
   check('P3-6: completed order never timeout-cancelled', t.q('SELECT status FROM orders WHERE id=?', oDone.id).status === 'completed');
 }
