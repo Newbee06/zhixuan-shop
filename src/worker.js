@@ -4191,7 +4191,14 @@ async function handleApi(req, env, url, ctx) {
     if (o2.status !== 'pending_payment' && /^(0x)?[0-9a-fA-F]{64}$/.test(txid)) {
       var ownClaimPay = null;
       try { ownClaimPay = await env.DB.prepare('SELECT 1 AS x FROM txid_claims WHERE tx_hash = ? AND order_id = ? LIMIT 1').bind(normalizeChainTxHash(txid), o2.id).first(); } catch (e) { ownClaimPay = null; }
-      if (ownClaimPay) return json({ ok: true, message: '该笔付款已处理，无需重复提交', auto: false });
+      // 例外：pending_activation/pending_upstream 且该笔账本行仍是 verified/confirmed 未补标
+      // posted 时，不得走幂等捷径——必须走下方 processVerifiedPayment 的 alreadySettled 补标
+      // 路径把行标为 posted（audit-pay §5 的既有行为）；其他已结算态才可直接幂等返回。
+      var pendingMarkPay = null;
+      if (ownClaimPay && (o2.status === 'pending_activation' || o2.status === 'pending_upstream')) {
+        try { pendingMarkPay = await env.DB.prepare("SELECT 1 AS x FROM payments WHERE order_id = ? AND tx_hash IN (?, ?) AND status IN ('verified', 'confirmed') LIMIT 1").bind(o2.id, normalizeChainTxHash(txid), '0x' + normalizeChainTxHash(txid)).first(); } catch (e) { pendingMarkPay = null; }
+      }
+      if (ownClaimPay && !pendingMarkPay) return json({ ok: true, message: '该笔付款已处理，无需重复提交', auto: false });
     }
     // TXID 认领严格先到先得：若该 TXID 已被其他订单认领，返回明确错误，不静默接受为“已提交”（否则客户误以为付款成功，实际订单永远无法认领）。
     // 账本/认领/履约全由 processVerifiedPayment 按正确顺序处理：本处核验通过前绝不写账本行。
