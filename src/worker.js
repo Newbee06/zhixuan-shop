@@ -669,7 +669,10 @@ var MIGRATIONS = [
     await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_orders_txhash ON orders(tx_hash)');
     await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_orders_expires ON orders(status, expires_at)');
   } },
-  { version: 2, name: '商品上游字段', up: async function (env) {
+  { version: 2, name: '商品上游字段', up: async function (env, migOpts) {
+    // 2026-10-30 拦路 M2：自愈（forceRepair）只做 DDL，跳过数据修复 UPDATE。
+    // 首次迁移仍回填；自愈重跑时 sell_price=0 可能是管理员有意值，不得静默改回 price_usdt。
+    var skipDataRepairV2 = !!(migOpts && migOpts.forceRepair);
     await addColumnIfMissing(env, 'products', "source TEXT NOT NULL DEFAULT 'self'");
     await addColumnIfMissing(env, 'products', "prodseller_id TEXT NOT NULL DEFAULT ''");
     await addColumnIfMissing(env, 'products', "cost_price REAL NOT NULL DEFAULT 0");
@@ -678,8 +681,8 @@ var MIGRATIONS = [
     await addColumnIfMissing(env, 'products', "delivery_method TEXT NOT NULL DEFAULT 'both'");
     await addColumnIfMissing(env, 'products', "image_data TEXT NOT NULL DEFAULT ''");
     await addColumnIfMissing(env, 'products', "in_stock INTEGER NOT NULL DEFAULT 1");
-    // 兼容旧库：sell_price 仍为 0 时回填为 price_usdt（条件 UPDATE，幂等）
-    await env.DB.prepare('UPDATE products SET sell_price = price_usdt WHERE sell_price IS NULL OR sell_price = 0').run();
+    // 兼容旧库：sell_price 仍为 0 时回填为 price_usdt（条件 UPDATE，幂等；仅首次迁移，自愈跳过）
+    if (!skipDataRepairV2) await env.DB.prepare('UPDATE products SET sell_price = price_usdt WHERE sell_price IS NULL OR sell_price = 0').run();
   } },
   { version: 3, name: '上游订单与缓存表', up: async function (env) {
     await createTableIfMissing(env, "CREATE TABLE IF NOT EXISTS upstream_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER NOT NULL, prodseller_order_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', amount REAL NOT NULL DEFAULT 0, delivered_keys TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY(order_id) REFERENCES orders(id))");
@@ -687,7 +690,10 @@ var MIGRATIONS = [
     await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_upstream_orders_psid ON upstream_orders(prodseller_order_id)');
     await createTableIfMissing(env, "CREATE TABLE IF NOT EXISTS upstream_cache (key TEXT PRIMARY KEY, payload TEXT NOT NULL DEFAULT '', fetched_at TEXT NOT NULL DEFAULT (datetime('now')))");
   } },
-  { version: 4, name: '第一轮安全加固', up: async function (env) {
+  { version: 4, name: '第一轮安全加固', up: async function (env, migOpts) {
+    // 2026-10-30 拦路 M2：自愈只做 DDL，跳过数据修复 UPDATE（首次迁移仍修复；自愈时管理员
+    // 有意改过的 stock_type 不得静默改回 card）。
+    var skipDataRepairV4 = !!(migOpts && migOpts.forceRepair);
     await addColumnIfMissing(env, 'orders', "query_token_hash TEXT NOT NULL DEFAULT ''");
     await addColumnIfMissing(env, 'cards', "reserved_order_id INTEGER");
     await addColumnIfMissing(env, 'cards', "reserved_at TEXT");
@@ -697,8 +703,8 @@ var MIGRATIONS = [
     await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_audit_order ON admin_audit(order_id)');
     await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_audit_created ON admin_audit(created_at)');
     await createTableIfMissing(env, "CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0, blocked_until TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT (datetime('now')))");
-    // 数据修复（条件 UPDATE，幂等）：category=account 的自营商品必须走卡密自动发
-    await env.DB.prepare("UPDATE products SET stock_type='card' WHERE category='account' AND source='self' AND stock_type <> 'card'").run();
+    // 数据修复（条件 UPDATE，幂等）：category=account 的自营商品必须走卡密自动发；仅首次迁移，自愈跳过
+    if (!skipDataRepairV4) await env.DB.prepare("UPDATE products SET stock_type='card' WHERE category='account' AND source='self' AND stock_type <> 'card'").run();
   } },
   { version: 5, name: '验证码与下单限流表', up: async function (env) {
     await createTableIfMissing(env, 'CREATE TABLE IF NOT EXISTS captcha_codes (id TEXT PRIMARY KEY, code_hash TEXT NOT NULL, expires_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0)');
@@ -720,18 +726,27 @@ var MIGRATIONS = [
     await createTableIfMissing(env, 'CREATE TABLE IF NOT EXISTS lookup_rate (ip TEXT NOT NULL, created_at TEXT NOT NULL)');
     await createIndexIfMissing(env, 'CREATE INDEX IF NOT EXISTS idx_lookup_rate_ip ON lookup_rate(ip, created_at)');
   } },
-  { version: 7, name: '第二轮补：上游轮询租约 + upstream_orders 唯一性', up: async function (env) {
+  { version: 7, name: '第二轮补：上游轮询租约 + upstream_orders 唯一性', up: async function (env, migOpts) {
+    // 2026-10-30 拦路 M2：自愈只做 DDL，跳过去重 DELETE（删行是数据修复，不是 DDL）。
+    // 首次迁移仍去重；自愈时若仍有重复行，唯一索引创建会 fail-closed 失败（不得静默删行），
+    // 管理员须经修复接口/人工处理重复行后再重试迁移。
+    var skipDataRepairV7 = !!(migOpts && migOpts.forceRepair);
     // 上游轮询租约：Cron 与管理员重试同时执行时，只能一个处理者持有某订单的租约。
     // upstream_lock（持有者令牌）+ upstream_lock_expires_at（过期时间，崩溃后超时可接管）。
     await addColumnIfMissing(env, 'orders', "upstream_lock TEXT NOT NULL DEFAULT ''");
     await addColumnIfMissing(env, 'orders', "upstream_lock_expires_at TEXT");
     // upstream_orders.order_id 唯一性：先去重（保留每个 order_id 的最新行，与代码 ORDER BY id DESC LIMIT 1 读取口径一致），再建唯一索引。
     // 去重是幂等的（第二次执行删 0 行）；唯一索引建好后 upsert 用 SQLite UPSERT 原子写入，并发不再产生重复行。
-    await env.DB.prepare('DELETE FROM upstream_orders WHERE id NOT IN (SELECT MAX(id) FROM upstream_orders GROUP BY order_id)').run();
+    if (!skipDataRepairV7) await env.DB.prepare('DELETE FROM upstream_orders WHERE id NOT IN (SELECT MAX(id) FROM upstream_orders GROUP BY order_id)').run();
     await env.DB.prepare('DROP INDEX IF EXISTS idx_upstream_orders_order').run();
     await createIndexIfMissing(env, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_upstream_orders_order_unique ON upstream_orders(order_id)');
   } },
-  { version: 8, name: '第四轮：付款账本 + 扫描游标 + /pay 限流 + 金额/联系人唯一性', up: async function (env) {
+  { version: 8, name: '第四轮：付款账本 + 扫描游标 + /pay 限流 + 金额/联系人唯一性', up: async function (env, migOpts) {
+    // 2026-10-30 拦路 M1：自愈时跳过旧金额索引创建，由 v9 以终态定义兜底。
+    // 旧定义 (pay_address, actual_amount) WHERE status='pending_payment' 未排除 BinanceUID，
+    // 自愈重跑到 v8 时若库里已有 2 笔 BinanceUID 同金额待付款单就会唯一冲突失败，把健康库
+    // 打成 503，而 v9 本就会 DROP 旧索引并以排除 BinanceUID 的终态定义重建。正常首次迁移
+    // 不受影响（仍按 v8→v9 顺序跑，首次迁移的 BinanceUID 重复仍按旧口径 fail-closed，须先修数据）。
     // 付款账本 payments：独立记录每一笔链上付款事件（提交/发现/核验/确认/入账/异常），与订单分离。
     // 唯一键 (chain, tx_hash, event_key)：同一链上事件（同一交易内同一笔转账）只能入账一次，防重复轮询/并发重复入账。
     // event_key：EVM 为日志索引（logIndex）；/pay 提交时未知先为空，核验后回填。
@@ -749,7 +764,7 @@ var MIGRATIONS = [
     // 金额唯一性：部分唯一索引，仅约束待付款订单。过期未取消的待付款订单仍占位（轮询 1 分钟内自动取消后释放），
     // 冲突时下单流程捕获唯一约束错误并重新生成金额，不得静默复用。
     // 若已有重复待付款金额，建索引会失败，迁移不标记版本，需先手动处理重复订单（见 RELEASE_READINESS 预检）。
-    await createIndexIfMissing(env, "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_amount_claim ON orders(pay_address, actual_amount) WHERE status = 'pending_payment'");
+    if (!(migOpts && migOpts.forceRepair)) await createIndexIfMissing(env, "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_amount_claim ON orders(pay_address, actual_amount) WHERE status = 'pending_payment'");
     // 同联系方式去重原子化：部分唯一索引，仅约束待付款且 contact 非空的订单。同一联系方式 + 同一商品只能有一笔待付款订单，
     // 与下单时的 SELECT 查重逻辑一致，但由数据库原子保证，消除 TOCTOU 窗口。
     await createIndexIfMissing(env, "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_contact_pending ON orders(contact, product_id) WHERE status = 'pending_payment' AND contact != ''");
@@ -763,13 +778,19 @@ var MIGRATIONS = [
     await env.DB.prepare('DROP INDEX IF EXISTS idx_orders_amount_claim').run();
     await createIndexIfMissing(env, "CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_amount_claim ON orders(pay_address, actual_amount) WHERE status = 'pending_payment' AND pay_method != 'BinanceUID'");
   } },
-  { version: 10, name: '第九轮：X Layer 合约占位符替换为核实的 USDT0 合约（仅精确占位符）', up: async function (env) {
+  { version: 10, name: '第九轮：X Layer 合约占位符替换为核实的 USDT0 合约（仅精确占位符）', up: async function (env, migOpts) {
+    // 2026-10-30 拦路 M2：自愈只做 DDL，跳过 settings 数据 UPDATE（仅首次迁移替换占位符）。
+    var skipDataRepairV10 = !!(migOpts && migOpts.forceRepair);
     // 种子/旧配置里的 X Layer 合约占位符 0xYOUR_XLAYER_USDT_CONTRACT 会覆盖代码默认值且格式非法，
     // 导致 X Layer 核验 fail-closed（永远不认账）。仅替换精确占位符为核实的 USDT0 合约；
     // 管理员已显式配置的任何其他合约一律不动（保留显式配置能力）。
-    await env.DB.prepare("UPDATE settings SET value = REPLACE(value, '\"X Layer\":\"0xYOUR_XLAYER_USDT_CONTRACT\"', '\"X Layer\":\"0x779Ded0c9e1022225f8E0630b35a9b54bE713736\"') WHERE key = 'usdt_contracts' AND value LIKE '%0xYOUR_XLAYER_USDT_CONTRACT%'").run();
+    if (!skipDataRepairV10) await env.DB.prepare("UPDATE settings SET value = REPLACE(value, '\"X Layer\":\"0xYOUR_XLAYER_USDT_CONTRACT\"', '\"X Layer\":\"0x779Ded0c9e1022225f8E0630b35a9b54bE713736\"') WHERE key = 'usdt_contracts' AND value LIKE '%0xYOUR_XLAYER_USDT_CONTRACT%'").run();
   } },
-  { version: 11, name: '第十轮：App 图标库（明/暗两版）+ 商品 app_icon_key + 标题自动匹配', up: async function (env) {
+  { version: 11, name: '第十轮：App 图标库（明/暗两版）+ 商品 app_icon_key + 标题自动匹配', up: async function (env, migOpts) {
+    // 2026-10-30 拦路 M2：自愈只做 DDL + 缺失行种子补齐，跳过标题自动匹配 UPDATE。
+    // 种子 INSERT OR IGNORE 只补缺失行、从不覆盖已有行，故自愈仍可跑；标题匹配会覆盖管理员
+    // 刻意清空的 app_icon_key，故仅首次迁移跑。
+    var skipDataRepairV11 = !!(migOpts && migOpts.forceRepair);
     // App 图标库：每 App 两行（light/dark），前端随主题切换；图标为官方 iOS 图标/品牌 Logo 处理后的 160x160 JPEG。
     await createTableIfMissing(env, "CREATE TABLE IF NOT EXISTS app_icons (app_key TEXT NOT NULL, theme TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', image_data TEXT NOT NULL DEFAULT '', PRIMARY KEY (app_key, theme))");
     await addColumnIfMissing(env, 'products', "app_icon_key TEXT NOT NULL DEFAULT ''");
@@ -777,16 +798,22 @@ var MIGRATIONS = [
     for (var s = 0; s < APP_ICON_SEED.length; s++) {
       await env.DB.prepare('INSERT OR IGNORE INTO app_icons (app_key, theme, name, image_data) VALUES (?, ?, ?, ?)').bind(APP_ICON_SEED[s][0], APP_ICON_SEED[s][1], APP_ICON_SEED[s][2], APP_ICON_SEED[s][3]).run();
     }
-    // 现有商品按标题自动匹配 App 图标（仅当 app_icon_key 为空时；幂等）。
-    var prods = await env.DB.prepare('SELECT id, title, app_icon_key FROM products').all();
-    var rows = (prods.results || []);
-    for (var p = 0; p < rows.length; p++) {
-      if (rows[p].app_icon_key) continue;
-      var k = matchAppIconKey(String(rows[p].title || ''));
-      if (k) await env.DB.prepare('UPDATE products SET app_icon_key = ? WHERE id = ?').bind(k, rows[p].id).run();
+    // 现有商品按标题自动匹配 App 图标（仅当 app_icon_key 为空时；幂等；仅首次迁移，自愈跳过）。
+    if (!skipDataRepairV11) {
+      var prods = await env.DB.prepare('SELECT id, title, app_icon_key FROM products').all();
+      var rows = (prods.results || []);
+      for (var p = 0; p < rows.length; p++) {
+        if (rows[p].app_icon_key) continue;
+        var k = matchAppIconKey(String(rows[p].title || ''));
+        if (k) await env.DB.prepare('UPDATE products SET app_icon_key = ? WHERE id = ?').bind(k, rows[p].id).run();
+      }
     }
   } },
-  { version: 12, name: '第十轮补丁：刷新 App 图标暗版（黑底白 Logo / 彩色 Logo 深底）', up: async function (env) {
+  { version: 12, name: '第十轮补丁：刷新 App 图标暗版（黑底白 Logo / 彩色 Logo 深底）', up: async function (env, migOpts) {
+    // 2026-10-30 拦路 M2：自愈跳过暗版刷新 UPDATE（已应用过一次的版本化刷新不得在自愈时重写；
+    // 若 app_icons 表被删，v11 种子已用最新种子值补齐，无需 v12 再刷）。
+    var skipDataRepairV12 = !!(migOpts && migOpts.forceRepair);
+    if (skipDataRepairV12) return;
     // v11 种子用 INSERT OR IGNORE，已有库的暗版图标不会被新版覆盖；v12 用 UPDATE 把暗版刷为最新种子值。
     // 仅更新 image_data（图标库无后台改名/改图入口，name 恒为种子值）。
     for (var s = 0; s < APP_ICON_SEED.length; s++) {
@@ -794,7 +821,10 @@ var MIGRATIONS = [
       await env.DB.prepare('UPDATE app_icons SET image_data = ? WHERE app_key = ? AND theme = ?').bind(APP_ICON_SEED[s][3], APP_ICON_SEED[s][0], 'dark').run();
     }
   } },
-  { version: 13, name: '第十轮补丁2：刷新 App 图标暗版（Telegram 泛洪填充去白底）', up: async function (env) {
+  { version: 13, name: '第十轮补丁2：刷新 App 图标暗版（Telegram 泛洪填充去白底）', up: async function (env, migOpts) {
+    // 2026-10-30 拦路 M2：同 v12，自愈跳过暗版刷新 UPDATE（仅首次迁移/版本升级时刷）。
+    var skipDataRepairV13 = !!(migOpts && migOpts.forceRepair);
+    if (skipDataRepairV13) return;
     // 种子暗版再次变更（Telegram）时，v12 已标记已应用不会重跑；v13 重新执行同一 UPDATE，把全部暗版刷为当前种子值。
     // 以后每次种子暗版变更，都须追加新迁移版本重刷（已应用的迁移不重跑）。
     for (var s = 0; s < APP_ICON_SEED.length; s++) {
@@ -883,6 +913,11 @@ var MIGRATIONS = [
 // 执行待迁移：先建基表（空库首次迁移），再逐个版本 apply，成功才标记版本；任一失败抛错（带版本号与原因），不得伪装成功。
 // opts.forceRepair：自愈路径专用——先用 BASE_TABLES 的 CREATE IF NOT EXISTS 补齐缺失基表，
 // 再忽略已标记版本、把全部迁移 up() 重跑一遍（各 up() 均为幂等设计），补齐被误删的迁移表/索引。
+// 2026-10-30 拦路 M1/M2 自愈口径（见各版本内注释）：forceRepair 只做 DDL（建表/加列/建索引）
+// + INSERT OR IGNORE 缺失行种子补齐（v11 图标种子、v20 内置分类，只补缺失行、从不覆盖已有行），
+// 跳过一切覆盖已有行的数据修复 UPDATE/DELETE（v2 回填、v4 类型修复、v7 去重删行、v10 占位符替换、
+// v11 标题自动匹配、v12/v13 暗版刷新）；v8 旧金额索引在自愈时跳过、由 v9 终态定义（排除 BinanceUID）兜底重建。
+// 正常首次迁移（forceRepair 为假）不受影响，全部步骤照常跑。
 // 注意：forceRepair 只在 ensureMigrated 已确认“版本已是最新、但关键表/索引缺失”时触发，
 // 且重建的表是空表（原表数据已丢失，重建只是让服务可恢复运行，管理员仍须从备份恢复数据）。
 async function runMigrations(env, opts) {
@@ -914,7 +949,7 @@ async function runMigrations(env, opts) {
     var m = MIGRATIONS[i];
     if (applied[m.version]) continue;
     try {
-      await m.up(env);
+      await m.up(env, { forceRepair: forceRepair });
     } catch (e) {
       throw new Error('数据库迁移失败 v' + m.version + '（' + m.name + '）：' + (e && e.message ? e.message : String(e)) + (forceRepair ? '（自愈重跑失败，已有版本标记保持不变，请先修复重复数据/缺失对象后重试）' : '。版本未标记，请检查 D1 后重试；数据未被破坏。'));
     }
@@ -3559,9 +3594,25 @@ async function handleApi(req, env, url, ctx) {
   // 已登录管理员的响应里才附 migration_detail；未登录调用方只给通用迁移失败文案，不泄露 DB 细节。
   // 例外：/api/admin/migrate 本身就是“重试迁移”的入口，ensureMigrated 失败时放行到下方处理器
   // （POST 会再跑一次 runMigrations 并同样以 503 报告失败；GET 只查版本号）。
+  // 2026-10-30 拦路 M3 自救入口（首选路线：豁免迁移门、不豁免鉴权）：
+  // 迁移失败时全站 503 会把无会话管理员也锁在门外（登录进不去、干跑要会话、重试迁移要会话），
+  // 站内无自救入口。本处只豁免两条路的“迁移门”，绝不豁免鉴权：
+  // ① POST /api/admin/login：登录处理器本身做密码/建站令牌校验 + 登录限流，迁移失败时也要能跑通，
+  //    否则管理员连会话都拿不到；登录所依赖的只是 admin_meta / sessions / login_attempts 基表，
+  //    若这些基表本身已丢，登录会按通用 500 失败（不伪装成功），须走备份恢复——见残留问题。
+  // ② POST /api/admin/repair-duplicate-pending：最小化重复待付款单修复接口（见下方处理器），
+  //    它在通用管理网关之后：仍须 requireAdmin 会话 + 未改密拦截 + CSRF 校验，无会话一律 401，
+  //    且只允许 pending_payment 单的取消/改金额，并复用已消费付款守卫与审计。
+  // 未选“管理端降级为只读+修复模式”的原因：降级模式要给所有管理读接口另开一套豁免与只读守卫，
+  // 面积远大于两条豁免，且读接口在迁移失败的库上本就可能因缺表随机失败；两条豁免已足够闭环
+  // （登录拿会话 → 修复重复单 → 下一请求自愈/重试迁移成功），且不新增任何无鉴权面。
+  // 其他所有路径（含 /api/admin/migrate 之外的全部管理/公开接口）迁移失败时仍 503。
+  var migGateExempt = (path === '/api/admin/migrate') ||
+    (path === '/api/admin/login' && method === 'POST') ||
+    (path === '/api/admin/repair-duplicate-pending' && method === 'POST');
   var migErr = null;
   try { await ensureMigrated(env); } catch (e) { migErr = e; }
-  if (migErr && !(path === '/api/admin/migrate')) {
+  if (migErr && !migGateExempt) {
     try { console.error('migration failed on ' + method + ' ' + path + ' :: ' + (migErr && migErr.message ? migErr.message : String(migErr))); } catch (e2) {}
     var migAdmin = null;
     try { migAdmin = await requireAdmin(env, req); } catch (e3) {}
@@ -4244,6 +4295,50 @@ async function handleApi(req, env, url, ctx) {
   if (isAdminPath && admin && (method === 'POST' || method === 'PUT' || method === 'DELETE')) {
     var csrfErr = checkCsrf(req, url);
     if (csrfErr) return err(csrfErr, 403);
+  }
+
+  // ---- 管理员：迁移失败自救——最小化重复待付款单修复（2026-10-30 拦路 M3）----
+  // 到达此处即已通过通用管理网关：requireAdmin 会话 + 未改密拦截 + CSRF 校验全部生效；
+  // 本接口不在迁移门豁免之外再放宽任何鉴权。只做两件事，绝不做通用订单编辑：
+  // ① action=cancel：仅 pending_payment 单可取消，且复用普通取消的资金安全守卫——
+  //    已有已消费 TXID 认领或已入账付款记录（orderHasConsumedPayment）时一律拒绝（防把已付款单误取消），
+  //    条件 UPDATE 内含 NOT EXISTS 双重守卫，取消时释放卡密预留、记审计（action 以 repair_duplicate_ 开头）。
+  // ② action=change_amount：仅 pending_payment 单可改 actual_amount（pay_address、pay_method、状态均不动），
+  //    新金额须为有限正数，且改后不得与另一笔同 pay_address 待付款单构成终态唯一索引冲突
+  //    （按终态定义：status='pending_payment' 且 pay_method != 'BinanceUID' 的行之间比对；为保守起见，
+  //    本接口对所有待付款单都做同地址同金额冲突检查，比终态索引更严，绝不制造新重复）。
+  // 两动作均只影响单笔订单、不删认领/账本、不做真实退款、不调用上游/链上。修复后下一请求
+  // 会再次触发自愈（或管理员 POST /api/admin/migrate），终态索引可建则全站恢复。
+  if (path === '/api/admin/repair-duplicate-pending' && method === 'POST') {
+    var rb = await parseJsonBody(req);
+    var rOid = rb.order_id != null ? Number(rb.order_id) : null;
+    var rOrder = null;
+    if (rOid) rOrder = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(rOid).first();
+    else if (rb.order_no) rOrder = await env.DB.prepare('SELECT * FROM orders WHERE order_no = ?').bind(String(rb.order_no)).first();
+    if (!rOrder) return err('订单不存在', 404);
+    if (rOrder.status !== 'pending_payment') return err('仅待付款订单可经修复接口处理（当前状态：' + rOrder.status + '）');
+    var rAction = String(rb.action || '');
+    if (rAction !== 'cancel' && rAction !== 'change_amount') return err('action 只能为 cancel 或 change_amount');
+    if (await orderHasConsumedPayment(env, rOrder.id)) return err('该订单已有已消费 TXID 认领或已入账付款记录，不能经修复接口取消/改金额；请走异常处理流程');
+    if (rAction === 'cancel') {
+      var rReason = String(rb.reason || rb.admin_note || '').trim();
+      var upR = await env.DB.prepare("UPDATE orders SET status='cancelled', admin_note=? WHERE id=? AND status='pending_payment' AND NOT EXISTS (SELECT 1 FROM txid_claims WHERE order_id = orders.id) AND NOT EXISTS (SELECT 1 FROM payments WHERE order_id = orders.id AND status IN ('verified', 'confirmed', 'posted', 'manual_confirmed'))").bind(rReason, rOrder.id).run();
+      if (!upR.meta || upR.meta.changes === 0) return err('当前状态不可取消（可能已被其他操作处理或已确认付款）');
+      await releaseReservation(env, rOrder.id);
+      var rAuditOk = await logAudit(env, rOrder.id, 'repair_duplicate_pending_cancel', 'pending_payment', 'cancelled', '迁移失败自救：管理员取消重复待付款单' + (rReason ? '，原因：' + rReason : ''));
+      if (!rAuditOk) { console.error('audit failed: repair_duplicate_pending_cancel order=' + rOrder.id); return json({ ok: true, audit_failed: true, warning: auditFailMsg(rOrder.id, 'repair_duplicate_pending_cancel') }); }
+      return json({ ok: true, order_id: rOrder.id, action: 'cancel', status: 'cancelled' });
+    }
+    // change_amount
+    var rNew = Number(rb.new_actual_amount);
+    if (!isFinite(rNew) || rNew <= 0) return err('new_actual_amount 须为正数');
+    var rConflict = await env.DB.prepare("SELECT id FROM orders WHERE id != ? AND status = 'pending_payment' AND pay_address = ? AND actual_amount = ? LIMIT 1").bind(rOrder.id, rOrder.pay_address || '', rNew).first();
+    if (rConflict) return err('改后金额仍与另一笔待付款单冲突（同收款地址同金额重复），请换一个唯一金额');
+    var upAmt = await env.DB.prepare("UPDATE orders SET actual_amount = ? WHERE id = ? AND status = 'pending_payment'").bind(rNew, rOrder.id).run();
+    if (!upAmt.meta || upAmt.meta.changes === 0) return err('当前状态不可改金额（可能已被其他操作处理）');
+    var rAuditOk2 = await logAudit(env, rOrder.id, 'repair_duplicate_pending_change_amount', 'pending_payment', 'pending_payment', '迁移失败自救：管理员把重复待付款单金额由 ' + rOrder.actual_amount + ' 改为 ' + rNew);
+    if (!rAuditOk2) { console.error('audit failed: repair_duplicate_pending_change_amount order=' + rOrder.id); return json({ ok: true, audit_failed: true, warning: auditFailMsg(rOrder.id, 'repair_duplicate_pending_change_amount') }); }
+    return json({ ok: true, order_id: rOrder.id, action: 'change_amount', actual_amount: rNew });
   }
 
   if (path === '/api/admin/stats' && method === 'GET') {
