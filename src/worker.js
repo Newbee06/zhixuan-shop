@@ -2562,11 +2562,22 @@ async function markCardsUsed(env, orderId, cardIds, mode) {
 }
 async function unmarkCards(env, orderId, cardIds) {
   // 补偿：将本轮标记的卡恢复为预留态（仅本订单标记的卡）。
-  // P1-7：订单状态保护——订单已 completed 时绝不还卡（已交付的卡还回池子会造成同一张卡卖两次）。
+  // P1-7：订单状态保护——订单已 completed 时，已随交付内容发出的卡绝不还卡（还回池子会造成同一张卡卖两次）。
+  // P6：但 completed 时不得一律拒绝补偿——本轮新标记且未随交付内容发出的卡，若不还回池子会永久
+  // stranded（已完成订单不会再被 releaseResidual 回访）。按交付内容行精确匹配区分：已交付的保留，未交付的释放回可用池。
   // B-P3-6：订单已 cancelled 时直接释放（reserved_order_id=NULL），不恢复为“已取消订单的预留”，
   // 否则取消订单的卡仍被预留占用、须等兜底清理才释放。
-  var o = await env.DB.prepare('SELECT status FROM orders WHERE id = ?').bind(orderId).first().catch(function () { return null; });
-  if (o && o.status === 'completed') return;
+  var o = await env.DB.prepare('SELECT status, delivery_content FROM orders WHERE id = ?').bind(orderId).first().catch(function () { return null; });
+  if (o && o.status === 'completed') {
+    var delivered = {};
+    String(o.delivery_content || '').split('\n').forEach(function (s) { var t = s.trim(); if (t) delivered[t] = 1; });
+    for (var ci = 0; ci < cardIds.length; ci++) {
+      var crow = await env.DB.prepare('SELECT code FROM cards WHERE id = ?').bind(cardIds[ci]).first().catch(function () { return null; });
+      if (crow && delivered[String(crow.code || '').trim()]) continue;
+      await env.DB.prepare('UPDATE cards SET is_used=0, order_id=NULL, reserved_order_id=NULL, reserved_at=NULL WHERE id=? AND is_used=1 AND order_id=?').bind(cardIds[ci], orderId).run();
+    }
+    return;
+  }
   if (o && o.status === 'cancelled') {
     for (var i = 0; i < cardIds.length; i++) {
       await env.DB.prepare('UPDATE cards SET is_used=0, order_id=NULL, reserved_order_id=NULL, reserved_at=NULL WHERE id=? AND is_used=1 AND order_id=?').bind(cardIds[i], orderId).run();
@@ -3321,6 +3332,7 @@ async function retryPendingFulfillOrders(env, ctx) {
     var list = (rows.results || []);
     for (var i = 0; i < list.length; i++) {
       var o = list[i];
+      var heldRetryLock = null;
       try {
         if (o.claim_token && o.claimed_at) {
           var claimedMs = new Date(String(o.claimed_at).replace(' ', 'T') + 'Z').getTime();
@@ -3333,16 +3345,33 @@ async function retryPendingFulfillOrders(env, ctx) {
         try { var sj = JSON.parse(o.product_snapshot || '{}'); if (sj && sj.stock_type) snapT = sj.stock_type; } catch (e) {}
         var st = snapT || prod.stock_type;
         if (!(st === 'card' || prod.category === 'account')) { out.still++; continue; }
+        // P6：重试路径同样以 upstream_lock 条件认领（与手动发货同口径，5 分钟过期，过期可接管），
+        // 手动发货已持有效锁时本轮不得再标记另一张卡；锁被他人持有时直接跳过，不抢卡、不改状态。
+        var retryLock = randomHex(16);
+        var retryLockExp = new Date(Date.now() + 5 * 60000).toISOString().replace('T', ' ').slice(0, 19);
+        var lockR = await env.DB.prepare("UPDATE orders SET upstream_lock=?, upstream_lock_expires_at=? WHERE id=? AND status='pending_fulfill' AND (upstream_lock IS NULL OR upstream_lock='' OR upstream_lock_expires_at IS NULL OR upstream_lock_expires_at < datetime('now'))").bind(retryLock, retryLockExp, o.id).run();
+        if (!lockR.meta || lockR.meta.changes !== 1) { out.still++; continue; }
+        heldRetryLock = retryLock;
+        var releaseRetryLock = async function () { try { await env.DB.prepare('UPDATE orders SET upstream_lock=?, upstream_lock_expires_at=NULL WHERE id=? AND upstream_lock=?').bind('', o.id, retryLock).run(); } catch (e) {} };
+        // 测试钩子（仅测试用，生产 env 无 __testHooks 时 no-op，见 testHook）：在持锁后、领卡前暂停，
+        // 供测试确定性复现“锁过期后他路完成、重试领卡后完成失败”的补偿场景；钩子抛错被 testHook 吞掉。
+        await testHook(env, 'beforeRetryClaimCards', { orderId: o.id });
         out.checked++;
         var cc = await claimCardsForOrder(env, o.id, o.product_id, o.quantity);
-        if (!cc.ok) { out.still++; continue; }
-        var upd = await env.DB.prepare("UPDATE orders SET status='completed', delivery_content=?, fulfilled_at=?, claim_token='' WHERE status='pending_fulfill' AND id=?").bind(cc.codes.join('\n'), nowISO(), o.id).run();
-        if (!upd.meta || upd.meta.changes !== 1) { await unmarkCards(env, o.id, cc.newlyMarkedIds); out.still++; continue; }
+        if (!cc.ok) { await releaseRetryLock(); heldRetryLock = null; out.still++; continue; }
+        // 完成 UPDATE 同样带锁令牌守卫并清锁：锁已易主/过期被接管时行数为 0，走补偿，不谎称完成。
+        var upd = await env.DB.prepare("UPDATE orders SET status='completed', delivery_content=?, fulfilled_at=?, claim_token='', upstream_lock='', upstream_lock_expires_at=NULL WHERE status='pending_fulfill' AND id=? AND upstream_lock=?").bind(cc.codes.join('\n'), nowISO(), o.id, retryLock).run();
+        if (!upd.meta || upd.meta.changes !== 1) { await unmarkCards(env, o.id, cc.newlyMarkedIds); await releaseRetryLock(); heldRetryLock = null; out.still++; continue; }
+        heldRetryLock = null;
         await releaseReservation(env, o.id);
         try { await logAudit(env, o.id, 'pending_fulfill_recovered', 'pending_fulfill', 'completed', '补货后自动恢复：pending_fulfill 订单已自动领取卡密并完成'); } catch (e) {}
         try { var freshR = await env.DB.prepare('SELECT * FROM orders WHERE id=?').bind(o.id).first(); if (freshR) await deliverWithCtx(ctx, sendOrderEmail(env, freshR, prod, 'delivered', cc.codes.join('\n'))); } catch (e) {}
         out.recovered++;
-      } catch (e) { out.still++; continue; }
+      } catch (e) {
+        // 意外异常时若仍持锁，尽力按令牌释放（令牌不符时 UPDATE 命中 0 行，不会误释他人的锁）；锁本身 5 分钟过期，可接管。
+        if (heldRetryLock) { try { await env.DB.prepare('UPDATE orders SET upstream_lock=?, upstream_lock_expires_at=NULL WHERE id=? AND upstream_lock=?').bind('', o.id, heldRetryLock).run(); } catch (e2) {} }
+        out.still++; continue;
+      }
     }
   } catch (e) {}
   return out;
@@ -3450,6 +3479,8 @@ function sanitizeOrderForPublic(o, level) {
     delete out.contact;
     delete out.txid;
     delete out.tx_hash;
+    // A1：summary 分支同样删 pending_tx_hash（与 tx_hash/txid 同口径，未核验候选 TXID 不得经匿名/公开摘要泄露）。
+    delete out.pending_tx_hash;
     delete out.admin_note;
     delete out.wallet_address;
     delete out.pay_address;
@@ -4188,11 +4219,15 @@ async function handleApi(req, env, url, ctx) {
     // （PBKDF2；遗留明文密码接受并顺手迁移）。缺失或错误 → 401 且不写候选，知订单号的路人
     // 再也不能往他人订单里塞候选 TXID、干扰后续人工确认。已核验通过的路径不受此门影响
     // （链上核验本身就是归属证明）；人工确认仍只认候选，但候选现已是买家密码认证过的。
-    if (o2.status === 'pending_payment') {
-      var payPwOk = await verifyOrderQueryPassword(env, o2, b.query_password);
-      if (!payPwOk) return err('查询密码错误', 401);
-      await env.DB.prepare("UPDATE orders SET pending_tx_hash = ?, txid = CASE WHEN txid IS NULL OR txid = '' THEN ? ELSE txid END WHERE order_no = ? AND status = 'pending_payment'").bind(txid, txid, no2).run();
+    // P4：已结算/待履约订单的未核验提交不得谎称“已提交，轮询会核验”——轮询/扫描/重匹配
+    // 只处理 pending_payment 订单，本笔既未核验通过，也不得给已结算单写无归属候选记录。
+    // 明示 409，不承诺轮询会自动核验；已核验通过的第二笔已在上方走 processVerifiedPayment 分流，不受影响。
+    if (o2.status !== 'pending_payment') {
+      return err('该订单已进入结算/履约状态，提交的 TXID 未能通过链上核验，未记录为候选；请确认交易已到账后重试，或联系客服人工对账', 409);
     }
+    var payPwOk = await verifyOrderQueryPassword(env, o2, b.query_password);
+    if (!payPwOk) return err('查询密码错误', 401);
+    await env.DB.prepare("UPDATE orders SET pending_tx_hash = ?, txid = CASE WHEN txid IS NULL OR txid = '' THEN ? ELSE txid END WHERE order_no = ? AND status = 'pending_payment'").bind(txid, txid, no2).run();
     return json({ ok: true, message: 'TXID 已提交，轮询会在 1-3 分钟内自动核验；若链上还未确认请稍后再查', auto: false });
   }
 
