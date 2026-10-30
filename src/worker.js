@@ -4182,8 +4182,16 @@ async function handleApi(req, env, url, ctx) {
     // （不重复核验/认领/写候选），客户端重试不再被当成失败；pending_payment 订单不走此路
     // （可能是“认领保留、未履约”的恢复场景，必须走完整流程恢复账本与履约，见 G10）。
     // 他单 TXID 仍由 txHashConsumedByOther / 认领竞态挡住。
+    // P4 拦路修复补丁：orders.tx_hash 只保留第一笔已消费 TXID，第二笔付款的 TXID 不在 tx_hash
+    // 里，仅靠上式会把“本单第二笔 TXID 重提”误判为未核验而 409，破坏幂等；因此再查本单认领
+    // 行——该 TXID 已被本单认领即同样幂等返回。未被本单认领的未核验 TXID 仍走下方 409。
     if (o2.status !== 'pending_payment' && /^(0x)?[0-9a-fA-F]{64}$/.test(txid) && o2.tx_hash && normalizeChainTxHash(txid) === normalizeChainTxHash(String(o2.tx_hash))) {
       return json({ ok: true, message: '该笔付款已处理，无需重复提交', auto: false });
+    }
+    if (o2.status !== 'pending_payment' && /^(0x)?[0-9a-fA-F]{64}$/.test(txid)) {
+      var ownClaimPay = null;
+      try { ownClaimPay = await env.DB.prepare('SELECT 1 AS x FROM txid_claims WHERE tx_hash = ? AND order_id = ? LIMIT 1').bind(normalizeChainTxHash(txid), o2.id).first(); } catch (e) { ownClaimPay = null; }
+      if (ownClaimPay) return json({ ok: true, message: '该笔付款已处理，无需重复提交', auto: false });
     }
     // TXID 认领严格先到先得：若该 TXID 已被其他订单认领，返回明确错误，不静默接受为“已提交”（否则客户误以为付款成功，实际订单永远无法认领）。
     // 账本/认领/履约全由 processVerifiedPayment 按正确顺序处理：本处核验通过前绝不写账本行。
