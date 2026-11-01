@@ -61,6 +61,10 @@ async function mockFetch(url, opts = {}) {
       const logs = evmLogs.filter((l) => { const b = parseInt(l.blockNumber, 16); return b >= from && b <= to && String(l.topics[2]).toLowerCase() === topic2; });
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: logs }), { status: 200 });
     }
+    if (body.method === 'eth_getBlockByNumber') {
+      const sec = Math.floor(Date.now() / 1000) + 30;
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { timestamp: '0x' + sec.toString(16) } }), { status: 200 });
+    }
     if (body.method === 'eth_getTransactionReceipt') {
       const tx = body.params[0];
       const log = evmLogs.find((l) => storedTx(l.transactionHash) === storedTx(tx));

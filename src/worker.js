@@ -1939,6 +1939,29 @@ async function findPaymentByEvent(env, chain, txHash, eventKey) {
   if (row || forms[0] === forms[1]) return row;
   return await env.DB.prepare('SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(chain || '', forms[1], eventKey || '').first().catch(function () { return null; });
 }
+function logIndexKey(v) {
+  if (v == null || v === '') return '';
+  var s = String(v).trim();
+  if (/^0x[0-9a-fA-F]+$/i.test(s)) {
+    try { return BigInt(s).toString(10); } catch (e) { return s.toLowerCase(); }
+  }
+  if (/^[0-9]+$/.test(s)) {
+    var n = parseInt(s, 10);
+    return isFinite(n) ? String(n) : s;
+  }
+  return s;
+}
+async function findUnmatchedByTx(env, chain, txHash) {
+  var forms = txHashForms(txHash);
+  var out = [];
+  var a = await env.DB.prepare("SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND status = 'unmatched' AND order_id IS NULL").bind(chain || '', forms[0]).all().catch(function () { return { results: [] }; });
+  for (var i = 0; i < (a.results || []).length; i++) out.push(a.results[i]);
+  if (forms[0] !== forms[1]) {
+    var b = await env.DB.prepare("SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND status = 'unmatched' AND order_id IS NULL").bind(chain || '', forms[1]).all().catch(function () { return { results: [] }; });
+    for (var j = 0; j < (b.results || []).length; j++) out.push(b.results[j]);
+  }
+  return out;
+}
 async function evmBlockTimestampMs(fetchFn, rpcUrls, chain, blockNumber) {
   if (blockNumber == null || !isFinite(Number(blockNumber))) return null;
   var hex = '0x' + Number(blockNumber).toString(16);
@@ -1977,7 +2000,7 @@ async function unmatchedAdoptionDecision(env, order, paymentRow, blockNumber, fe
 async function migrateCanonicalTxHashesV21(env) {
   function orderKey(id) { return id == null || id === '' ? 'NULL' : String(id); }
   var claimRows = (await env.DB.prepare('SELECT tx_hash, order_id, claimed_at, claim_token, source, order_lease_token FROM txid_claims').all()).results || [];
-  var payRows = (await env.DB.prepare('SELECT id, order_id, chain, tx_hash, event_key FROM payments').all()).results || [];
+  var payRows = (await env.DB.prepare('SELECT id, order_id, chain, tx_hash, event_key, amount, status FROM payments').all()).results || [];
   var claimGroups = {};
   for (var i = 0; i < claimRows.length; i++) {
     if (!isChainTxHash(claimRows[i].tx_hash)) continue;
@@ -2008,11 +2031,23 @@ async function migrateCanonicalTxHashesV21(env) {
     if (prow.length < 2) continue;
     var pseen = {};
     for (var d = 0; d < prow.length; d++) pseen[orderKey(prow[d].order_id)] = 1;
-    if (Object.keys(pseen).length > 1) conflicts.push('payments ' + pgk[c].replace(/\n/g, ' / ') + ' => ' + prow.map(function (r) { return '#' + r.id + ' ' + r.tx_hash + ' order=' + (r.order_id == null ? 'NULL' : r.order_id); }).join(' | '));
+    if (Object.keys(pseen).length > 1) conflicts.push('payments ' + pgk[c].replace(/\n/g, ' / ') + ' => ' + prow.map(function (r) { return '#' + r.id + ' ' + r.tx_hash + ' order=' + (r.order_id == null ? 'NULL' : r.order_id) + ' status=' + (r.status || '') + ' amount=' + r.amount; }).join(' | '));
+    else if (prow.length > 1) {
+      var st0 = String(prow[0].status || '');
+      var amt0 = Number(prow[0].amount);
+      var mixed = false;
+      for (var ds = 1; ds < prow.length; ds++) {
+        if (String(prow[ds].status || '') !== st0 || !amountsEqual(prow[ds].amount, amt0)) mixed = true;
+      }
+      if (mixed) conflicts.push('payments 同一订单状态或金额不一致，不合并 ' + pgk[c].replace(/\n/g, ' / ') + ' => ' + prow.map(function (r) { return '#' + r.id + ' ' + r.tx_hash + ' status=' + (r.status || '') + ' amount=' + r.amount; }).join(' | '));
+    }
   }
   if (conflicts.length) {
-    throw new Error('TXID 规范化存在跨订单冲突，已停止迁移且未改任何行，请人工对账：\n' + conflicts.join('\n'));
+    throw new Error('TXID 规范化存在冲突，已停止迁移且未改任何行，请人工对账：\n' + conflicts.join('\n'));
   }
+  var mergeStmts = [];
+  var claimHashOwner = {};
+  for (var ci = 0; ci < claimRows.length; ci++) claimHashOwner[claimRows[ci].tx_hash] = claimRows[ci];
   for (var e = 0; e < cgk.length; e++) {
     var rows = claimGroups[cgk[e]];
     var canon = cgk[e];
@@ -2022,23 +2057,25 @@ async function migrateCanonicalTxHashesV21(env) {
     var source = keeper.source || 'chain_verified';
     var lease = keeper.order_lease_token || '';
     var claimed = keeper.claimed_at || '';
+    var dropHashes = {};
     for (var g = 0; g < rows.length; g++) {
       if (!token && rows[g].claim_token) token = rows[g].claim_token;
       if (source !== 'manual_confirmed' && rows[g].source === 'manual_confirmed') source = rows[g].source;
       if (!lease && rows[g].order_lease_token) lease = rows[g].order_lease_token;
       if (rows[g].claimed_at && (!claimed || String(rows[g].claimed_at) < String(claimed))) claimed = rows[g].claimed_at;
+      if (rows[g].tx_hash !== keeper.tx_hash) dropHashes[rows[g].tx_hash] = rows[g].order_id;
     }
     if (rows.length > 1 || keeper.claim_token !== token || keeper.source !== source || keeper.order_lease_token !== lease || keeper.claimed_at !== claimed) {
-      await env.DB.prepare('UPDATE txid_claims SET claim_token = ?, source = ?, order_lease_token = ?, claimed_at = ? WHERE tx_hash = ?').bind(token, source, lease, claimed, keeper.tx_hash).run();
+      mergeStmts.push(env.DB.prepare('UPDATE txid_claims SET claim_token = ?, source = ?, order_lease_token = ?, claimed_at = ? WHERE tx_hash = ?').bind(token, source, lease, claimed, keeper.tx_hash));
     }
     for (var h = 0; h < rows.length; h++) {
       if (rows[h].tx_hash === keeper.tx_hash) continue;
-      await env.DB.prepare('DELETE FROM txid_claims WHERE tx_hash = ? AND order_id = ?').bind(rows[h].tx_hash, rows[h].order_id).run();
+      mergeStmts.push(env.DB.prepare('DELETE FROM txid_claims WHERE tx_hash = ? AND order_id = ?').bind(rows[h].tx_hash, rows[h].order_id));
     }
     if (keeper.tx_hash !== canon) {
-      var clash = await env.DB.prepare('SELECT tx_hash FROM txid_claims WHERE tx_hash = ?').bind(canon).first();
-      if (clash) throw new Error('txid_claims UPDATE 将撞主键，已中止：' + keeper.tx_hash + ' -> ' + canon);
-      await env.DB.prepare('UPDATE txid_claims SET tx_hash = ? WHERE tx_hash = ?').bind(canon, keeper.tx_hash).run();
+      var clashOwner = claimHashOwner[canon];
+      if (clashOwner && clashOwner.tx_hash !== keeper.tx_hash && dropHashes[canon] == null) throw new Error('txid_claims UPDATE 将撞主键，已中止：' + keeper.tx_hash + ' -> ' + canon);
+      mergeStmts.push(env.DB.prepare('UPDATE txid_claims SET tx_hash = ? WHERE tx_hash = ?').bind(canon, keeper.tx_hash));
     }
   }
   for (var m = 0; m < pgk.length; m++) {
@@ -2050,14 +2087,19 @@ async function migrateCanonicalTxHashesV21(env) {
       if (pays[n].tx_hash === pcanon) pkeep = pays[n];
       else if (pkeep.tx_hash !== pcanon && Number(pays[n].id) < Number(pkeep.id)) pkeep = pays[n];
     }
+    var dropIds = {};
     for (var q = 0; q < pays.length; q++) {
       if (Number(pays[q].id) === Number(pkeep.id)) continue;
-      await env.DB.prepare('DELETE FROM payments WHERE id = ? AND IFNULL(order_id, -1) = IFNULL(?, -1)').bind(pays[q].id, pkeep.order_id).run();
+      dropIds[String(pays[q].id)] = 1;
+      mergeStmts.push(env.DB.prepare('DELETE FROM payments WHERE id = ? AND IFNULL(order_id, -1) = IFNULL(?, -1)').bind(pays[q].id, pkeep.order_id));
     }
     if (pkeep.tx_hash !== pcanon) {
-      var pclash = await env.DB.prepare('SELECT id FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(pkeep.chain || '', pcanon, pkeep.event_key || '').first();
-      if (pclash && Number(pclash.id) !== Number(pkeep.id)) throw new Error('payments UPDATE 将撞唯一键，已中止：#' + pkeep.id + ' -> ' + pcanon);
-      await env.DB.prepare('UPDATE payments SET tx_hash = ? WHERE id = ?').bind(pcanon, pkeep.id).run();
+      var outside = false;
+      for (var pc = 0; pc < payRows.length; pc++) {
+        if (String(payRows[pc].chain || '') === String(pkeep.chain || '') && payRows[pc].tx_hash === pcanon && String(payRows[pc].event_key || '') === String(pkeep.event_key || '') && Number(payRows[pc].id) !== Number(pkeep.id) && !dropIds[String(payRows[pc].id)]) outside = true;
+      }
+      if (outside) throw new Error('payments UPDATE 将撞唯一键，已中止：#' + pkeep.id + ' -> ' + pcanon);
+      mergeStmts.push(env.DB.prepare('UPDATE payments SET tx_hash = ? WHERE id = ?').bind(pcanon, pkeep.id));
     }
   }
   var orderRows = (await env.DB.prepare('SELECT id, tx_hash, pending_tx_hash, txid FROM orders').all()).results || [];
@@ -2071,8 +2113,9 @@ async function migrateCanonicalTxHashesV21(env) {
     if (!sets.length) continue;
     binds.push(od.id);
     var ost = env.DB.prepare('UPDATE orders SET ' + sets.join(', ') + ' WHERE id = ?');
-    await ost.bind.apply(ost, binds).run();
+    mergeStmts.push(ost.bind.apply(ost, binds));
   }
+  if (mergeStmts.length) await runWrites(env, mergeStmts);
   await createIndexIfMissing(env, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_txid_claims_canon ON txid_claims (' + TX_CANON_EXPR + ')');
   await createIndexIfMissing(env, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_canon_event ON payments (chain, ' + TX_CANON_EXPR + ', event_key)');
 }
@@ -2107,6 +2150,7 @@ async function checkTxidPayment(env, fetchFn, order, txid) {
           if (!isFinite(latestBn) || !isFinite(receiptBn) || receiptBn > latestBn - reqConfTxid) continue;
         } catch (e) { continue; }
         var logs = receipt.logs || [];
+        var matchedLogs = [];
         for (var li = 0; li < logs.length; li++) {
           var lg = logs[li];
           if (String(lg.address).toLowerCase() !== String(contract).toLowerCase()) continue;
@@ -2114,8 +2158,19 @@ async function checkTxidPayment(env, fetchFn, order, txid) {
           if (topics.length < 3 || String(topics[0]).toLowerCase() !== TRANSFER_TOPIC0) continue;
           if (String(topics[2]).toLowerCase() !== toTopic) continue;
           var val = 0n; try { val = BigInt(lg.data || '0x0'); } catch (e) { continue; }
-          if (val === expected) return { txHash: txid, amount: Number(order.actual_amount || order.total_usdt), blockNumber: receiptBn, confirmations: isFinite(latestBn) && isFinite(receiptBn) ? (latestBn - receiptBn) : 0 };
+          if (val === expected) matchedLogs.push(lg);
         }
+        if (!matchedLogs.length) continue;
+        var blockMsTx = await evmBlockTimestampMs(fetchFn, rpcs, order.pay_chain, receiptBn);
+        var createdMsTx = Date.parse(String(order.created_at || '').replace(' ', 'T') + 'Z');
+        var expiresMsTx = effectiveExpiryMs(order);
+        if (blockMsTx == null || !isFinite(createdMsTx) || expiresMsTx == null || !(blockMsTx > createdMsTx && blockMsTx < expiresMsTx)) {
+          return { rejected: true, reason: '链上区块时间不在订单创建与过期之间，不收养该笔 unmatched 付款，已转人工对账' };
+        }
+        if (matchedLogs.length !== 1) {
+          return { rejected: true, reason: '同一笔交易有多条与订单收款地址、合约和金额都匹配的转账，已转人工对账' };
+        }
+        return { txHash: txid, amount: Number(order.actual_amount || order.total_usdt), blockNumber: receiptBn, eventKey: logIndexKey(matchedLogs[0].logIndex), confirmations: isFinite(latestBn) && isFinite(receiptBn) ? (latestBn - receiptBn) : 0 };
       } catch (e) { continue; }
     }
   } catch (e) { return null; }
@@ -2508,15 +2563,42 @@ async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
     await releaseOrderLease(env, o.id, claimToken, true);
     return { ok: false, reason: '该交易未经链上核验，拒绝发货（请走链上核验或人工确认通道）' };
   }
+  var ledgerEventKey = String((opts && opts.eventKey) || '');
   if (isChainHash && !manualConfirm && txVerified) {
-    var preUnmatched = await findPaymentByEvent(env, o.pay_chain, txHash, String((opts && opts.eventKey) || ''));
-    if (preUnmatched && String(preUnmatched.status) === 'unmatched' && (preUnmatched.order_id == null || preUnmatched.order_id === '')) {
-      var adoptGate = await unmatchedAdoptionDecision(env, o, preUnmatched, opts.blockNumber, getFetch(env));
+    var unmatchedRows = await findUnmatchedByTx(env, o.pay_chain, txHash);
+    if (unmatchedRows.length) {
+      var wantKey = logIndexKey(ledgerEventKey);
+      var expectedAmt = Number(o.actual_amount || o.total_usdt);
+      var orderAddr = String(o.pay_address || o.wallet_address || '').toLowerCase();
+      var addrRows = [];
+      var amtRows = [];
+      var matchedRows = [];
+      for (var ui = 0; ui < unmatchedRows.length; ui++) {
+        var urow = unmatchedRows[ui];
+        var rowAddr = String(urow.pay_address || '').toLowerCase();
+        if (!orderAddr || rowAddr !== orderAddr) continue;
+        addrRows.push(urow);
+        if (!amountsEqual(urow.amount, expectedAmt)) continue;
+        amtRows.push(urow);
+        if (wantKey && logIndexKey(urow.event_key) !== wantKey) continue;
+        matchedRows.push(urow);
+      }
+      var adoptReason = '';
+      if (!addrRows.length) adoptReason = '收款地址不符，不收养该笔 unmatched 付款，已转人工对账';
+      else if (!amtRows.length) adoptReason = '金额不符，不收养该笔 unmatched 付款，已转人工对账';
+      else if (matchedRows.length !== 1) adoptReason = '同一笔交易的 unmatched 记录无法唯一对应订单（收款地址、合约、金额），已转人工对账';
+      if (adoptReason) {
+        await releaseOrderLease(env, o.id, claimToken, true);
+        try { await env.DB.prepare("UPDATE orders SET pending_tx_hash = CASE WHEN pending_tx_hash = ? OR pending_tx_hash = ? THEN '' ELSE pending_tx_hash END WHERE id = ?").bind(txHashForms(txHash)[0], txHashForms(txHash)[1], o.id).run(); } catch (e) {}
+        return { ok: false, reason: adoptReason, manual: true };
+      }
+      var adoptGate = await unmatchedAdoptionDecision(env, o, matchedRows[0], opts.blockNumber, getFetch(env));
       if (!adoptGate.ok) {
         await releaseOrderLease(env, o.id, claimToken, true);
         try { await env.DB.prepare("UPDATE orders SET pending_tx_hash = CASE WHEN pending_tx_hash = ? OR pending_tx_hash = ? THEN '' ELSE pending_tx_hash END WHERE id = ?").bind(txHashForms(txHash)[0], txHashForms(txHash)[1], o.id).run(); } catch (e) {}
         return { ok: false, reason: adoptGate.reason, manual: true };
       }
+      ledgerEventKey = String(matchedRows[0].event_key || '');
     }
   }
   if (isChainHash) {
@@ -2555,7 +2637,7 @@ async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
   // 绝不继续履约；同订单重试收养认领 + 收养账本行，不重复建行。
   var chainPaymentId = null;
   if (isChainHash && !manualConfirm && txVerified) {
-    var evKey = String((opts && opts.eventKey) || '');
+    var evKey = ledgerEventKey;
     var led = await recordPayment(env, { order_id: o.id, chain: o.pay_chain, pay_address: o.pay_address || o.wallet_address, tx_hash: txHash, event_key: evKey, amount: o.actual_amount || o.total_usdt, block_number: (opts && opts.blockNumber != null) ? opts.blockNumber : null, confirmations: (opts && opts.confirmations != null) ? opts.confirmations : 0, status: 'verified', reconcile_note: '链上核验通过并取得全局消费权后记账' });
     if (led && led.conflictOther) {
       await releaseOrderLease(env, o.id, claimToken, false);
@@ -3663,8 +3745,9 @@ async function handleApi(req, env, url, ctx) {
     // 账本/认领/履约全由 processVerifiedPayment 按正确顺序处理：本处核验通过前绝不写账本行。
     var hit = null;
     try { hit = await checkTxidPayment(env, fetch, o2, txid); } catch (e) { hit = null; }
+    if (hit && hit.rejected) return err(hit.reason || '该笔交易已转人工对账');
     if (hit && hit.txHash) {
-      var pr2 = await processVerifiedPayment(env, o2, { txHash: hit.txHash, amount: hit.amount != null ? hit.amount : (o2.actual_amount || o2.total_usdt), blockNumber: hit.blockNumber != null ? hit.blockNumber : null, confirmations: hit.confirmations != null ? hit.confirmations : 0, eventKey: '', source: 'chain' }, ctx, { fetchFn: fetch });
+      var pr2 = await processVerifiedPayment(env, o2, { txHash: hit.txHash, amount: hit.amount != null ? hit.amount : (o2.actual_amount || o2.total_usdt), blockNumber: hit.blockNumber != null ? hit.blockNumber : null, confirmations: hit.confirmations != null ? hit.confirmations : 0, eventKey: hit.eventKey != null ? String(hit.eventKey) : '', source: 'chain' }, ctx, { fetchFn: fetch });
       if (!pr2.ok) {
         if (pr2.conflict) {
           // 竞争失败：记一笔 duplicate 观察行（独立 event_key，不与胜者的 verified/posted 行冲突，

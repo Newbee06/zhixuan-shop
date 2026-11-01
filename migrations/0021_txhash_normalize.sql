@@ -2,5 +2,7 @@
 -- 权威实现在 src/worker.js 的 MIGRATIONS v21 / migrateCanonicalTxHashesV21。
 -- 上线前先跑只读查重：migrations/0021_txhash_normalize_dupcheck.sql
 -- cross_order 有行时迁移失败并列出冲突，不合并、不删除。
--- 只有 same_order 可以合并。合并后才把保留行 UPDATE 成 0x+小写，避免撞主键或 idx_payments_event_unique。
+-- 同一订单的 payments 若状态或金额不一致（例如一行 posted、另一行 verified），也不合并，迁移失败并列出这些行。
+-- 状态和金额都一致的同一订单重复行才合并。合并语句放进 D1 batch 一次执行。
+-- 合并后才把保留行 UPDATE 成 0x+小写，避免撞主键或 idx_payments_event_unique。
 -- 冲突清零后再建 idx_txid_claims_canon、idx_payments_canon_event。

@@ -82,6 +82,10 @@ async function mockFetch(url, opts = {}) {
       }
       return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: evm.logs }), text: async () => '' };
     }
+    if (body.method === 'eth_getBlockByNumber') {
+      const sec = Math.floor(Date.now() / 1000) + 30;
+      return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: { timestamp: '0x' + sec.toString(16) } }), text: async () => '' };
+    }
     if (body.method === 'eth_getTransactionReceipt') {
       return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: evm.receipt }), text: async () => '' };
     }

@@ -85,6 +85,10 @@ async function mockFetch(url, opts = {}) {
     }
     if (body.method === 'eth_blockNumber') return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: toHex(M.latest) }), text: async () => '' };
     if (body.method === 'eth_getLogs') return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: M.logs }), text: async () => '' };
+    if (body.method === 'eth_getBlockByNumber') {
+      const sec = Math.floor(Date.now() / 1000) + 30;
+      return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: { timestamp: '0x' + sec.toString(16) } }), text: async () => '' };
+    }
     if (body.method === 'eth_getTransactionReceipt') return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: M.receipt }), text: async () => '' };
     return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: null }), text: async () => '' };
   }
@@ -752,7 +756,9 @@ function expireLease(t, orderId) {
   check('E4e: timeout cleanup does NOT cancel order with consumed claim', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_payment');
   check('E4e: claim retained after cleanup attempt', (() => { const c = claimRow(t, txOld); return c && c.order_id === ord.id && c.claim_token === 'OLD-CLAIM-TOKEN-E'; })());
   check('E4e: no auto_cancel_timeout audit for protected order', t.qa("SELECT * FROM admin_audit WHERE order_id=? AND action='auto_cancel_timeout'", ord.id).length === 0);
-  // 正常恢复：提交已验证的新 TXID 仍可履约，旧认领保留
+  // 正常恢复：把过期时间拉回窗口内，提交已验证的新 TXID 仍可履约，旧认领保留。
+  // 区块时间必须晚于创建、早于过期，过期订单上的新转账不再自动入账。
+  t.db.prepare("UPDATE orders SET expires_at=datetime('now','+30 minutes') WHERE id=?").run(ord.id);
   M.receipt = t.evmReceiptFor(ord, txNew, 9000);
   r = await t.payCall(ord.order_no, txNew);
   check('E4e: recovery with new verified TXID still fulfills', r.json && r.json.ok === true && r.json.auto === true, JSON.stringify(r.json));

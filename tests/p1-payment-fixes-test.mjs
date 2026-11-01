@@ -36,7 +36,7 @@ function amountToRaw(amount, decimals) {
   return BigInt(intPart) * (10n ** BigInt(decimals)) + BigInt(fracPart || '0');
 }
 // 当前 /pay 应核验到的收据（按订单设置）
-let evmState = { tx: '', amount: 0, blockTimeSec: null };
+let evmState = { tx: '', amount: 0, blockTimeSec: null, extraLogs: [] };
 let upstreamDelivered = { status: 'delivered', delivered_keys: 'UP-KEY-A\nUP-KEY-B' };
 async function mockFetch(url, opts = {}) {
   const u = String(url); const method = (opts.method || 'GET').toUpperCase();
@@ -68,7 +68,7 @@ async function mockFetch(url, opts = {}) {
         status: '0x1', blockNumber: '0x' + (9000).toString(16), transactionHash: evmState.tx,
         logs: [{ address: USDT0_XLAYER, blockNumber: '0x' + (9000).toString(16), transactionHash: evmState.tx, logIndex: '0x0',
           topics: [TOPIC0, '0x' + '0'.repeat(64), toTopic(ADDR_OKX)],
-          data: '0x' + amountToRaw(evmState.amount, 6).toString(16).padStart(64, '0') }],
+          data: '0x' + amountToRaw(evmState.amount, 6).toString(16).padStart(64, '0') }].concat(evmState.extraLogs || []),
       };
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: receipt }), { status: 200 });
     }
@@ -155,7 +155,7 @@ let ordA;
   ordA = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   assert(ordA && ordA.pay_address === ADDR_OKX, 'A order pay_address = X Layer address');
   // 模拟扫描先发现：账本里已有一行 unmatched 观察行（当时无归属订单），同一 tx、event_key 为空。
-  db.prepare("INSERT INTO payments (order_id, chain, pay_address, tx_hash, event_key, amount, status, reconcile_status) VALUES (NULL, ?, ?, ?, '', ?, 'unmatched', '')").run('X Layer', ADDR_OKX, TX_CANON, Number(ordA.actual_amount));
+  db.prepare("INSERT INTO payments (order_id, chain, pay_address, tx_hash, event_key, amount, status, reconcile_status) VALUES (NULL, ?, ?, ?, '0', ?, 'unmatched', '')").run('X Layer', ADDR_OKX, TX_CANON, Number(ordA.actual_amount));
   evmState = { tx: TX_CANON, amount: Number(ordA.actual_amount) };
   // 用户提交的是大写变体：规范化后应与 unmatched 行同一笔，不产生第二行认领，且履约成功。
   r = await payCall(ordA.order_no, TX_UPPER);
@@ -163,8 +163,9 @@ let ordA;
   const afterA = q('SELECT * FROM orders WHERE order_no=?', ordA.order_no);
   assert(afterA && afterA.status === 'completed' && (afterA.delivery_content || '').startsWith('P1FIX-KEY-'), 'A order completed with card key: ' + (afterA && afterA.status));
   assert(afterA && afterA.tx_hash === TX_CANON, 'A order tx_hash stored canonical lowercase: ' + (afterA && afterA.tx_hash));
-  const ledA = q("SELECT * FROM payments WHERE tx_hash=? AND event_key=''", TX_CANON);
-  assert(ledA && ledA.status !== 'unmatched' && Number(ledA.order_id) === Number(ordA.id), 'A unmatched ledger adopted (status=' + (ledA && ledA.status) + ', order_id=' + (ledA && ledA.order_id) + ')');
+  const ledRowsA = db.prepare('SELECT * FROM payments WHERE tx_hash=?').all(TX_CANON);
+  const ledA = ledRowsA[0];
+  assert(ledRowsA.length === 1 && ledA && ledA.event_key === '0' && ledA.status !== 'unmatched' && Number(ledA.order_id) === Number(ordA.id), 'A unmatched logIndex 0 adopted in place: ' + JSON.stringify(ledRowsA));
   const claimsA = db.prepare('SELECT * FROM txid_claims WHERE LOWER(tx_hash)=?').all(TX_CANON);
   assert(claimsA.length === 1 && claimsA[0].tx_hash === TX_CANON, 'A exactly one txid_claim, canonical: ' + JSON.stringify(claimsA.map((x) => x.tx_hash)));
 }
@@ -301,6 +302,30 @@ let ordA;
   r = await call('POST', '/api/admin/migrate', {}, cookie);
   assert(r.json && r.json.ok === true && q('SELECT version FROM schema_migrations WHERE version = 21'), 'migration succeeds after conflicts are cleared');
 }
+{
+  const upper = '0x' + 'ab'.repeat(32);
+  const bare = 'ab'.repeat(32);
+  db.exec('DROP INDEX IF EXISTS idx_txid_claims_canon');
+  db.exec('DROP INDEX IF EXISTS idx_payments_canon_event');
+  db.prepare('DELETE FROM schema_migrations WHERE version = 21').run();
+  db.prepare("INSERT INTO payments (order_id, chain, tx_hash, event_key, amount, status) VALUES (11, 'X Layer', ?, '', 1, 'posted')").run(upper);
+  db.prepare("INSERT INTO payments (order_id, chain, tx_hash, event_key, amount, status) VALUES (11, 'X Layer', ?, '', 1, 'verified')").run(bare);
+  const before = db.prepare("SELECT tx_hash, status, amount FROM payments WHERE order_id=11 AND (tx_hash=? OR tx_hash=?) ORDER BY tx_hash").all(upper, bare);
+  const logs = [];
+  const origErr = console.error;
+  console.error = (...a) => { logs.push(a.map(String).join(' ')); };
+  r = await call('POST', '/api/admin/migrate', {}, cookie);
+  console.error = origErr;
+  assert(r.status === 500, 'same-order posted/verified rows fail migration: ' + r.status);
+  const blob = logs.join('\n');
+  assert(blob.includes('posted') && blob.includes('verified') && blob.includes('不合并'), 'status mismatch is listed: ' + blob.slice(0, 600));
+  const after = db.prepare("SELECT tx_hash, status, amount FROM payments WHERE order_id=11 AND (tx_hash=? OR tx_hash=?) ORDER BY tx_hash").all(upper, bare);
+  assert(JSON.stringify(after) === JSON.stringify(before), 'inconsistent payment rows were not merged');
+  assert(!q('SELECT version FROM schema_migrations WHERE version = 21'), 'status mismatch did not mark v21');
+  db.prepare('DELETE FROM payments WHERE order_id=11 AND (tx_hash=? OR tx_hash=?)').run(upper, bare);
+  r = await call('POST', '/api/admin/migrate', {}, cookie);
+  assert(r.json && r.json.ok === true, 'migration resumes after inconsistent rows are removed: ' + JSON.stringify(r.json));
+}
 // ===== 金额 / 地址 / 区块时间不符时不收养 =====
 async function unmatchedOrder() {
   const rr = await orderCall('OKX', 'X Layer', cardProd.id);
@@ -347,6 +372,72 @@ async function unmatchedOrder() {
   assert(r.json && r.json.ok === false && /区块时间/.test(r.json.error || ''), 'block after expiry not adopted: ' + JSON.stringify(r.json));
   assert(q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_payment', 'late transfer does not complete order');
   evmState.blockTimeSec = null;
+}
+function secOf(sqlTime) { return Math.floor(Date.parse(String(sqlTime).replace(' ', 'T') + 'Z') / 1000); }
+function payRowsFor(tx) { return db.prepare('SELECT id, status, event_key, order_id FROM payments WHERE tx_hash=? OR tx_hash=?').all(tx, tx.startsWith('0x') ? tx.slice(2) : '0x' + tx); }
+{
+  const ord = await unmatchedOrder();
+  const tx = '0x' + '8'.repeat(64);
+  db.prepare("INSERT INTO payments (order_id, chain, pay_address, tx_hash, event_key, amount, block_number, status) VALUES (NULL, 'X Layer', ?, ?, '0', ?, 9000, 'unmatched')").run(ADDR_OKX, tx, Number(ord.actual_amount));
+  evmState = { tx, amount: Number(ord.actual_amount), blockTimeSec: secOf(ord.created_at), extraLogs: [] };
+  r = await payCall(ord.order_no, tx);
+  assert(r.json && r.json.ok === false && /区块时间/.test(r.json.error || ''), 'block time equal to created_at is not inside the window: ' + JSON.stringify(r.json));
+  const rows = payRowsFor(tx);
+  assert(rows.length === 1 && rows[0].status === 'unmatched' && rows[0].order_id == null, 'created_at boundary leaves the unmatched row and adds no verified row: ' + JSON.stringify(rows));
+  assert(q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_payment', 'created_at boundary does not complete the order');
+}
+{
+  const ord = await unmatchedOrder();
+  const tx = '0x' + '9'.repeat(64);
+  db.prepare("INSERT INTO payments (order_id, chain, pay_address, tx_hash, event_key, amount, block_number, status) VALUES (NULL, 'X Layer', ?, ?, '0', ?, 9000, 'unmatched')").run(ADDR_OKX, tx, Number(ord.actual_amount));
+  evmState = { tx, amount: Number(ord.actual_amount), blockTimeSec: secOf(ord.expires_at), extraLogs: [] };
+  r = await payCall(ord.order_no, tx);
+  assert(r.json && r.json.ok === false && /区块时间/.test(r.json.error || ''), 'block time equal to expires_at is not inside the window: ' + JSON.stringify(r.json));
+  const rows = payRowsFor(tx);
+  assert(rows.length === 1 && rows[0].status === 'unmatched' && rows.filter((x) => x.status === 'verified' || x.status === 'posted').length === 0, 'expires_at boundary adds no verified row: ' + JSON.stringify(rows));
+}
+{
+  const ord = await unmatchedOrder();
+  const tx = '0x' + '7'.repeat(64);
+  const other = '0x' + 'ab'.repeat(20);
+  db.prepare("INSERT INTO payments (order_id, chain, pay_address, tx_hash, event_key, amount, block_number, status) VALUES (NULL, 'X Layer', ?, ?, '0', ?, 9000, 'unmatched')").run(ADDR_OKX, tx, Number(ord.actual_amount));
+  db.prepare("INSERT INTO payments (order_id, chain, pay_address, tx_hash, event_key, amount, block_number, status) VALUES (NULL, 'X Layer', ?, ?, '1', ?, 9000, 'unmatched')").run(other, tx, 1);
+  evmState = {
+    tx, amount: Number(ord.actual_amount), blockTimeSec: null, extraLogs: [{
+      address: USDT0_XLAYER, blockNumber: '0x' + (9000).toString(16), transactionHash: tx, logIndex: '0x1',
+      topics: [TOPIC0, '0x' + '0'.repeat(64), toTopic(other)],
+      data: '0x' + amountToRaw(1, 6).toString(16).padStart(64, '0'),
+    }],
+  };
+  r = await payCall(ord.order_no, tx);
+  assert(r.json && r.json.ok && /已自动发货/.test(r.json.message || ''), 'two logs: only the matching log is adopted: ' + JSON.stringify(r.json));
+  const rows = payRowsFor(tx);
+  assert(rows.length === 2, 'two logs stay two rows, no extra verified row: ' + JSON.stringify(rows));
+  const adopted = rows.filter((x) => x.event_key === '0')[0];
+  const otherRow = rows.filter((x) => x.event_key === '1')[0];
+  assert(adopted && Number(adopted.order_id) === Number(ord.id) && adopted.status !== 'unmatched', 'logIndex 0 adopted in place: ' + JSON.stringify(adopted));
+  assert(otherRow && otherRow.status === 'unmatched' && otherRow.order_id == null, 'non-matching log stays unmatched: ' + JSON.stringify(otherRow));
+  assert(!rows.some((x) => x.event_key === ''), 'no empty event_key row was inserted');
+  evmState.extraLogs = [];
+}
+{
+  const ord = await unmatchedOrder();
+  const tx = '0x' + '6a'.repeat(32);
+  db.prepare("INSERT INTO payments (order_id, chain, pay_address, tx_hash, event_key, amount, block_number, status) VALUES (NULL, 'X Layer', ?, ?, '0', ?, 9000, 'unmatched')").run(ADDR_OKX, tx, Number(ord.actual_amount));
+  db.prepare("INSERT INTO payments (order_id, chain, pay_address, tx_hash, event_key, amount, block_number, status) VALUES (NULL, 'X Layer', ?, ?, '1', ?, 9000, 'unmatched')").run(ADDR_OKX, tx, Number(ord.actual_amount));
+  evmState = {
+    tx, amount: Number(ord.actual_amount), blockTimeSec: null, extraLogs: [{
+      address: USDT0_XLAYER, blockNumber: '0x' + (9000).toString(16), transactionHash: tx, logIndex: '0x1',
+      topics: [TOPIC0, '0x' + '0'.repeat(64), toTopic(ADDR_OKX)],
+      data: '0x' + amountToRaw(Number(ord.actual_amount), 6).toString(16).padStart(64, '0'),
+    }],
+  };
+  r = await payCall(ord.order_no, tx);
+  assert(r.json && r.json.ok === false && /多条/.test(r.json.error || ''), 'two matching logs go to manual review: ' + JSON.stringify(r.json));
+  const rows = payRowsFor(tx);
+  assert(rows.length === 2 && rows.every((x) => x.status === 'unmatched' && x.order_id == null), 'two matching logs are not adopted and no verified row is added: ' + JSON.stringify(rows));
+  assert(q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_payment', 'two matching logs leave the order pending');
+  evmState.extraLogs = [];
 }
 // ===== 含逗号的卡密按一张算；条数不够不完成，但已到的卡密要写出来 =====
 {

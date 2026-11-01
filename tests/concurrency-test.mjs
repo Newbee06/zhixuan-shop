@@ -64,6 +64,10 @@ async function mockFetch(url, opts = {}) {
       const logs = evmScanLogs.filter((l) => { const b = parseInt(l.blockNumber, 16); return b >= from && b <= to && String(l.topics[2]).toLowerCase() === topic2; });
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: logs }), { status: 200 });
     }
+    if (body.method === 'eth_getBlockByNumber') {
+      const sec = Math.floor(Date.now() / 1000) + 30;
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { timestamp: '0x' + sec.toString(16) } }), { status: 200 });
+    }
     if (body.method === 'eth_getTransactionReceipt') {
       if (!evmReceiptFor || storedTx(evmReceiptFor.hash) !== storedTx(body.params[0])) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }), { status: 200 });
       const raw = (() => { const parts = String(evmReceiptFor.amount).split('.'); const frac = ((parts[1] || '') + '0'.repeat(18)).slice(0, 18); return BigInt(parts[0] + frac); })();
@@ -691,6 +695,10 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
       }
       if (body.method === 'eth_blockNumber') {
         return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + evmLatest.toString(16) }), { status: 200 });
+      }
+      if (body.method === 'eth_getBlockByNumber') {
+        const sec = Math.floor(Date.now() / 1000) + 30;
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { timestamp: '0x' + sec.toString(16) } }), { status: 200 });
       }
     }
     return origFetch2(url, opts);
