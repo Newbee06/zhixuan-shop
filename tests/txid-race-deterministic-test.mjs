@@ -14,6 +14,11 @@ const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 
 let pass = 0, fail = 0;
 const failures = [];
+function storedTx(tx) {
+  const s = String(tx || '').trim();
+  if (/^(0x)?[0-9a-fA-F]{64}$/.test(s)) return '0x' + s.replace(/^0x/i, '').toLowerCase();
+  return s;
+}
 function check(name, cond, extra) {
   if (cond) { pass++; console.log('PASS', name); }
   else { fail++; failures.push(name); console.log('FAIL', name, extra || ''); }
@@ -229,8 +234,16 @@ function Deferred() {
   d.promise = new Promise((res, rej) => { d.resolve = res; d.reject = rej; });
   return d;
 }
-function claimRow(t, tx) { return t.q('SELECT * FROM txid_claims WHERE tx_hash=?', tx); }
-function ledgerRows(t, tx) { return t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", tx); }
+function claimRow(t, tx) {
+  const canon = storedTx(tx);
+  const bare = canon.length === 66 && canon.startsWith('0x') ? canon.slice(2) : String(tx || '');
+  return t.q('SELECT * FROM txid_claims WHERE tx_hash = ? OR tx_hash = ? OR tx_hash = ?', canon, bare, String(tx || ''));
+}
+function ledgerRows(t, tx) {
+  const canon = storedTx(tx);
+  const bare = canon.length === 66 && canon.startsWith('0x') ? canon.slice(2) : String(tx || '');
+  return t.qa("SELECT * FROM payments WHERE (tx_hash = ? OR tx_hash = ? OR tx_hash = ?) AND status='manual_confirmed'", canon, bare, String(tx || ''));
+}
 async function manualProduct(t, cookie, title) {
   await t.call('POST', '/api/admin/products', { title, category: 'recharge', stock_type: 'manual', sell_price: 4, source: 'self' }, cookie);
   return t.q('SELECT * FROM products WHERE title=?', title);
@@ -324,7 +337,7 @@ function expireLease(t, orderId) {
   const rA = await pA;
   check('B: stale A /pay does not claim/complete (auto:false, no second fulfill)', rA.json && rA.json.ok === true && rA.json.auto === false, JSON.stringify(rA.json));
   check('B: stale A did NOT delete claim', claimRow(t, tx) && claimRow(t, tx).order_id === ord.id);
-  check('B: order still pending_fulfill, exactly one claim', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_fulfill' && t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1);
+  check('B: order still pending_fulfill, exactly one claim', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_fulfill' && t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(tx)).length === 1);
   // 他单不能抢占
   r = await t.orderCall({ product_id: pM.id, quantity: 1 });
   const ordOther = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
@@ -368,7 +381,7 @@ function expireLease(t, orderId) {
   check('C: barrier saw both requests at INSERT point', arrivals === 2, 'arrivals=' + arrivals);
   const wins = [r1, r2].filter((x) => x.json && x.json.ok === true).length;
   check('C: exactly one manual confirm wins', wins === 1, JSON.stringify([r1.json, r2.json]));
-  check('C: exactly one claim row', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1);
+  check('C: exactly one claim row', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(tx)).length === 1);
   check('C: exactly one manual ledger row', ledgerRows(t, tx).length === 1);
   const winnerId = claimRow(t, tx).order_id;
   const loserId = winnerId === o1.id ? o2.id : o1.id;
@@ -380,7 +393,7 @@ function expireLease(t, orderId) {
   // 重试已成功单：不再重复副作用
   const rRetry = await confirm(t, winnerId, cookie, '重复确认已成功单');
   check('C: retry winner rejected (state guard)', rRetry.json && !rRetry.json.ok, JSON.stringify(rRetry.json));
-  check('C: retry winner adds no ledger/claim', ledgerRows(t, tx).length === 1 && t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1);
+  check('C: retry winner adds no ledger/claim', ledgerRows(t, storedTx(tx)).length === 1 && t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(tx)).length === 1);
   // 失败单重试同 TXID：仍被拒绝
   const rLoserRetry = await confirm(t, loserId, cookie, '失败单重试同 TXID');
   check('C: loser retry same TXID still rejected', rLoserRetry.json && !rLoserRetry.json.ok && /已用于其他订单/.test(rLoserRetry.json.error || ''), JSON.stringify(rLoserRetry.json));
@@ -521,7 +534,7 @@ function expireLease(t, orderId) {
   // 同订单重试：收养同一认领，账本写入成功，不重复建认领/账本
   const rRetry = await confirm(t, ord.id, cookie, '同订单重试');
   check('E2: same-order retry succeeds', rRetry.json && rRetry.json.ok === true, JSON.stringify(rRetry.json));
-  check('E2: exactly one claim + one ledger after retry', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1 && ledgerRows(t, tx).length === 1);
+  check('E2: exactly one claim + one ledger after retry', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(tx)).length === 1 && ledgerRows(t, storedTx(tx)).length === 1);
   check('E2: retry order pending_fulfill', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_fulfill');
   t.env.DB.prepare = origPrepare;
 }
@@ -541,11 +554,11 @@ function expireLease(t, orderId) {
   // Worker 中间失败后再次处理同订单：手动发货完成
   const rF = await t.call('POST', '/api/admin/orders/' + ord.id + '/fulfill', { delivery_content: 'E3-DELIVERY-1' }, cookie);
   check('E3: manual fulfill completes once', rF.json && rF.json.ok === true && t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'completed' && t.q('SELECT delivery_content FROM orders WHERE id=?', ord.id).delivery_content === 'E3-DELIVERY-1', JSON.stringify(rF.json));
-  check('E3: still exactly one claim + one ledger after fulfill', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1 && ledgerRows(t, tx).length === 1);
+  check('E3: still exactly one claim + one ledger after fulfill', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(tx)).length === 1 && ledgerRows(t, storedTx(tx)).length === 1);
   // 手动确认接口重复请求：已完成订单拒绝，不重复副作用
   const rDupConfirm = await confirm(t, ord.id, cookie, '重复人工确认');
   check('E3: duplicate manual confirm on completed rejected', rDupConfirm.json && !rDupConfirm.json.ok, JSON.stringify(rDupConfirm.json));
-  check('E3: duplicate confirm adds nothing', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1 && ledgerRows(t, tx).length === 1 && t.q('SELECT delivery_content FROM orders WHERE id=?', ord.id).delivery_content === 'E3-DELIVERY-1');
+  check('E3: duplicate confirm adds nothing', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(tx)).length === 1 && ledgerRows(t, storedTx(tx)).length === 1 && t.q('SELECT delivery_content FROM orders WHERE id=?', ord.id).delivery_content === 'E3-DELIVERY-1');
   // 同订单重复提交 TXID：/pay 状态守卫拒绝
   const rDupPay = await t.payCall(ord.order_no, tx);
   // E3 语义更新（任务二）：已处理 TXID 重提为幂等成功（ok, auto:false），不再以“已非 pending_payment”拒绝；
@@ -680,8 +693,8 @@ function expireLease(t, orderId) {
   r = await t.payCall(ord.order_no, txC);
   check('E4c: final verified candidate claims + fulfills', r.json && r.json.ok === true && r.json.auto === true, JSON.stringify(r.json));
   check('E4c: only final TXID claimed', !!claimRow(t, txC) && !claimRow(t, txA) && !claimRow(t, txB));
-  check('E4c: tx_hash = verified TXID (no prior consumed TXID to preserve)', t.q('SELECT tx_hash FROM orders WHERE id=?', ord.id).tx_hash === txC);
-  check('E4c: no posted payments for unverified candidates', t.qa("SELECT * FROM payments WHERE tx_hash IN (?,?) AND status='posted'", txA, txB).length === 0);
+  check('E4c: tx_hash = verified TXID (no prior consumed TXID to preserve)', t.q('SELECT tx_hash FROM orders WHERE id=?', ord.id).tx_hash === storedTx(txC));
+  check('E4c: no posted payments for unverified candidates', t.qa("SELECT * FROM payments WHERE tx_hash IN (?,?) AND status='posted'", storedTx(txA), storedTx(txB)).length === 0);
 }
 // E4d：恢复过程中 Worker 再次崩溃（接管请求在认领后暂停 → 租约过期 → 第三请求接管完成 → 旧请求恢复不破坏）
 {
@@ -714,8 +727,8 @@ function expireLease(t, orderId) {
   const rFirst = await pFirst;
   check('E4d: stale first takeover does not re-complete (auto:false)', rFirst.json && rFirst.json.ok === true && rFirst.json.auto === false, JSON.stringify(rFirst.json));
   check('E4d: old claim retained after double-crash recovery', !!claimRow(t, txOld) && claimRow(t, txOld).order_id === ord.id);
-  check('E4d: new claim retained exactly once after double-crash recovery', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', txNew).length === 1 && claimRow(t, txNew).order_id === ord.id);
-  check('E4d: exactly one posted payments row for new TXID (no duplicate side effect)', t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='posted'", txNew).length === 1);
+  check('E4d: new claim retained exactly once after double-crash recovery', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(txNew)).length === 1 && claimRow(t, storedTx(txNew)).order_id === ord.id);
+  check('E4d: exactly one posted payments row for new TXID (no duplicate side effect)', t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='posted'", storedTx(txNew)).length === 1);
   check('E4d: tx_hash still first consumed TXID', t.q('SELECT tx_hash FROM orders WHERE id=?', ord.id).tx_hash === txOld);
   t.env.__testHooks = {};
 }
@@ -775,7 +788,7 @@ function expireLease(t, orderId) {
   // 人工胜：confirm ok；链上胜：/pay ok + auto:true。失败方：人工 confirm !ok；链上 /pay 409。
   const okCount = [rM, rC].filter((x) => x.json && x.json.ok === true).length;
   check('F1: exactly one of manual/chain wins', okCount === 1, JSON.stringify([rM.json, rC.json]));
-  check('F1: exactly one claim row', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1);
+  check('F1: exactly one claim row', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(tx)).length === 1);
   const winnerId = claimRow(t, tx).order_id;
   const loserId = winnerId === oManual.id ? oChain.id : oManual.id;
   const winnerIsManual = winnerId === oManual.id;
@@ -795,7 +808,7 @@ function expireLease(t, orderId) {
   const rRetry = winnerIsManual ? await confirm(t, winnerId, cookie, 'F1 重复确认') : await t.payCall(t.q('SELECT order_no FROM orders WHERE id=?', winnerId).order_no, tx);
   // F1 语义更新（同 E3）：胜者重提已处理 TXID 为幂等成功，不新增认领/账本。
   check('F1: winner retry idempotent ok', rRetry.json && rRetry.json.ok === true && rRetry.json.auto === false, JSON.stringify(rRetry.json));
-  check('F1: retry adds no claim', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1);
+  check('F1: retry adds no claim', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(tx)).length === 1);
   t.env.__testHooks = {};
 }
 // F2：两条链上核验请求同时争抢同一 TXID（Barrier 在 beforeTxidInsert）
@@ -836,7 +849,7 @@ function expireLease(t, orderId) {
   check('F2: barrier saw both chain requests at INSERT point', arrivals === 2, 'arrivals=' + arrivals);
   const wins = [r1, r2].filter((x) => x.json && x.json.ok === true && x.json.auto === true).length;
   check('F2: exactly one chain /pay wins', wins === 1, JSON.stringify([r1.json, r2.json]));
-  check('F2: exactly one claim, source chain_verified', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1 && claimRow(t, tx).source === 'chain_verified');
+  check('F2: exactly one claim, source chain_verified', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(tx)).length === 1 && claimRow(t, storedTx(tx)).source === 'chain_verified');
   const winnerId = claimRow(t, tx).order_id;
   const loserId = winnerId === o1.id ? o2.id : o1.id;
   check('F2: winner pending_fulfill, loser pending + lease released', t.q('SELECT status FROM orders WHERE id=?', winnerId).status === 'pending_fulfill' && t.q('SELECT status FROM orders WHERE id=?', loserId).status === 'pending_payment' && t.q('SELECT claim_token FROM orders WHERE id=?', loserId).claim_token === '');
@@ -989,7 +1002,7 @@ function expireLease(t, orderId) {
   M.receipt = t.evmReceiptFor(ord, tx, 9000);
   r = await t.payCall(ord.order_no, tx);
   check('G10: same-TXID recovery adopts retained claim + fulfills', r.json && r.json.ok === true && r.json.auto === true, JSON.stringify(r.json));
-  check('G10: exactly one claim after recovery', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', tx).length === 1);
+  check('G10: exactly one claim after recovery', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(tx)).length === 1);
   check('G10: order pending_fulfill after recovery', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_fulfill');
 }
 
@@ -1019,14 +1032,14 @@ function expireLease(t, orderId) {
   const rFail = await confirm(t, ord.id, cookie, 'A1.1 旧认领查询故障');
   t.env.DB.prepare = origPrepare;
   check('A1.1: old-claim query failure -> fail-closed !ok', rFail.json && !rFail.json.ok, JSON.stringify(rFail.json));
-  check('A1.1: tx_hash unchanged, old claim retained, no new claim/ledger', t.q('SELECT tx_hash FROM orders WHERE id=?', ord.id).tx_hash === txOld && !!claimRow(t, txOld) && !claimRow(t, txNew) && t.qa('SELECT * FROM payments WHERE tx_hash=?', txNew).length === 0);
+  check('A1.1: tx_hash unchanged, old claim retained, no new claim/ledger', t.q('SELECT tx_hash FROM orders WHERE id=?', ord.id).tx_hash === txOld && !!claimRow(t, storedTx(txOld)) && !claimRow(t, storedTx(txNew)) && t.qa('SELECT * FROM payments WHERE tx_hash=?', storedTx(txNew)).length === 0);
   check('A1.1: order still pending, no side effects', t.q('SELECT status, delivery_content FROM orders WHERE id=?', ord.id).status === 'pending_payment' && t.q('SELECT delivery_content FROM orders WHERE id=?', ord.id).delivery_content === '');
   // DB 恢复后同订单安全重试：旧认领账本恢复（chain_verified → verified pending）+ 新 TXID 人工认领履约。
   const rRetry = await confirm(t, ord.id, cookie, 'A1.1 DB 恢复后重试');
   check('A1.1: retry after DB recovery succeeds', rRetry.json && rRetry.json.ok === true, JSON.stringify(rRetry.json));
   check('A1.1: both claims retained after retry', !!claimRow(t, txOld) && !!claimRow(t, txNew));
-  check('A1.1: old claim ledger restored (verified)', t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='verified'", txOld).length === 1);
-  check('A1.1: new claim ledger manual_confirmed', t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", txNew).length === 1);
+  check('A1.1: old claim ledger restored (verified)', t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='verified'", storedTx(txOld)).length === 1);
+  check('A1.1: new claim ledger manual_confirmed', t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", storedTx(txNew)).length === 1);
   check('A1.1: first consumed tx_hash preserved (txOld)', t.q('SELECT tx_hash FROM orders WHERE id=?', ord.id).tx_hash === txOld);
 }
 {
@@ -1078,11 +1091,11 @@ function expireLease(t, orderId) {
   check('E4f: second real TXID -> overpaid (ok, overpaid, no re-fulfill)', r.json && r.json.ok === true && r.json.overpaid === true && r.json.auto === false, JSON.stringify(r.json));
   check('E4f: order still completed, delivery unchanged', t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'completed' && t.q('SELECT delivery_content FROM orders WHERE id=?', ord.id).delivery_content === deliveryBefore);
   check('E4f: second claim retained (chain_verified)', !!claimRow(t, tx2) && claimRow(t, tx2).source === 'chain_verified' && claimRow(t, tx2).order_id === ord.id);
-  check('E4f: second ledger verified + overpaid_pending', (() => { const rows = t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='verified'", tx2); return rows.length === 1 && rows[0].reconcile_status === 'overpaid_pending'; })());
+  check('E4f: second ledger verified + overpaid_pending', (() => { const rows = t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='verified'", storedTx(tx2)); return rows.length === 1 && rows[0].reconcile_status === 'overpaid_pending'; })());
   check('E4f: payment_state overpaid_pending', t.q('SELECT payment_state FROM orders WHERE id=?', ord.id).payment_state === 'overpaid_pending');
   check('E4f: both claims retained', !!claimRow(t, tx1) && !!claimRow(t, tx2));
   // 管理员对账超额付款 → reconciled + payment_state 清空。
-  const payRow2 = t.q("SELECT * FROM payments WHERE tx_hash=? AND status='verified'", tx2);
+  const payRow2 = t.q("SELECT * FROM payments WHERE tx_hash=? AND status='verified'", storedTx(tx2));
   r = await t.call('POST', '/api/admin/payments/' + payRow2.id + '/reconcile', { note: 'E4f 超额付款已退回客户' }, cookie);
   check('E4f: reconcile overpaid row ok', r.json && r.json.ok === true, JSON.stringify(r.json));
   check('E4f: payment_state cleared after reconcile', t.q('SELECT payment_state FROM orders WHERE id=?', ord.id).payment_state === '');
@@ -1100,7 +1113,7 @@ function expireLease(t, orderId) {
   const tx2 = 'd2'.repeat(32);
   M.receipt = t.evmReceiptFor(ord, tx1, 9000);
   r = await t.payCall(ord.order_no, tx1);
-  check('E4g: first payment -> pending_fulfill posted', r.json && r.json.ok === true && t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_fulfill' && t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='posted'", tx1).length === 1, JSON.stringify(r.json));
+  check('E4g: first payment -> pending_fulfill posted', r.json && r.json.ok === true && t.q('SELECT status FROM orders WHERE id=?', ord.id).status === 'pending_fulfill' && t.qa("SELECT * FROM payments WHERE tx_hash=? AND status='posted'", storedTx(tx1)).length === 1, JSON.stringify(r.json));
   M.receipt = t.evmReceiptFor(ord, tx2, 9001);
   r = await t.payCall(ord.order_no, tx2);
   check('E4g: new verified TXID on posted order -> overpaid', r.json && r.json.ok === true && r.json.overpaid === true, JSON.stringify(r.json));

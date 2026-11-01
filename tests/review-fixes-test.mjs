@@ -14,6 +14,11 @@ const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 
 let pass = 0, fail = 0;
 const failures = [];
+function storedTx(tx) {
+  const s = String(tx || '').trim();
+  if (/^(0x)?[0-9a-fA-F]{64}$/.test(s)) return '0x' + s.replace(/^0x/i, '').toLowerCase();
+  return s;
+}
 function check(name, cond, extra) {
   if (cond) { pass++; console.log('PASS', name); }
   else { fail++; failures.push(name); console.log('FAIL', name, extra || ''); }
@@ -240,8 +245,8 @@ check('init: change password', r.json && r.json.ok === true, JSON.stringify(r.js
   db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(tx, o.id);
   r = await call('POST', '/api/admin/orders/' + o.id + '/confirm-payment', { reason: 'P1-2' , manual_confirm: true }, cookie);
   check('P1-2: admin manual confirm succeeds (manual channel)', r.json && r.json.ok === true, JSON.stringify(r.json));
-  check('P1-2: manual confirm writes shared txid_claims (source=manual_confirmed)', (() => { const row = q('SELECT * FROM txid_claims WHERE tx_hash=?', tx); return row && Number(row.order_id) === Number(o.id) && row.source === 'manual_confirmed' && !!row.claim_token; })());
-  check('P1-2: manual confirm writes manual_confirmed ledger row', (() => { const p = q("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", tx); return p && Number(p.order_id) === Number(o.id); })());
+  check('P1-2: manual confirm writes shared txid_claims (source=manual_confirmed)', (() => { const row = q('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(tx)); return row && Number(row.order_id) === Number(o.id) && row.source === 'manual_confirmed' && !!row.claim_token; })());
+  check('P1-2: manual confirm writes manual_confirmed ledger row', (() => { const p = q("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", storedTx(tx)); return p && Number(p.order_id) === Number(o.id); })());
   check('P1-2: manual confirm audit action = manual_confirm_payment', !!q("SELECT * FROM admin_audit WHERE order_id=? AND action='manual_confirm_payment'", o.id));
   check('P1-2: manual confirm admin_note has 【人工确认收款】 prefix', (q('SELECT admin_note FROM orders WHERE id=?', o.id).admin_note || '').includes('【人工确认收款】'));
   // 同一 TXID 第二单确认 → 认领冲突，拒绝
@@ -713,7 +718,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   r = await payCall(o.order_no, 'c'.repeat(64));
   check('P3-3: /pay unverified returns ok + auto:false', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
   check('P3-3: /pay unverified creates NO ledger row', qa('SELECT * FROM payments WHERE order_id=?', o.id).length === 0);
-  check('P3-3: /pay unverified still stores txid on order (txid column)', q('SELECT txid FROM orders WHERE id=?', o.id).txid === 'c'.repeat(64));
+  check('P3-3: /pay unverified still stores txid on order (txid column)', q('SELECT txid FROM orders WHERE id=?', o.id).txid === storedTx('c'.repeat(64)));
 }
 
 // P3-4：/pay 必须带验证码；前端两处 /pay UI 均有验证码输入。
@@ -974,7 +979,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   evm.latest = 115; // BEP20 需 15 确认：latest 100 时 0 确认，/pay 不会走到履约
   r = await payCall(o.order_no, '2'.repeat(64));
   check('P3-26: /pay with fresh claim -> not completed', q('SELECT status FROM orders WHERE id=?', o.id).status === 'pending_payment');
-  check('P3-26: failed order claim rolls back the txid claim row (no orphan txid_claims)', !q('SELECT * FROM txid_claims WHERE tx_hash=?', '2'.repeat(64)));
+  check('P3-26: failed order claim rolls back the txid claim row (no orphan txid_claims)', !q('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx('2'.repeat(64))));
   evm.receipt = null; evm.latest = 10000;
 }
 
@@ -990,7 +995,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   evm.receipt = evmReceiptFor(o, '3'.repeat(64), 100);
   evm.latest = 115; // BEP20 需 15 确认
   r = await payCall(o.order_no, '3'.repeat(64));
-  check('P3-27: /pay blocked by live lease writes no ledger (claim-before-ledger)', r.json && !r.json.ok && qa('SELECT * FROM payments WHERE tx_hash=?', '3'.repeat(64)).length === 0, JSON.stringify(r.json));
+  check('P3-27: /pay blocked by live lease writes no ledger (claim-before-ledger)', r.json && !r.json.ok && qa('SELECT * FROM payments WHERE tx_hash=?', storedTx('3'.repeat(64))).length === 0, JSON.stringify(r.json));
   // 解除认领 + 种子“账本已写、履约前崩溃”的 event_key='' 行；预置扫描游标到 9700（早于逐单路径的 latest-200=9800），日志块 9750 仅扫描命中
   db.prepare("UPDATE orders SET claim_token='', claimed_at=NULL WHERE id=?").run(o.id);
   db.prepare("INSERT INTO payments (order_id, chain, pay_address, tx_hash, event_key, amount, status) VALUES (?, 'BEP20', '0x2222222222222222222222222222222222222222', ?, '', 9.0066, 'verified')").run(o.id, '3'.repeat(64));
@@ -1000,7 +1005,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   evm.receipt = null; // 清空收据：逐单路径不再命中，迫使扫描路径回填 event_key
   evm.latest = 10000;
   const ctx = makeCtx(); await worker.scheduled({ type: 'cron', cron: '*/1 * * * *' }, env, ctx); await ctx.drain();
-  const pays = qa('SELECT * FROM payments WHERE tx_hash=?', '3'.repeat(64));
+  const pays = qa('SELECT * FROM payments WHERE tx_hash=? OR tx_hash=?', '3'.repeat(64), storedTx('3'.repeat(64)));
   check('P3-27: scan backfills event_key, exactly one payment row', pays.length === 1 && pays[0].event_key === '0x7', JSON.stringify(pays));
   check('P3-27: order completed after scan backfill', q('SELECT status FROM orders WHERE id=?', o.id).status === 'completed');
   evm.logs = []; evm.receipt = null;
@@ -1145,7 +1150,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   const cidS = mkCaptchaS('AB12');
   const rr = await callS('POST', '/api/orders/' + o.order_no + '/pay', { txid: tx30, captcha_id: cidS, captcha_code: 'AB12' });
   check('P3-30: claim failure does NOT falsely report 已用于其他订单', rr.json && !/已用于其他订单/.test(JSON.stringify(rr.json)), JSON.stringify(rr.json));
-  check('P3-30: no orphan txid_claims row after failed claim', !qS('SELECT * FROM txid_claims WHERE tx_hash=?', tx30));
+  check('P3-30: no orphan txid_claims row after failed claim', !qS('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(tx30)));
   check('P3-30: failed claim leaves order pending (retry possible)', qS('SELECT status FROM orders WHERE id=?', o.id).status === 'pending_payment');
   // 移除障碍 → 轮询重试应成功认领（认领行归属本单），证明临时失败未污染状态。
   dbS.exec('DROP TRIGGER trg_ignore_claim');
@@ -1155,7 +1160,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   const ctxS = makeCtx();
   await workerS.scheduled({ type: 'cron', cron: '*/1 * * * *' }, envS, ctxS);
   await ctxS.drain();
-  check('P3-30: retry after transient failure claims txid for this order', (() => { const t = qS('SELECT * FROM txid_claims WHERE tx_hash=?', tx30); return t && Number(t.order_id) === Number(o.id); })());
+  check('P3-30: retry after transient failure claims txid for this order', (() => { const t = qS('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(tx30)); return t && Number(t.order_id) === Number(o.id); })());
   evm.receipt = null; evm.latest = 10000; evm.logs = [];
 }
 

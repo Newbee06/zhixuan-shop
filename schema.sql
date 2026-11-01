@@ -275,6 +275,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_event_unique ON payments(chain, t
 CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(order_id);
 CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(status);
 CREATE INDEX IF NOT EXISTS idx_payments_txhash ON payments(tx_hash);
+-- v21：规范化后的交易哈希唯一约束。0x 有无、大小写不同视为同一笔。旧库由 Worker v21 在冲突清零后创建。
+CREATE UNIQUE INDEX IF NOT EXISTS idx_txid_claims_canon ON txid_claims (
+  CASE WHEN length(tx_hash)=66 AND lower(substr(tx_hash,1,2))='0x' AND length(substr(tx_hash,3))=64 AND lower(substr(tx_hash,3)) NOT GLOB '*[^0-9a-f]*' THEN '0x'||lower(substr(tx_hash,3)) WHEN length(tx_hash)=64 AND lower(tx_hash) NOT GLOB '*[^0-9a-f]*' THEN '0x'||lower(tx_hash) ELSE tx_hash END
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_canon_event ON payments (
+  chain,
+  CASE WHEN length(tx_hash)=66 AND lower(substr(tx_hash,1,2))='0x' AND length(substr(tx_hash,3))=64 AND lower(substr(tx_hash,3)) NOT GLOB '*[^0-9a-f]*' THEN '0x'||lower(substr(tx_hash,3)) WHEN length(tx_hash)=64 AND lower(tx_hash) NOT GLOB '*[^0-9a-f]*' THEN '0x'||lower(tx_hash) ELSE tx_hash END,
+  event_key
+);
 
 -- 链上扫描游标：每链已扫描到的区块高度，持久化；RPC 失败不推进，重启可恢复。
 CREATE TABLE IF NOT EXISTS scan_cursors (

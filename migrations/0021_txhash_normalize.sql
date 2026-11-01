@@ -1,0 +1,6 @@
+-- v21 镜像说明。不要用 wrangler d1 migrations apply 直接执行本文件。
+-- 权威实现在 src/worker.js 的 MIGRATIONS v21 / migrateCanonicalTxHashesV21。
+-- 上线前先跑只读查重：migrations/0021_txhash_normalize_dupcheck.sql
+-- cross_order 有行时迁移失败并列出冲突，不合并、不删除。
+-- 只有 same_order 可以合并。合并后才把保留行 UPDATE 成 0x+小写，避免撞主键或 idx_payments_event_unique。
+-- 冲突清零后再建 idx_txid_claims_canon、idx_payments_canon_event。

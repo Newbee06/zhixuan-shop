@@ -11,6 +11,11 @@ const db = new DatabaseSync(':memory:');
 db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))");
 db.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
 
+function storedTx(tx) {
+  const s = String(tx || '').trim();
+  if (/^(0x)?[0-9a-fA-F]{64}$/.test(s)) return '0x' + s.replace(/^0x/i, '').toLowerCase();
+  return s;
+}
 function wrapStmt(sql) {
   let params = [];
   const api = {
@@ -61,7 +66,7 @@ function setSetting(key, value) {
 }
 function delSetting(key) { db.prepare('DELETE FROM settings WHERE key=?').run(key); }
 function idsOf(r) { return ((r.json && r.json.payments) || []).map((p) => p.id); }
-function byTx(r, tx) { return ((r.json && r.json.payments) || []).find((p) => p.tx_hash === tx) || null; }
+function byTx(r, tx) { return ((r.json && r.json.payments) || []).find((p) => storedTx(p.tx_hash) === storedTx(tx)) || null; }
 
 db.prepare("INSERT INTO products (slug, title, category, price_usdt, sell_price, source, stock_type) VALUES ('pay-admin', '对账测试商品', 'card', 10, 10, 'self', 'card')").run();
 const prod = db.prepare("SELECT id FROM products WHERE slug='pay-admin'").get();
@@ -114,10 +119,10 @@ const rowA = byTx(r, TX_A);
 const rowB = byTx(r, TX_B);
 const rowC = byTx(r, TX_C);
 assert(rowA && rowA.order_no === 'AIS-RECON-A' && rowA.actual_amount === 10.0001 && rowA.pay_method === 'OKX' && rowA.pay_chain === 'X Layer' && rowA.order_status === 'pending_payment' && rowA.payment_state === '' && rowA.order_tx_hash === '' && rowA.pending_tx_hash === 'pend-a', 'order join fields on matched X Layer row: ' + JSON.stringify(rowA));
-assert(rowB && rowB.order_no === 'AIS-RECON-B' && rowB.actual_amount === 20.0002 && rowB.pay_method === 'Binance' && rowB.pay_chain === 'BEP20' && rowB.order_status === 'completed' && rowB.payment_state === 'overpaid_pending' && rowB.order_tx_hash === TX_B && rowB.pending_tx_hash === '', 'order join fields on matched BEP20 row: ' + JSON.stringify(rowB));
+assert(rowB && rowB.order_no === 'AIS-RECON-B' && rowB.actual_amount === 20.0002 && rowB.pay_method === 'Binance' && rowB.pay_chain === 'BEP20' && rowB.order_status === 'completed' && rowB.payment_state === 'overpaid_pending' && rowB.order_tx_hash === storedTx(TX_B) && rowB.pending_tx_hash === '', 'order join fields on matched BEP20 row: ' + JSON.stringify(rowB));
 assert(rowC && rowC.order_no == null && rowC.actual_amount == null && rowC.pay_method == null && rowC.pay_chain == null && rowC.order_status == null && rowC.payment_state == null && rowC.order_tx_hash == null && rowC.pending_tx_hash == null, 'unmatched row order fields are null: ' + JSON.stringify(rowC));
 assert(rowA.contract === XLAYER && rowB.contract === BEP20 && rowC.contract === BEP20, 'missing settings fall back to DEFAULT_USDT_CONTRACTS: ' + JSON.stringify([rowA.contract, rowB.contract, rowC.contract]));
-assert(rowA.status === 'mismatch' && rowA.tx_hash === TX_A && rowA.chain === 'X Layer', 'existing payment columns kept');
+assert(rowA.status === 'mismatch' && rowA.tx_hash === storedTx(TX_A) && rowA.chain === 'X Layer', 'existing payment columns kept');
 
 const cols = db.prepare('PRAGMA table_info(payments)').all().map((c) => c.name);
 assert(!cols.includes('contract') && !cols.includes('expected_contract'), 'payments table has no contract column: ' + cols.join(','));
@@ -146,7 +151,7 @@ assert(idsOf(r).join(',') === String(payC.id), 'filter tx_hash exact');
 r = await call('GET', '/api/admin/payments?tx_hash=' + TX_C.slice(0, 16), null, cookie);
 assert(r.json && r.json.total === 0, 'tx_hash prefix does not match');
 r = await call('GET', '/api/admin/payments?tx_hash=' + TX_A.toUpperCase(), null, cookie);
-assert(r.json && r.json.total === 0, 'tx_hash match is case-sensitive');
+assert(idsOf(r).join(',') === String(payA.id), 'tx_hash filter normalizes case and 0x before equality');
 r = await call('GET', '/api/admin/payments?reconcile_status=overpaid_pending', null, cookie);
 assert(idsOf(r).join(',') === String(payB.id) && r.json.payments[0].payment_state === 'overpaid_pending', 'filter reconcile_status');
 r = await call('GET', '/api/admin/payments?from=2026-10-19&to=2026-10-19', null, cookie);
@@ -176,12 +181,12 @@ assert(r.status === 400 && r.json && !r.json.ok, 'reconcile still requires note'
 const submitted = insertPay({ order_id: orderA.id, chain: 'X Layer', pay_address: orderA.pay_address, tx_hash: 'd'.repeat(64), event_key: '9', amount: 10.0001, block_number: 101, created_at: '2026-10-18 11:00:00', status: 'submitted', reconcile_status: '', reconcile_note: '' });
 r = await call('POST', '/api/admin/payments/' + submitted.id + '/reconcile', { note: '不应直接对账' }, cookie);
 assert(r.status === 409 && db.prepare('SELECT status FROM payments WHERE id=?').get(submitted.id).status === 'submitted', 'submitted still cannot be reconciled to posted/reconciled');
-assert(db.prepare('SELECT tx_hash, order_id, source FROM txid_claims WHERE tx_hash=?').get(TX_B).order_id === orderB.id, 'reconcile does not delete txid_claims');
+assert(db.prepare('SELECT tx_hash, order_id, source FROM txid_claims WHERE tx_hash=?').get(storedTx(TX_B)).order_id === orderB.id, 'reconcile does not delete txid_claims');
 r = await call('DELETE', '/api/admin/txid-claims/' + TX_B, null, cookie);
 assert(r.status === 404, 'no delete txid_claims admin route');
 r = await call('DELETE', '/api/admin/payments/' + payB.id, null, cookie);
 assert(r.status === 404, 'no delete payment route');
-assert(!!db.prepare('SELECT tx_hash FROM txid_claims WHERE tx_hash=?').get(TX_B), 'claim row still present');
+assert(!!db.prepare('SELECT tx_hash FROM txid_claims WHERE tx_hash=?').get(storedTx(TX_B)), 'claim row still present');
 
 assert(html.includes("['payments',ic('clipboard')+' 付款对账']") && html.includes("t === 'payments'"), 'admin shell has payments tab');
 assert(html.includes('派生合约 contract') && html.includes('adminPayReconcile'), 'admin tab shows derived contract and existing reconcile action');

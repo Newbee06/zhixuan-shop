@@ -14,6 +14,11 @@ const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 
 let pass = 0, fail = 0;
 const failures = [];
+function storedTx(tx) {
+  const s = String(tx || '').trim();
+  if (/^(0x)?[0-9a-fA-F]{64}$/.test(s)) return '0x' + s.replace(/^0x/i, '').toLowerCase();
+  return s;
+}
 function check(name, cond, extra) {
   if (cond) { pass++; console.log('PASS', name); }
   else { fail++; failures.push(name); console.log('FAIL', name, extra || ''); }
@@ -232,11 +237,11 @@ const ordB = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no)
 M.receipt = t.evmReceiptFor(ordA, txH, 9000, [t.evmLogFor(ordA, txH, 9000), t.evmLogFor(ordB, txH, 9000)]);
 r = await t.payCall(ordA.order_no, txH);
 check('P1-1: first order claims TXID via /pay', r.json && r.json.ok === true && r.json.auto === true, JSON.stringify(r.json));
-check('P1-1: txid_claims belongs to first order', (() => { const row = t.q('SELECT * FROM txid_claims WHERE tx_hash=?', txH); return row && row.order_id === ordA.id;})());
+check('P1-1: txid_claims belongs to first order', (() => { const row = t.q('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(txH)); return row && row.order_id === ordA.id;})());
 r = await t.payCall(ordB.order_no, txH);
 check('P1-1: second order same TXID rejected 409', r.status === 409 && r.json &&!r.json.ok && /已用于其他订单/.test(r.json.error || ''), JSON.stringify(r.json));
 check('P1-1: second order still pending_payment', t.q('SELECT status FROM orders WHERE id=?', ordB.id).status === 'pending_payment');
-check('P1-1: claim still belongs to first order after rejection', t.q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txH).order_id === ordA.id);
+check('P1-1: claim still belongs to first order after rejection', t.q('SELECT order_id FROM txid_claims WHERE tx_hash=?', storedTx(txH)).order_id === ordA.id);
 // 同订单旧认领 + 订单认领失败 → 回滚不删旧认领
 const txH2 = 'b2'.repeat(32);
 r = await t.orderCall({ product_id: pM.id, quantity: 1});
@@ -245,7 +250,7 @@ t.db.prepare('UPDATE orders SET claim_token=?, claimed_at=? WHERE id=?').run('AC
 t.db.prepare('INSERT INTO txid_claims (tx_hash, order_id, claimed_at) VALUES (?,?,?)').run(txH2, ordC.id, nowStr());
 M.receipt = t.evmReceiptFor(ordC, txH2, 9000);
 r = await t.payCall(ordC.order_no, txH2);
-check('P1-1: same-order old claim survives failed rollback', (() => { const row = t.q('SELECT * FROM txid_claims WHERE tx_hash=?', txH2); return row && row.order_id === ordC.id;})(), JSON.stringify(r.json));
+check('P1-1: same-order old claim survives failed rollback', (() => { const row = t.q('SELECT * FROM txid_claims WHERE tx_hash=? OR tx_hash=?', txH2, storedTx(txH2)); return row && row.order_id === ordC.id;})(), JSON.stringify(r.json));
 check('P1-1: order with failed claim still pending_payment', t.q('SELECT status FROM orders WHERE id=?', ordC.id).status === 'pending_payment');
 // 本次新建认领 + 订单认领失败 → 回滚删除本次新建，不留孤儿认领
 const txH3 = 'c3'.repeat(32);
@@ -254,7 +259,7 @@ const ordD = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no)
 t.db.prepare('UPDATE orders SET claim_token=?, claimed_at=? WHERE id=?').run('ACTIVE-LEASE', nowStr(), ordD.id);
 M.receipt = t.evmReceiptFor(ordD, txH3, 9000);
 r = await t.payCall(ordD.order_no, txH3);
-check('P1-1: failed fulfill leaves no orphan claim',!t.q('SELECT * FROM txid_claims WHERE tx_hash=?', txH3), JSON.stringify(r.json));
+check('P1-1: failed fulfill leaves no orphan claim',!t.q('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(txH3)), JSON.stringify(r.json));
 // 同订单两并发 /pay 同一 TXID：仅一履约，认领不被误删
 const txH4 = 'd4'.repeat(32);
 r = await t.orderCall({ product_id: pM.id, quantity: 1});
@@ -267,7 +272,7 @@ t.payCallWithCaptcha(ordE.order_no, txH4, cap2, 'AB12'),
 ]);
 const wins = [p1, p2].filter((x) => x.json && x.json.ok && x.json.auto === true).length;
 check('P1-1: concurrent same-order /pay exactly one fulfills', wins === 1, JSON.stringify([p1.json, p2.json]));
-check('P1-1: claim still exists after concurrent same-order /pay', (() => { const row = t.q('SELECT * FROM txid_claims WHERE tx_hash=?', txH4); return row && row.order_id === ordE.id;})());
+check('P1-1: claim still exists after concurrent same-order /pay', (() => { const row = t.q('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(txH4)); return row && row.order_id === ordE.id;})());
 check('P1-1: same TXID delivered once (order not pending)', t.q('SELECT status FROM orders WHERE id=?', ordE.id).status!== 'pending_payment');
 }
 
@@ -292,8 +297,8 @@ r = await t.call('POST', '/api/admin/orders/' + ordE.id + '/confirm-payment', { 
 check('P1-2: explicit manual_confirm=false rejected', r.json &&!r.json.ok, JSON.stringify(r.json));
 r = await t.call('POST', '/api/admin/orders/' + ordE.id + '/confirm-payment', { reason: '已在收款地址核对到账', manual_confirm: true }, cookie);
 check('P1-2: manual confirm with reason ok + marked manual', r.json && r.json.ok === true && /人工确认/.test(r.json.message || ''), JSON.stringify(r.json));
-check('P1-2: manual confirm writes shared txid_claims (source=manual_confirmed)', (() => { const row = t.q('SELECT * FROM txid_claims WHERE tx_hash=?', forged); return row && row.order_id === ordE.id && row.source === 'manual_confirmed' && !!row.claim_token; })());
-check('P1-2: manual confirm writes manual_confirmed ledger row', (() => { const row = t.q("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", forged); return row && row.order_id === ordE.id;})());
+check('P1-2: manual confirm writes shared txid_claims (source=manual_confirmed)', (() => { const row = t.q('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(forged)); return row && row.order_id === ordE.id && row.source === 'manual_confirmed' && !!row.claim_token; })());
+check('P1-2: manual confirm writes manual_confirmed ledger row', (() => { const row = t.q("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", storedTx(forged)); return row && row.order_id === ordE.id;})());
 check('P1-2: manual confirm marks order admin_note', (t.q('SELECT admin_note FROM orders WHERE id=?', ordE.id).admin_note || '').includes('人工确认收款'));
 check('P1-2: manual confirm audit action distinct',!!t.q("SELECT * FROM admin_audit WHERE order_id=? AND action='manual_confirm_payment'", ordE.id));
 // 同一 TXID 第二单人工确认 → 拒绝（人工消耗同样防复用）
@@ -316,7 +321,7 @@ const ordH = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no)
 M.receipt = t.evmReceiptFor(ordH, goodTx, 9000);
 r = await t.payCall(ordH.order_no, goodTx);
 check('P1-2: matching chain tx fulfills normally', r.json && r.json.ok === true && r.json.auto === true, JSON.stringify(r.json));
-check('P1-2: matching chain tx claimed + posted', (() => { const c = t.q('SELECT * FROM txid_claims WHERE tx_hash=?', goodTx); const p = t.q("SELECT * FROM payments WHERE tx_hash=? AND status='posted'", goodTx); return c && c.order_id === ordH.id &&!!p;})());
+check('P1-2: matching chain tx claimed + posted', (() => { const c = t.q('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(goodTx)); const p = t.q("SELECT * FROM payments WHERE tx_hash=? AND status='posted'", storedTx(goodTx)); return c && c.order_id === ordH.id &&!!p;})());
 // RPC 失败 / 金额错 / 地址错 → 不发货、不认领
 r = await t.orderCall({ product_id: pM.id, quantity: 1});
 const ordI = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
@@ -352,7 +357,7 @@ M.receipt = t.evmReceiptFor(ordM, txC, 9000, [t.evmLogFor(ordM, txC, 9000), t.ev
 const [cm, cn] = await Promise.all([t.payCall(ordM.order_no, txC), t.payCall(ordN.order_no, txC)]);
 const chainWins = [cm, cn].filter((x) => x.json && x.json.ok && x.json.auto === true).length;
 check('P1-2: concurrent same TXID exactly one chain-claims', chainWins === 1, JSON.stringify([cm.json, cn.json]));
-check('P1-2: concurrent same TXID exactly one claim row', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', txC).length === 1);
+check('P1-2: concurrent same TXID exactly one claim row', t.qa('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(txC)).length === 1);
 }
 
 // ================= P1-3：Turnstile 失败关闭 =================
@@ -427,7 +432,7 @@ check('P1-3: settings enable persisted', t.q("SELECT value FROM settings WHERE k
   const o1 = t.insertOrder({ product_id: pM.id, pay_method: 'OKX', pay_chain: 'X Layer', pay_address: addr, actual_amount: 5.0057, status: 'pending_payment', contact: freshContact(), customer_fields: JSON.stringify({ contact_email: freshContact() }) });
   const txP = 'e1'.repeat(32);
   t.db.prepare("INSERT INTO payments (order_id, chain, asset, pay_address, tx_hash, event_key, amount, amount_unit, block_number, confirmations, first_seen_at, status, reconcile_status, reconcile_note, created_at, updated_at) VALUES (?, ?, 'USDT', ?, ?, '', ?, 'USDT', 9000, 100, ?, 'posted', '', '', ?, ?)").run(o1.id, 'X Layer', addr, txP, 5.0057, nowStr(), nowStr(), nowStr());
-  const postedId = t.q('SELECT id FROM payments WHERE tx_hash=?', txP).id;
+  const postedId = t.q('SELECT id FROM payments WHERE tx_hash=? OR tx_hash=?', txP, storedTx(txP)).id;
   t.db.prepare('INSERT INTO scan_cursors (chain, last_block, updated_at) VALUES (?, ?, ?)').run('X Layer|' + addr, 8900, nowStr());
   M.logs = [t.evmLogFor(o1, txP, 9000, '0x3')];
   await t.scheduled();
@@ -442,7 +447,7 @@ check('P1-3: settings enable persisted', t.q("SELECT value FROM settings WHERE k
   t.db.prepare('INSERT INTO scan_cursors (chain, last_block, updated_at) VALUES (?, ?, ?) ON CONFLICT(chain) DO UPDATE SET last_block=excluded.last_block').run('X Layer|' + addr, 8900, nowStr());
   M.logs = [t.evmLogFor(o2, txS, 9000, '0x3')];
   await t.scheduled();
-  const rowsS = t.qa('SELECT * FROM payments WHERE tx_hash=?', txS);
+  const rowsS = t.qa('SELECT * FROM payments WHERE tx_hash=? OR tx_hash=?', txS, storedTx(txS));
   check('P2-1: empty event_key backfill keeps single row', rowsS.length === 1, JSON.stringify(rowsS));
   check('P2-1: backfilled row reaches posted', rowsS[0] && rowsS[0].status === 'posted' && rowsS[0].event_key === '0x3', JSON.stringify(rowsS[0]));
   check('P2-1: backfilled order fulfilled once', t.q('SELECT status FROM orders WHERE id=?', o2.id).status === 'pending_fulfill');

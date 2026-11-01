@@ -811,6 +811,11 @@ var MIGRATIONS = [
     await env.DB.prepare("INSERT OR IGNORE INTO categories (cat_key, name, is_active, sort) VALUES ('recharge', '代充', 1, 10)").run();
     await env.DB.prepare("INSERT OR IGNORE INTO categories (cat_key, name, is_active, sort) VALUES ('account', '成品号', 1, 20)").run();
     await env.DB.prepare("INSERT OR IGNORE INTO categories (cat_key, name, is_active, sort) VALUES ('card', '卡密', 1, 30)").run();
+  } },
+  { version: 21, name: 'TXID 规范化为 0x+小写，并在规范值上建唯一约束', up: async function (env) {
+    // 先只读分组。跨订单冲突不合并、不删行，直接失败并列出冲突。同一订单的重复行才合并。
+    // UPDATE 改主键/唯一键之前先删掉同组多余行，避免撞上已有规范形。
+    await migrateCanonicalTxHashesV21(env);
   } }
 ];
 // 执行待迁移：先建基表（空库首次迁移），再逐个版本 apply，成功才标记版本；任一失败抛错（带版本号与原因），不得伪装成功。
@@ -867,9 +872,9 @@ async function recordPayment(env, p) {
   // 返回 conflictOther（调用方必须拒绝/走对账，绝不把他单的账本行当作本订单的付款事实，也绝不覆盖其 order_id）。
   // 真正 DB 错误（INSERT 失败且重读无行）返回 ok:false，调用方不得继续履约。
   // P1-C：扫描路径的 tx_hash 来自 RPC，同样先规范化，避免与 /pay 路径大小写不一致。
-  if (p && /^(0x)?[0-9a-fA-F]{64}$/.test(String(p.tx_hash || ''))) p.tx_hash = normalizeChainTxHash(p.tx_hash);
+  if (p && isChainTxHash(p.tx_hash)) p.tx_hash = normalizeChainTxHash(p.tx_hash);
   var now = nowISO();
-  var row = await env.DB.prepare('SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(p.chain || '', p.tx_hash || '', p.event_key || '').first().catch(function () { return null; });
+  var row = await findPaymentByEvent(env, p.chain || '', p.tx_hash || '', p.event_key || '');
   if (row) {
     if (row.order_id != null && p.order_id != null && Number(row.order_id) !== Number(p.order_id)) return { ok: false, reason: '该交易已归属其他订单', conflictOther: true, payment: row };
     return { ok: true, payment: row, created: false };
@@ -884,7 +889,7 @@ async function recordPayment(env, p) {
     // 不把已写入的行当成失败（旧代码容忍 payment 为 null 继续履约；新代码须返回真实行）。
   }
   // 并发下唯一冲突：重新读，确认归属
-  var again = await env.DB.prepare('SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(p.chain || '', p.tx_hash || '', p.event_key || '').first().catch(function () { return null; });
+  var again = await findPaymentByEvent(env, p.chain || '', p.tx_hash || '', p.event_key || '');
   if (again) {
     if (again.order_id != null && p.order_id != null && Number(again.order_id) !== Number(p.order_id)) return { ok: false, reason: '该交易已归属其他订单', conflictOther: true, payment: again };
     return { ok: true, payment: again, created: false };
@@ -935,9 +940,7 @@ async function updatePayment(env, paymentId, fields) {
   return { ok: false, reason: '付款记录更新失败' };
 }
 async function getPaymentByEvent(env, chain, txHash, eventKey) {
-  // P1-C：按规范形查账本行。
-  txHash = normalizeChainTxHash(txHash);
-  return await env.DB.prepare('SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(chain || '', txHash || '', eventKey || '').first().catch(function () { return null; });
+  return await findPaymentByEvent(env, chain, txHash, eventKey);
 }
 async function getRequiredConfirmations(env, chain, orderAmount) {
   // P3-15：大额订单分级确认数（仅 X Layer）。订单金额 >= large_order_usdt（默认 100）时用
@@ -1058,7 +1061,9 @@ async function precheckSchema(env) {
     { name: 'idx_orders_status', unique: 0 },
     { name: 'idx_orders_created', unique: 0 },
     { name: 'idx_sessions_expires', unique: 0 },
-    { name: 'idx_categories_key', unique: 1 }
+    { name: 'idx_categories_key', unique: 1 },
+    { name: 'idx_txid_claims_canon', unique: 1 },
+    { name: 'idx_payments_canon_event', unique: 1 }
   ];
   var curRow = await env.DB.prepare('SELECT MAX(version) AS v FROM schema_migrations').first().catch(function () { return null; });
   var curV = curRow ? Number(curRow.v || 0) : 0;
@@ -1310,14 +1315,25 @@ function upstreamKeysOf(data) {
   if (!data) return '';
   var k = data.deliveredKey || data.delivered_key || data.key || data.code || '';
   var ks = data.deliveredKeys || data.delivered_keys || data.keys || data.codes || [];
-  // P1-B 修复（2026-10-29）：上游复数 keys 可能是字符串形式（单张或换行/逗号分隔），
-  // 旧代码只认数组，字符串会被直接丢弃，导致已 delivered 的订单被判 keys 不足、
-  // 永远卡在 pending_activation。字符串先按换行/逗号拆分、去空行，再拼回换行分隔。
+  // 字符串只按换行拆。卡密本身可以含逗号，按逗号拆会把一张卡拆成多张。
+  // 条数不足时调用方保持 pending_activation，并把已到的卡密写入 delivery_content。
   if (typeof ks === 'string') {
     var s = ks.trim();
-    if (s) return s.split(/\r?\n|,/).map(function (x) { return x.trim(); }).filter(function (x) { return x.length > 0; }).join('\n');
+    if (s) return s.split(/\r?\n/).map(function (x) { return x.trim(); }).filter(function (x) { return x.length > 0; }).join('\n');
   }
-  if (Array.isArray(ks) && ks.length) return ks.join('\n');
+  if (Array.isArray(ks) && ks.length) {
+    var parts = [];
+    for (var ki = 0; ki < ks.length; ki++) {
+      var piece = String(ks[ki] == null ? '' : ks[ki]).trim();
+      if (!piece) continue;
+      var lines = piece.split(/\r?\n/);
+      for (var kli = 0; kli < lines.length; kli++) {
+        var line = lines[kli].trim();
+        if (line) parts.push(line);
+      }
+    }
+    if (parts.length) return parts.join('\n');
+  }
   if (k) return String(k);
   return '';
 }
@@ -1475,7 +1491,7 @@ async function pollUpstreamActivations(env, ctx, opts) {
         // 持有者令牌 + 状态检查，行数须为预期值 1，否则不发邮件、不称交付成功）。
         if (st0 === 'delivered') {
           if (countDeliveredKeys(keys0) < o.quantity) {
-            await env.DB.prepare("UPDATE orders SET status='pending_activation', admin_note=? WHERE id=? AND upstream_lock=?").bind(upstreamDeliveredShortfallNote(keys0, o.quantity), o.id, lockToken).run();
+            await env.DB.prepare("UPDATE orders SET status='pending_activation', admin_note=?, delivery_content=? WHERE id=? AND upstream_lock=?").bind(upstreamDeliveredShortfallNote(keys0, o.quantity), keys0 || '', o.id, lockToken).run();
             await logAudit(env, o.id, 'upstream_keys_insufficient', o.status, 'pending_activation', upstreamDeliveredShortfallNote(keys0, o.quantity));
             out.still_pending++; continue;
           }
@@ -1501,7 +1517,7 @@ async function pollUpstreamActivations(env, ctx, opts) {
       if (st === 'delivered') {
         // P2-3：keys 为空/不足 → 明确 pending_activation + 缺失数与建议 + 审计，绝不标完成。
         if (countDeliveredKeys(keys) < o.quantity) {
-          await env.DB.prepare("UPDATE orders SET status='pending_activation', admin_note=? WHERE id=? AND upstream_lock=?").bind(upstreamDeliveredShortfallNote(keys, o.quantity), o.id, lockToken).run();
+          await env.DB.prepare("UPDATE orders SET status='pending_activation', admin_note=?, delivery_content=? WHERE id=? AND upstream_lock=?").bind(upstreamDeliveredShortfallNote(keys, o.quantity), keys || '', o.id, lockToken).run();
           await logAudit(env, o.id, 'upstream_keys_insufficient', o.status, 'pending_activation', upstreamDeliveredShortfallNote(keys, o.quantity));
           out.still_pending++; continue;
         }
@@ -1841,7 +1857,7 @@ async function scanEvmChain(env, fetchFn, ctx, chain, pendingOrders) {
             var evKey = lg.logIndex != null ? String(lg.logIndex) : '';
             // P3-27：先查 /pay 留下的 event_key='' 同交易行（同订单归属），回填 event_key，不再另建一行。
             var existingEmpty = null;
-            try { existingEmpty = await env.DB.prepare("SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ''").bind(chain, String(lg.transactionHash || '')).first(); } catch (e) { existingEmpty = null; }
+            try { existingEmpty = await findPaymentByEvent(env, chain, String(lg.transactionHash || ''), ''); } catch (e) { existingEmpty = null; }
             if (existingEmpty && (existingEmpty.order_id == null || Number(existingEmpty.order_id) === Number(matchedOrder.id))) {
               // P2-1：回填 event_key 时不得把 posted 降级为 discovered。
               // posted / manual_confirmed / reconciled 为终态：只补元数据（event_key/金额/区块/确认数），不改状态；
@@ -1889,16 +1905,176 @@ async function checkChainPayment(env, fetchFn, order) {
   var reqConf = await getRequiredConfirmations(env, order.pay_chain, order.actual_amount || order.total_usdt);
   return await checkEvmPayment(fetchFn, rpcs, contract, order.pay_address || order.wallet_address, order.actual_amount || order.total_usdt, { requiredConfirmations: reqConf, chain: order.pay_chain });
 }
-// P1-C 修复（2026-10-29）：链上 TXID 规范化。EVM 哈希本身不区分大小写，
-// 但 txid_claims / payments 的 tx_hash 是字符串主键，大小写不同会被当成不同交易，
-// 同一笔钱可能被两个订单分别认领。所有链上路径统一转小写；0x 前缀有无原样保留
-// （不把裸哈希改写为带 0x 形，避免破坏已有裸哈希行与按原样查询的调用方；
-// 裸/带 0x 跨形态的认领由认领与快筛的双形态查询兜底）。
-// 非 64 位十六进制的站内凭证原样返回，不动（避免改动人工/站内凭证语义）。
-function normalizeChainTxHash(tx) {
+// 链上 TXID 一律写成 0x + 小写。裸哈希、大写、0X 都收成同一种，查询用等值，不再 LOWER()。
+// 非 64 位十六进制的站内凭证原样返回。
+function txHashForms(tx) {
   var s = String(tx || '').trim();
-  if (/^(0x)?[0-9a-fA-F]{64}$/.test(s)) return s.toLowerCase();
-  return s;
+  if (!/^(0x)?[0-9a-fA-F]{64}$/.test(s)) return [s, s];
+  var bare = s.replace(/^0x/i, '').toLowerCase();
+  return ['0x' + bare, bare];
+}
+function normalizeChainTxHash(tx) {
+  return txHashForms(tx)[0];
+}
+// 规范形表达式。建唯一索引和查重 SQL 用同一段，避免 0x 有无 / 大小写被当成两笔。
+var TX_CANON_EXPR = "CASE WHEN length(tx_hash)=66 AND lower(substr(tx_hash,1,2))='0x' AND length(substr(tx_hash,3))=64 AND lower(substr(tx_hash,3)) NOT GLOB '*[^0-9a-f]*' THEN '0x'||lower(substr(tx_hash,3)) WHEN length(tx_hash)=64 AND lower(tx_hash) NOT GLOB '*[^0-9a-f]*' THEN '0x'||lower(tx_hash) ELSE tx_hash END";
+function isChainTxHash(tx) { return /^(0x)?[0-9a-fA-F]{64}$/.test(String(tx || '').trim()); }
+async function touchTxClaimLease(env, txHash, orderId, leaseToken) {
+  // 收养租约按规范形和遗留裸形等值匹配，不用 LOWER()，主键索引仍可用。
+  if (!leaseToken) return;
+  var forms = txHashForms(txHash);
+  try {
+    await env.DB.prepare('UPDATE txid_claims SET order_lease_token = ? WHERE order_id = ? AND (tx_hash = ? OR tx_hash = ?)').bind(leaseToken, orderId, forms[0], forms[1]).run();
+  } catch (e) {}
+}
+async function findTxClaim(env, txHash) {
+  var forms = txHashForms(txHash);
+  var row = await env.DB.prepare('SELECT order_id, claimed_at, claim_token, source, order_lease_token, tx_hash FROM txid_claims WHERE tx_hash = ?').bind(forms[0]).first();
+  if (row || forms[0] === forms[1]) return row;
+  return await env.DB.prepare('SELECT order_id, claimed_at, claim_token, source, order_lease_token, tx_hash FROM txid_claims WHERE tx_hash = ?').bind(forms[1]).first();
+}
+async function findPaymentByEvent(env, chain, txHash, eventKey) {
+  var forms = txHashForms(txHash);
+  var row = await env.DB.prepare('SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(chain || '', forms[0], eventKey || '').first().catch(function () { return null; });
+  if (row || forms[0] === forms[1]) return row;
+  return await env.DB.prepare('SELECT * FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(chain || '', forms[1], eventKey || '').first().catch(function () { return null; });
+}
+async function evmBlockTimestampMs(fetchFn, rpcUrls, chain, blockNumber) {
+  if (blockNumber == null || !isFinite(Number(blockNumber))) return null;
+  var hex = '0x' + Number(blockNumber).toString(16);
+  var urls = rpcUrls || [];
+  for (var i = 0; i < urls.length; i++) {
+    try {
+      await assertRpcChainId(fetchFn, urls[i], chain);
+      var block = await rpcCall(fetchFn, urls[i], 'eth_getBlockByNumber', [hex, false]);
+      if (!block || block.timestamp == null) continue;
+      var sec = parseInt(block.timestamp, 16);
+      if (!isFinite(sec) || sec <= 0) continue;
+      return sec * 1000;
+    } catch (e) { continue; }
+  }
+  return null;
+}
+async function unmatchedAdoptionDecision(env, order, paymentRow, blockNumber, fetchFn) {
+  // 只收养金额、收款地址都一致，且链上区块时间落在 (创建, 过期) 内的 unmatched 行。其余留给人工。
+  var expectedAmt = Number(order.actual_amount || order.total_usdt);
+  if (!amountsEqual(paymentRow.amount, expectedAmt)) return { ok: false, reason: '金额不符，不收养该笔 unmatched 付款，已转人工对账' };
+  var orderAddr = String(order.pay_address || order.wallet_address || '').toLowerCase();
+  var payAddr = String(paymentRow.pay_address || '').toLowerCase();
+  if (!orderAddr || !payAddr || orderAddr !== payAddr) return { ok: false, reason: '收款地址不符，不收养该笔 unmatched 付款，已转人工对账' };
+  var blk = (paymentRow.block_number != null && paymentRow.block_number !== '') ? Number(paymentRow.block_number) : (blockNumber != null ? Number(blockNumber) : null);
+  var settings = await getAllSettings(env);
+  var rpcMap = parseJsonSafe(settings.rpc_urls, {});
+  var rpcs = rpcMap[order.pay_chain] || DEFAULT_RPC_URLS[order.pay_chain] || [];
+  var blockMs = await evmBlockTimestampMs(fetchFn || getFetch(env), rpcs, order.pay_chain, blk);
+  var createdMs = Date.parse(String(order.created_at || '').replace(' ', 'T') + 'Z');
+  var expiresMs = effectiveExpiryMs(order);
+  if (blockMs == null || !isFinite(createdMs) || expiresMs == null || !(blockMs > createdMs && blockMs < expiresMs)) {
+    return { ok: false, reason: '链上区块时间不在订单创建与过期之间，不收养该笔 unmatched 付款，已转人工对账' };
+  }
+  return { ok: true };
+}
+async function migrateCanonicalTxHashesV21(env) {
+  function orderKey(id) { return id == null || id === '' ? 'NULL' : String(id); }
+  var claimRows = (await env.DB.prepare('SELECT tx_hash, order_id, claimed_at, claim_token, source, order_lease_token FROM txid_claims').all()).results || [];
+  var payRows = (await env.DB.prepare('SELECT id, order_id, chain, tx_hash, event_key FROM payments').all()).results || [];
+  var claimGroups = {};
+  for (var i = 0; i < claimRows.length; i++) {
+    if (!isChainTxHash(claimRows[i].tx_hash)) continue;
+    var ck = canonicalKey(claimRows[i].tx_hash);
+    if (!claimGroups[ck]) claimGroups[ck] = [];
+    claimGroups[ck].push(claimRows[i]);
+  }
+  var payGroups = {};
+  for (var p = 0; p < payRows.length; p++) {
+    if (!isChainTxHash(payRows[p].tx_hash)) continue;
+    var pk = String(payRows[p].chain || '') + '\n' + canonicalKey(payRows[p].tx_hash) + '\n' + String(payRows[p].event_key || '');
+    if (!payGroups[pk]) payGroups[pk] = [];
+    payGroups[pk].push(payRows[p]);
+  }
+  function canonicalKey(tx) { return normalizeChainTxHash(tx); }
+  var conflicts = [];
+  var cgk = Object.keys(claimGroups);
+  for (var a = 0; a < cgk.length; a++) {
+    var grow = claimGroups[cgk[a]];
+    if (grow.length < 2) continue;
+    var seen = {};
+    for (var b = 0; b < grow.length; b++) seen[orderKey(grow[b].order_id)] = 1;
+    if (Object.keys(seen).length > 1) conflicts.push('txid_claims ' + cgk[a] + ' => ' + grow.map(function (r) { return r.tx_hash + ' order=' + r.order_id; }).join(' | '));
+  }
+  var pgk = Object.keys(payGroups);
+  for (var c = 0; c < pgk.length; c++) {
+    var prow = payGroups[pgk[c]];
+    if (prow.length < 2) continue;
+    var pseen = {};
+    for (var d = 0; d < prow.length; d++) pseen[orderKey(prow[d].order_id)] = 1;
+    if (Object.keys(pseen).length > 1) conflicts.push('payments ' + pgk[c].replace(/\n/g, ' / ') + ' => ' + prow.map(function (r) { return '#' + r.id + ' ' + r.tx_hash + ' order=' + (r.order_id == null ? 'NULL' : r.order_id); }).join(' | '));
+  }
+  if (conflicts.length) {
+    throw new Error('TXID 规范化存在跨订单冲突，已停止迁移且未改任何行，请人工对账：\n' + conflicts.join('\n'));
+  }
+  for (var e = 0; e < cgk.length; e++) {
+    var rows = claimGroups[cgk[e]];
+    var canon = cgk[e];
+    var keeper = rows[0];
+    for (var f = 1; f < rows.length; f++) if (rows[f].tx_hash === canon) keeper = rows[f];
+    var token = keeper.claim_token || '';
+    var source = keeper.source || 'chain_verified';
+    var lease = keeper.order_lease_token || '';
+    var claimed = keeper.claimed_at || '';
+    for (var g = 0; g < rows.length; g++) {
+      if (!token && rows[g].claim_token) token = rows[g].claim_token;
+      if (source !== 'manual_confirmed' && rows[g].source === 'manual_confirmed') source = rows[g].source;
+      if (!lease && rows[g].order_lease_token) lease = rows[g].order_lease_token;
+      if (rows[g].claimed_at && (!claimed || String(rows[g].claimed_at) < String(claimed))) claimed = rows[g].claimed_at;
+    }
+    if (rows.length > 1 || keeper.claim_token !== token || keeper.source !== source || keeper.order_lease_token !== lease || keeper.claimed_at !== claimed) {
+      await env.DB.prepare('UPDATE txid_claims SET claim_token = ?, source = ?, order_lease_token = ?, claimed_at = ? WHERE tx_hash = ?').bind(token, source, lease, claimed, keeper.tx_hash).run();
+    }
+    for (var h = 0; h < rows.length; h++) {
+      if (rows[h].tx_hash === keeper.tx_hash) continue;
+      await env.DB.prepare('DELETE FROM txid_claims WHERE tx_hash = ? AND order_id = ?').bind(rows[h].tx_hash, rows[h].order_id).run();
+    }
+    if (keeper.tx_hash !== canon) {
+      var clash = await env.DB.prepare('SELECT tx_hash FROM txid_claims WHERE tx_hash = ?').bind(canon).first();
+      if (clash) throw new Error('txid_claims UPDATE 将撞主键，已中止：' + keeper.tx_hash + ' -> ' + canon);
+      await env.DB.prepare('UPDATE txid_claims SET tx_hash = ? WHERE tx_hash = ?').bind(canon, keeper.tx_hash).run();
+    }
+  }
+  for (var m = 0; m < pgk.length; m++) {
+    var pays = payGroups[pgk[m]];
+    var parts = pgk[m].split('\n');
+    var pcanon = parts[1];
+    var pkeep = pays[0];
+    for (var n = 1; n < pays.length; n++) {
+      if (pays[n].tx_hash === pcanon) pkeep = pays[n];
+      else if (pkeep.tx_hash !== pcanon && Number(pays[n].id) < Number(pkeep.id)) pkeep = pays[n];
+    }
+    for (var q = 0; q < pays.length; q++) {
+      if (Number(pays[q].id) === Number(pkeep.id)) continue;
+      await env.DB.prepare('DELETE FROM payments WHERE id = ? AND IFNULL(order_id, -1) = IFNULL(?, -1)').bind(pays[q].id, pkeep.order_id).run();
+    }
+    if (pkeep.tx_hash !== pcanon) {
+      var pclash = await env.DB.prepare('SELECT id FROM payments WHERE chain = ? AND tx_hash = ? AND event_key = ?').bind(pkeep.chain || '', pcanon, pkeep.event_key || '').first();
+      if (pclash && Number(pclash.id) !== Number(pkeep.id)) throw new Error('payments UPDATE 将撞唯一键，已中止：#' + pkeep.id + ' -> ' + pcanon);
+      await env.DB.prepare('UPDATE payments SET tx_hash = ? WHERE id = ?').bind(pcanon, pkeep.id).run();
+    }
+  }
+  var orderRows = (await env.DB.prepare('SELECT id, tx_hash, pending_tx_hash, txid FROM orders').all()).results || [];
+  for (var r = 0; r < orderRows.length; r++) {
+    var od = orderRows[r];
+    var sets = [];
+    var binds = [];
+    if (isChainTxHash(od.tx_hash) && od.tx_hash !== normalizeChainTxHash(od.tx_hash)) { sets.push('tx_hash = ?'); binds.push(normalizeChainTxHash(od.tx_hash)); }
+    if (isChainTxHash(od.pending_tx_hash) && od.pending_tx_hash !== normalizeChainTxHash(od.pending_tx_hash)) { sets.push('pending_tx_hash = ?'); binds.push(normalizeChainTxHash(od.pending_tx_hash)); }
+    if (isChainTxHash(od.txid) && od.txid !== normalizeChainTxHash(od.txid)) { sets.push('txid = ?'); binds.push(normalizeChainTxHash(od.txid)); }
+    if (!sets.length) continue;
+    binds.push(od.id);
+    var ost = env.DB.prepare('UPDATE orders SET ' + sets.join(', ') + ' WHERE id = ?');
+    await ost.bind.apply(ost, binds).run();
+  }
+  await createIndexIfMissing(env, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_txid_claims_canon ON txid_claims (' + TX_CANON_EXPR + ')');
+  await createIndexIfMissing(env, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_canon_event ON payments (chain, ' + TX_CANON_EXPR + ', event_key)');
 }
 async function checkTxidPayment(env, fetchFn, order, txid) {
   // 按需核验：用户主动提交 TXID 时复用同一链上核验（EVM 查 receipt 日志）。白名单封堵：非首期两种组合不核验。
@@ -1938,7 +2114,7 @@ async function checkTxidPayment(env, fetchFn, order, txid) {
           if (topics.length < 3 || String(topics[0]).toLowerCase() !== TRANSFER_TOPIC0) continue;
           if (String(topics[2]).toLowerCase() !== toTopic) continue;
           var val = 0n; try { val = BigInt(lg.data || '0x0'); } catch (e) { continue; }
-          if (val === expected) return { txHash: txid, amount: Number(order.actual_amount || order.total_usdt) };
+          if (val === expected) return { txHash: txid, amount: Number(order.actual_amount || order.total_usdt), blockNumber: receiptBn, confirmations: isFinite(latestBn) && isFinite(receiptBn) ? (latestBn - receiptBn) : 0 };
         }
       } catch (e) { continue; }
     }
@@ -1998,37 +2174,24 @@ async function claimTxid(env, txHash, orderId, opts) {
   txHash = normalizeChainTxHash(txHash);
   await testHook(env, 'beforeTxidClaim', { txHash: txHash, orderId: orderId, source: source });
   // fail-closed：认领查询本身失败时不得把“查不到”当成“无认领”继续 INSERT。
+  // 先等值查规范形，再等值查遗留裸形。不用 LOWER()。
   var existing = null, existingErr = null;
-  try { existing = await env.DB.prepare('SELECT order_id, claimed_at, claim_token, source, order_lease_token FROM txid_claims WHERE tx_hash = ?').bind(txHash).first(); }
+  try { existing = await findTxClaim(env, txHash); }
   catch (e) { existingErr = e; }
   if (existingErr) return { ok: false, reason: '认领查询失败，请重试', transient: true };
   if (existing) {
     if (Number(existing.order_id) !== Number(orderId)) return { ok: false, reason: '该交易哈希已用于其他订单（请勿重复提交；归属争议请在 D1 中核查 txid_claims 后手动处理）' };
-    if (leaseToken) { try { await env.DB.prepare('UPDATE txid_claims SET order_lease_token = ? WHERE tx_hash = ? AND order_id = ?').bind(leaseToken, txHash, orderId).run(); } catch (e) {} }
+    await touchTxClaimLease(env, txHash, orderId, leaseToken);
     return { ok: true, created: false, claimToken: existing.claim_token || null, claimedAt: existing.claimed_at || null, source: existing.source || 'chain_verified' };
-  }
-  // P1-C 遗留兼容：修复前已入库的大写认领行、或裸/带 0x 跨形态认领行，规范形精确查不到时，
-  // 用双形态（裸形 + 带 0x 形）查一次：他单直接拒绝，本单直接收养，不再另建一行认领
-  // （否则同一笔钱会出现两行认领，防重失效）。
-  if (/^(0x)?[0-9a-f]{64}$/.test(String(txHash))) {
-    var legacyCase = null;
-    var legacyBare = String(txHash).replace(/^0x/, '');
-    try { legacyCase = await env.DB.prepare('SELECT order_id, claimed_at, claim_token, source, tx_hash FROM txid_claims WHERE LOWER(tx_hash) IN (?, ?)').bind(legacyBare, '0x' + legacyBare).first(); } catch (e) { legacyCase = null; }
-    if (legacyCase) {
-      if (Number(legacyCase.order_id) !== Number(orderId)) return { ok: false, reason: '该交易哈希已用于其他订单（请勿重复提交；归属争议请在 D1 中核查 txid_claims 后手动处理）' };
-      if (leaseToken) { try { await env.DB.prepare('UPDATE txid_claims SET order_lease_token = ? WHERE LOWER(tx_hash) = ? AND order_id = ?').bind(leaseToken, String(txHash), orderId).run(); } catch (e) {} }
-      return { ok: true, created: false, claimToken: legacyCase.claim_token || null, claimedAt: legacyCase.claimed_at || null, source: legacyCase.source || 'chain_verified' };
-    }
   }
   // 遗留兼容：v17 前人工确认只写 payments manual_confirmed 行、不写 txid_claims。无认领行时若遗留人工行归属他单，拒绝；
   // 归属本单时继续新建认领行（把遗留消耗收敛到全局认领表），之后以认领表为准。
   // 同理：旧版 /pay 曾先写 payments verified 行、后认领，崩溃时可能留下无认领行的 verified/confirmed/posted 账本；
   // 该类账本行归属他单时同样拒绝（不得只挡 manual_confirmed 行），归属本单时继续新建认领行收敛。
-  // 遗留查询失败时 fail-closed，不继续 INSERT。
+  // 遗留查询失败时 fail-closed，不继续 INSERT。等值匹配规范形和裸形，不用 LOWER()。
   var legacyRow = null, legacyErr = null;
-  var legacyBare2 = /^(0x)?[0-9a-f]{64}$/.test(String(txHash)) ? String(txHash).replace(/^0x/, '') : String(txHash);
-  var legacyForms2 = /^(0x)?[0-9a-f]{64}$/.test(String(txHash)) ? [legacyBare2, '0x' + legacyBare2] : [String(txHash), String(txHash)];
-  try { legacyRow = await env.DB.prepare("SELECT order_id FROM payments WHERE LOWER(tx_hash) IN (?, ?) AND status IN ('manual_confirmed', 'verified', 'confirmed', 'posted') LIMIT 1").bind(legacyForms2[0], legacyForms2[1]).first(); }
+  var legacyForms2 = txHashForms(txHash);
+  try { legacyRow = await env.DB.prepare("SELECT order_id FROM payments WHERE (tx_hash = ? OR tx_hash = ?) AND status IN ('manual_confirmed', 'verified', 'confirmed', 'posted') LIMIT 1").bind(legacyForms2[0], legacyForms2[1]).first(); }
   catch (e) { legacyErr = e; }
   if (legacyErr) return { ok: false, reason: '认领查询失败，请重试', transient: true };
   if (legacyRow && Number(legacyRow.order_id) !== Number(orderId)) {
@@ -2054,7 +2217,7 @@ async function claimTxid(env, txHash, orderId, opts) {
   // 并发下 INSERT 冲突（主键已存在）：重新读，确认归属（同订单收养，他单拒绝）
   var again = await env.DB.prepare('SELECT order_id, claimed_at, claim_token, source FROM txid_claims WHERE tx_hash = ?').bind(txHash).first().catch(function () { return null; });
   if (again && Number(again.order_id) === Number(orderId)) {
-    if (leaseToken) { try { await env.DB.prepare('UPDATE txid_claims SET order_lease_token = ? WHERE tx_hash = ? AND order_id = ?').bind(leaseToken, txHash, orderId).run(); } catch (e) {} }
+    await touchTxClaimLease(env, txHash, orderId, leaseToken);
     return { ok: true, created: false, claimToken: again.claim_token || null, claimedAt: again.claimed_at || null, source: again.source || 'chain_verified' };
   }
   // P3-30：重读为空 = 非冲突型 DB 错误（INSERT 失败且无占用行），不得谎称“已用于其他订单”。
@@ -2069,14 +2232,12 @@ async function claimTxid(env, txHash, orderId, opts) {
 // 新消耗一律以 txid_claims 为准（人工与链上共享同一全局认领表）。
 async function txHashConsumedByOther(env, txHash, orderId) {
   if (!txHash) return null;
-  // P1-C：先规范化（小写），再用双形态查遗留行（裸形 + 带 0x 形，大小写不敏感）。
   txHash = normalizeChainTxHash(txHash);
-  var consumedBare = /^(0x)?[0-9a-f]{64}$/.test(String(txHash)) ? String(txHash).replace(/^0x/, '') : String(txHash);
-  var consumedForms = /^(0x)?[0-9a-f]{64}$/.test(String(txHash)) ? [consumedBare, '0x' + consumedBare] : [String(txHash), String(txHash)];
-  var c = await env.DB.prepare('SELECT order_id FROM txid_claims WHERE LOWER(tx_hash) IN (?, ?)').bind(consumedForms[0], consumedForms[1]).first().catch(function () { return null; });
+  var consumedForms = txHashForms(txHash);
+  var c = await env.DB.prepare('SELECT order_id FROM txid_claims WHERE tx_hash = ? OR tx_hash = ?').bind(consumedForms[0], consumedForms[1]).first().catch(function () { return null; });
   if (c && Number(c.order_id) !== Number(orderId)) return '该交易哈希已用于其他订单（请勿重复提交；归属争议请在 D1 中核查 txid_claims 后手动处理）';
   // 遗留账本行：manual_confirmed 与 verified/confirmed/posted 均视为他单消耗证据（只挡 manual_confirmed 会漏旧版先记账后认领的残留行）。
-  var m = await env.DB.prepare("SELECT order_id FROM payments WHERE LOWER(tx_hash) IN (?, ?) AND status IN ('manual_confirmed', 'verified', 'confirmed', 'posted') LIMIT 1").bind(consumedForms[0], consumedForms[1]).first().catch(function () { return null; });
+  var m = await env.DB.prepare("SELECT order_id FROM payments WHERE (tx_hash = ? OR tx_hash = ?) AND status IN ('manual_confirmed', 'verified', 'confirmed', 'posted') LIMIT 1").bind(consumedForms[0], consumedForms[1]).first().catch(function () { return null; });
   if (m && Number(m.order_id) !== Number(orderId)) return '该交易哈希已用于其他订单（请勿重复提交；归属争议请在 D1 中核查 txid_claims 后手动处理）';
   return null;
 }
@@ -2347,6 +2508,17 @@ async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
     await releaseOrderLease(env, o.id, claimToken, true);
     return { ok: false, reason: '该交易未经链上核验，拒绝发货（请走链上核验或人工确认通道）' };
   }
+  if (isChainHash && !manualConfirm && txVerified) {
+    var preUnmatched = await findPaymentByEvent(env, o.pay_chain, txHash, String((opts && opts.eventKey) || ''));
+    if (preUnmatched && String(preUnmatched.status) === 'unmatched' && (preUnmatched.order_id == null || preUnmatched.order_id === '')) {
+      var adoptGate = await unmatchedAdoptionDecision(env, o, preUnmatched, opts.blockNumber, getFetch(env));
+      if (!adoptGate.ok) {
+        await releaseOrderLease(env, o.id, claimToken, true);
+        try { await env.DB.prepare("UPDATE orders SET pending_tx_hash = CASE WHEN pending_tx_hash = ? OR pending_tx_hash = ? THEN '' ELSE pending_tx_hash END WHERE id = ?").bind(txHashForms(txHash)[0], txHashForms(txHash)[1], o.id).run(); } catch (e) {}
+        return { ok: false, reason: adoptGate.reason, manual: true };
+      }
+    }
+  }
   if (isChainHash) {
     var tc = await claimTxid(env, txHash, o.id, { source: manualConfirm ? 'manual_confirmed' : 'chain_verified', leaseToken: claimToken });
     if (!tc.ok) {
@@ -2465,7 +2637,7 @@ async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
         if (gst === 'delivered') {
           // P2-3：keys 为空/不足 → 明确 pending_activation + 缺失数与建议 + 审计，绝不标完成。
           if (countDeliveredKeys(gkeys) < o.quantity) {
-            await env.DB.prepare("UPDATE orders SET status='pending_activation', admin_note=? WHERE id=? AND claim_token=?").bind(upstreamDeliveredShortfallNote(gkeys, o.quantity), o.id, claimToken).run();
+            await env.DB.prepare("UPDATE orders SET status='pending_activation', admin_note=?, delivery_content=? WHERE id=? AND claim_token=?").bind(upstreamDeliveredShortfallNote(gkeys, o.quantity), gkeys || '', o.id, claimToken).run();
             await logAudit(env, o.id, 'upstream_keys_insufficient', o.status, 'pending_activation', upstreamDeliveredShortfallNote(gkeys, o.quantity));
             return { ok: true, mode: 'pending_activation', reason: 'insufficient_keys' };
           }
@@ -2533,7 +2705,7 @@ async function fulfillAfterPayment(env, order, txHash, ctx, opts) {
     if (st === 'delivered') {
       // P2-3：keys 为空/不足 → 明确 pending_activation + 缺失数与建议 + 审计，绝不标完成。
       if (countDeliveredKeys(keys) < o.quantity) {
-        await env.DB.prepare("UPDATE orders SET status='pending_activation', admin_note=? WHERE id=? AND claim_token=?").bind(upstreamDeliveredShortfallNote(keys, o.quantity), o.id, claimToken).run();
+        await env.DB.prepare("UPDATE orders SET status='pending_activation', admin_note=?, delivery_content=? WHERE id=? AND claim_token=?").bind(upstreamDeliveredShortfallNote(keys, o.quantity), keys || '', o.id, claimToken).run();
         await logAudit(env, o.id, 'upstream_keys_insufficient', o.status, 'pending_activation', upstreamDeliveredShortfallNote(keys, o.quantity));
         return { ok: true, mode: 'pending_activation', reason: 'insufficient_keys' };
       }
@@ -3484,7 +3656,7 @@ async function handleApi(req, env, url, ctx) {
     // （不重复核验/认领/写候选），客户端重试不再被当成失败；pending_payment 订单不走此路
     // （可能是“认领保留、未履约”的恢复场景，必须走完整流程恢复账本与履约，见 G10）。
     // 他单 TXID 仍由 txHashConsumedByOther / 认领竞态挡住。
-    if (o2.status !== 'pending_payment' && /^(0x)?[0-9a-fA-F]{64}$/.test(txid) && o2.tx_hash && txid.toLowerCase() === String(o2.tx_hash).toLowerCase()) {
+    if (o2.status !== 'pending_payment' && isChainTxHash(txid) && o2.tx_hash && normalizeChainTxHash(txid) === normalizeChainTxHash(o2.tx_hash)) {
       return json({ ok: true, message: '该笔付款已处理，无需重复提交', auto: false });
     }
     // TXID 认领严格先到先得：若该 TXID 已被其他订单认领，返回明确错误，不静默接受为“已提交”（否则客户误以为付款成功，实际订单永远无法认领）。
@@ -3492,7 +3664,7 @@ async function handleApi(req, env, url, ctx) {
     var hit = null;
     try { hit = await checkTxidPayment(env, fetch, o2, txid); } catch (e) { hit = null; }
     if (hit && hit.txHash) {
-      var pr2 = await processVerifiedPayment(env, o2, { txHash: hit.txHash, amount: hit.amount != null ? hit.amount : (o2.actual_amount || o2.total_usdt), eventKey: '', source: 'chain' }, ctx, { fetchFn: fetch });
+      var pr2 = await processVerifiedPayment(env, o2, { txHash: hit.txHash, amount: hit.amount != null ? hit.amount : (o2.actual_amount || o2.total_usdt), blockNumber: hit.blockNumber != null ? hit.blockNumber : null, confirmations: hit.confirmations != null ? hit.confirmations : 0, eventKey: '', source: 'chain' }, ctx, { fetchFn: fetch });
       if (!pr2.ok) {
         if (pr2.conflict) {
           // 竞争失败：记一笔 duplicate 观察行（独立 event_key，不与胜者的 verified/posted 行冲突，
@@ -4615,7 +4787,7 @@ async function handleApi(req, env, url, ctx) {
     if (pStatus) { pWhere.push('p.status = ?'); pBinds.push(pStatus); }
     if (pOrderId) { pWhere.push('p.order_id = ?'); pBinds.push(Number(pOrderId)); }
     if (pOrderNo) { pWhere.push('o.order_no = ?'); pBinds.push(pOrderNo); }
-    if (pTxHash) { pWhere.push('p.tx_hash = ?'); pBinds.push(pTxHash); }
+    if (pTxHash) { if (isChainTxHash(pTxHash)) pTxHash = normalizeChainTxHash(pTxHash); pWhere.push('p.tx_hash = ?'); pBinds.push(pTxHash); }
     if (pChain) { pWhere.push('p.chain = ?'); pBinds.push(pChain); }
     if (pRecon) { pWhere.push('p.reconcile_status = ?'); pBinds.push(pRecon); }
     if (pFrom) { pWhere.push('p.created_at >= ?'); pBinds.push(pFrom); }

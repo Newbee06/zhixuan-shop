@@ -12,6 +12,11 @@ const db = new DatabaseSync(':memory:');
 db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
 db.exec(fs.readFileSync(path.join(dir, '..', 'schema.sql'), 'utf8'));
 let pass = 0, fail = 0;
+function storedTx(tx) {
+  const s = String(tx || '').trim();
+  if (/^(0x)?[0-9a-fA-F]{64}$/.test(s)) return '0x' + s.replace(/^0x/i, '').toLowerCase();
+  return s;
+}
 function check(name, cond, extra) { if (cond) { pass++; console.log('PASS: ' + name); } else { fail++; console.log('FAIL: ' + name + (extra ? ' ' + String(extra).slice(0, 600) : '')); } }
 function q(sql, ...a) { try { return db.prepare(sql).get(...a); } catch (e) { return null; } }
 function qa(sql, ...a) { try { return db.prepare(sql).all(...a); } catch (e) { return []; } }
@@ -58,7 +63,7 @@ async function mockFetch(url, opts = {}) {
     }
     if (body.method === 'eth_getTransactionReceipt') {
       const tx = body.params[0];
-      const log = evmLogs.find((l) => l.transactionHash === tx);
+      const log = evmLogs.find((l) => storedTx(l.transactionHash) === storedTx(tx));
       if (!log) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }), { status: 200 });
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { status: '0x1', blockNumber: log.blockNumber, logs: [log] } }), { status: 200 });
     }
@@ -174,7 +179,7 @@ function insertHistBEP20Order(orderNo, actualAmount, contact, cardCode) {
   const pays = qa('SELECT * FROM payments WHERE order_id=?', ord.id);
   check('1. payment recorded (1 row)', pays.length === 1, JSON.stringify(pays));
   check('1. payment status posted', pays[0] && pays[0].status === 'posted', JSON.stringify(pays));
-  check('1. payment tx_hash matches', pays[0] && pays[0].tx_hash === 'a'.repeat(64), JSON.stringify(pays));
+  check('1. payment tx_hash matches', pays[0] && pays[0].tx_hash === storedTx('a'.repeat(64)), JSON.stringify(pays));
   check('1. order completed', q('SELECT status FROM orders WHERE id=?', ord.id).status === 'completed');
   check('1. card delivered', !!q('SELECT * FROM orders WHERE id=? AND delivery_content LIKE ?', ord.id, '%R4-KEY-%'));
 }
@@ -188,7 +193,7 @@ function insertHistBEP20Order(orderNo, actualAmount, contact, cardCode) {
   check('2. duplicate /pay on completed order rejected', r.json && !r.json.ok, JSON.stringify(r.json));
   check('2. no duplicate payment row', qa('SELECT * FROM payments').length === before);
   // 直接重复记同一事件：recordPayment 应返回已有行，不新增
-  const dup = qa("SELECT * FROM payments WHERE tx_hash=? AND chain='BEP20'", 'a'.repeat(64));
+  const dup = qa("SELECT * FROM payments WHERE tx_hash=? AND chain='BEP20'", storedTx('a'.repeat(64)));
   check('2. one payment row for one event', dup.length === 1, JSON.stringify(dup));
 }
 
@@ -272,13 +277,14 @@ function insertHistBEP20Order(orderNo, actualAmount, contact, cardCode) {
 {
   r = await call('GET', '/api/admin/schema-check', null, cookie);
   check('7. schema-check ok', r.json && r.json.ok === true && r.json.precheck && r.json.precheck.ok === true, JSON.stringify(r.json));
-  check('7. schema-check version 20', r.json && r.json.precheck && r.json.precheck.current_version === 20, JSON.stringify(r.json));
+  check('7. schema-check version 20', r.json && r.json.precheck && r.json.precheck.current_version === 21, JSON.stringify(r.json));
   // 模拟缺表：删 payments 表后预检应报告问题（随后重建）
   db.exec('DROP TABLE payments');
   r = await call('GET', '/api/admin/schema-check', null, cookie);
   check('7. schema-check detects missing table', r.json && r.json.precheck && r.json.precheck.ok === false && r.json.precheck.issues.some((x) => x.includes('payments')), JSON.stringify(r.json));
   db.exec("CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, chain TEXT NOT NULL DEFAULT '', asset TEXT NOT NULL DEFAULT 'USDT', pay_address TEXT NOT NULL DEFAULT '', tx_hash TEXT NOT NULL DEFAULT '', event_key TEXT NOT NULL DEFAULT '', amount REAL NOT NULL DEFAULT 0, amount_unit TEXT NOT NULL DEFAULT 'USDT', block_number INTEGER, confirmations INTEGER NOT NULL DEFAULT 0, first_seen_at TEXT NOT NULL DEFAULT (datetime('now')), status TEXT NOT NULL DEFAULT 'submitted', reconcile_status TEXT NOT NULL DEFAULT '', reconcile_note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')))");
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_event_unique ON payments(chain, tx_hash, event_key)');
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_canon_event ON payments (chain, CASE WHEN length(tx_hash)=66 AND lower(substr(tx_hash,1,2))='0x' AND length(substr(tx_hash,3))=64 AND lower(substr(tx_hash,3)) NOT GLOB '*[^0-9a-f]*' THEN '0x'||lower(substr(tx_hash,3)) WHEN length(tx_hash)=64 AND lower(tx_hash) NOT GLOB '*[^0-9a-f]*' THEN '0x'||lower(tx_hash) ELSE tx_hash END, event_key)");
   r = await call('GET', '/api/admin/schema-check', null, cookie);
   check('7. schema-check ok after restore', r.json && r.json.precheck && r.json.precheck.ok === true, JSON.stringify(r.json));
 }
@@ -391,7 +397,7 @@ db.prepare('DELETE FROM order_rate').run();
     payCall(ord.order_no, 'f'.repeat(64)),
   ]);
   // 至少一个成功，订单只完成一次，付款记录只有一行（同一事件）
-  const pays = qa('SELECT * FROM payments WHERE tx_hash=?', 'f'.repeat(64));
+  const pays = qa('SELECT * FROM payments WHERE tx_hash=?', storedTx('f'.repeat(64)));
   check('14. concurrent same TXID: one payment row', pays.length === 1, JSON.stringify(pays));
   check('14. order completed once', q('SELECT status FROM orders WHERE id=?', ord.id).status === 'completed');
   const deliveredCount = qa('SELECT * FROM cards WHERE order_id=? AND is_used=1', ord.id).length;
@@ -434,7 +440,7 @@ db.prepare('DELETE FROM order_rate').run();
   const migV9 = await callV9('GET', '/api/config');
   check('15. v9..v18 migration applied (config ok)', migV9.json && migV9.json.ok === true, migV9.txt.slice(0, 200));
   const verV9 = dbV9.prepare('SELECT MAX(version) AS v FROM schema_migrations').get();
-  check('15. v9..v20 version marked', verV9 && verV9.v === 20, JSON.stringify(verV9));
+  check('15. v9..v21 version marked', verV9 && verV9.v === 21, JSON.stringify(verV9));
   const idxV9 = dbV9.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_orders_amount_claim'").get();
   check('15. v9 index excludes BinanceUID', idxV9 && /pay_method != 'BinanceUID'/.test(idxV9.sql || ''), (idxV9 && idxV9.sql) || '');
   const idxV16 = dbV9.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_orders_no'").get();

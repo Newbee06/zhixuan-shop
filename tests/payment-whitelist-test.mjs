@@ -18,6 +18,11 @@ const db = new DatabaseSync(':memory:');
 // 注意：schema.sql 缺 CREATE TABLE schema_migrations 是代码侧缺陷（已在最终汇报中精确报告），测试侧按运行时行为先建表，不改 schema.sql。
 db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
 db.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
+function storedTx(tx) {
+  const s = String(tx || '').trim();
+  if (/^(0x)?[0-9a-fA-F]{64}$/.test(s)) return '0x' + s.replace(/^0x/i, '').toLowerCase();
+  return s;
+}
 function wrapStmt(sql) {
   let params = [];
   const api = {
@@ -363,12 +368,12 @@ function setCursor(chain, block) {
   let o = q('SELECT * FROM orders WHERE id=?', ord.id);
   assert(o.status === 'completed', '9. first poll fulfills: ' + o.status);
   const cardCode = o.delivery_content;
-  const payRows1 = q("SELECT COUNT(*) AS n FROM payments WHERE order_id=? AND tx_hash=?", ord.id, '5'.repeat(64)).n;
+  const payRows1 = q("SELECT COUNT(*) AS n FROM payments WHERE order_id=? AND tx_hash=?", ord.id, storedTx('5'.repeat(64))).n;
   await runPoll();
   await runPoll();
   o = q('SELECT * FROM orders WHERE id=?', ord.id);
   assert(o.status === 'completed' && o.delivery_content === cardCode, '9. repeated polls: same card, not re-issued: ' + o.delivery_content);
-  const payRows2 = q("SELECT COUNT(*) AS n FROM payments WHERE order_id=? AND tx_hash=?", ord.id, '5'.repeat(64)).n;
+  const payRows2 = q("SELECT COUNT(*) AS n FROM payments WHERE order_id=? AND tx_hash=?", ord.id, storedTx('5'.repeat(64))).n;
   assert(payRows2 === payRows1 && payRows1 === 1, '9. payments ledger has exactly 1 row for the event: ' + payRows2);
   const cardUsed = q('SELECT COUNT(*) AS n FROM cards WHERE code=? AND is_used=1', cardCode).n;
   assert(cardUsed === 1, '9. card used exactly once');
@@ -525,8 +530,8 @@ function setCursor(chain, block) {
   r = await payCall(ordT.order_no, txid);
   assert(r.json && r.json.ok === true && r.json.auto === false, '13d. wrong chainId /pay does not credit: ' + JSON.stringify(r.json));
   assert(q('SELECT status FROM orders WHERE id=?', ordT.id).status === 'pending_payment', '13d. order stays pending_payment');
-  assert(!q('SELECT tx_hash FROM txid_claims WHERE tx_hash=?', txid), '13d. wrong chainId does not claim txid');
-  assert(!q('SELECT id FROM payments WHERE tx_hash=?', txid), '13d. wrong chainId writes no payment row');
+  assert(!q('SELECT tx_hash FROM txid_claims WHERE tx_hash=?', storedTx(txid)), '13d. wrong chainId does not claim txid');
+  assert(!q('SELECT id FROM payments WHERE tx_hash=?', storedTx(txid)), '13d. wrong chainId writes no payment row');
   evmState.chainIds = null;
   r = await payCall(ordT.order_no, txid);
   assert(r.json && r.json.ok === true && r.json.auto === true, '13d. chainId 196 /pay credits: ' + JSON.stringify(r.json));

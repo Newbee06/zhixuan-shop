@@ -57,6 +57,7 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 | v18 | 资金安全（`orders.pending_tx_hash` 未核验候选 TXID + `orders.payment_state` 超额付款态（`''` / `'overpaid_pending'`）+ `lookup_attempts`（/lookup 按单原子记数，与 /secret 同口径）；`ADD COLUMN` / `CREATE TABLE IF NOT EXISTS` 幂等，旧库真正加列/建表、新库 schema.sql 已含为 no-op） |
 | v19 | 定价模板 `pricing_templates`（markup 倍率 + fixed_add + 可选 price_floor / price_ceiling）。与全局 `upstream_markup` / `upstream_fixed` 并存。重新导入不写 `sell_price`；`POST /api/admin/products/:id/apply-pricing-template` 才显式覆盖售价 |
 | v20 | 商品分类目录 `categories`（扁平列表）。种子 `recharge` / `account` / `card`（`INSERT OR IGNORE`，不重置已改名或已停用的内置分类）。内置 key 不可改；自定义 key 改名时同步 `products.category` |
+| v21 | TXID 规范化为 `0x`+小写。跨订单冲突失败并列出，不删行；同一订单重复行合并后再 `UPDATE`，避免撞主键。然后建 `idx_txid_claims_canon`、`idx_payments_canon_event`。查重 SQL：`migrations/0021_txhash_normalize_dupcheck.sql` |
 
 > v17 核对（与 `src/worker.js` MIGRATIONS v17 + `migrations/0017_txid_claim_token_source_lease.sql` 一致）：三列均为 `ADD COLUMN`；`claim_token` 为 `randomHex(32)`；`source` 默认 `'chain_verified'`（v17 前只有链上路径写认领表）；`order_lease_token` 默认空。`GET /api/admin/schema-check` 按 `expectedTables` 校验 `txid_claims` 六列齐全。预置版本仍为 10（`schema.sql` 只预置 v1–v10），v11–v18 由 Worker 按序执行，不得把预置版本改到 18（否则 v11 图标种子等会被跳过）。
 >

@@ -65,7 +65,7 @@ async function mockFetch(url, opts = {}) {
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: logs }), { status: 200 });
     }
     if (body.method === 'eth_getTransactionReceipt') {
-      if (!evmReceiptFor || evmReceiptFor.hash !== body.params[0]) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }), { status: 200 });
+      if (!evmReceiptFor || storedTx(evmReceiptFor.hash) !== storedTx(body.params[0])) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }), { status: 200 });
       const raw = (() => { const parts = String(evmReceiptFor.amount).split('.'); const frac = ((parts[1] || '') + '0'.repeat(18)).slice(0, 18); return BigInt(parts[0] + frac); })();
       const log = { address: '0x55d398326f99059fF775485246999027B3197955', blockNumber: '0x' + (1000 - 20).toString(16), transactionHash: evmReceiptFor.hash, logIndex: '0x0',
         topics: ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', '0x' + '0'.repeat(24) + '33'.repeat(20), '0x' + '0'.repeat(24) + String(evmReceiptFor.to).slice(2).toLowerCase()],
@@ -110,6 +110,11 @@ async function orderCall(body) {
   return call('POST', '/api/orders', { query_password: 'conc-test-pw', ...body, captcha_id: cid, captcha_code: 'AB12' }, null, { 'CF-Connecting-IP': ip });
 }
 // /pay 自 P3-4 起须带图形验证码（captcha_id + captcha_code）：每次提交用新验证码。
+function storedTx(tx) {
+  const s = String(tx || '').trim();
+  if (/^(0x)?[0-9a-fA-F]{64}$/.test(s)) return '0x' + s.replace(/^0x/i, '').toLowerCase();
+  return s;
+}
 async function payCall(orderNo, txid) {
   const cid = mkCaptcha('AB12');
   return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12' });
@@ -234,7 +239,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const finalOrd2 = q('SELECT * FROM orders WHERE id=?', ord2.id);
   check('cron alone: order completed', finalOrd2.status === 'completed', JSON.stringify(finalOrd2));
   check('cron alone: delivery is reserved card', finalOrd2.delivery_content === 'CONC-CARD-CRON-2', JSON.stringify(finalOrd2));
-  check('cron alone: txid claimed for this order', (() => { const t = q('SELECT * FROM txid_claims WHERE tx_hash=?', txHash2b); return t && t.order_id === ord2.id; })());
+  check('cron alone: txid claimed for this order', (() => { const t = q('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(txHash2b)); return t && t.order_id === ord2.id; })());
   evmScanLogs = [];
 }
 
@@ -278,8 +283,8 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   db.prepare('UPDATE orders SET tx_hash=? WHERE id=?').run(txHash2, ordA.id);
   r = await call('POST', '/api/admin/orders/' + ordA.id + '/confirm-payment', { reason: 'A 确认' , manual_confirm: true }, cookie);
   check('admin confirm fulfills order A', r.json && r.json.ok === true, JSON.stringify(r.json));
-  check('admin confirm writes shared txid_claims (P1-2 v17, source=manual_confirmed)', (() => { const row = q('SELECT * FROM txid_claims WHERE tx_hash=?', txHash2); return row && Number(row.order_id) === Number(ordA.id) && row.source === 'manual_confirmed' && !!row.claim_token; })());
-  check('admin confirm writes manual_confirmed ledger row (P1-2)', (() => { const p = q("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", txHash2); return p && Number(p.order_id) === Number(ordA.id); })());
+  check('admin confirm writes shared txid_claims (P1-2 v17, source=manual_confirmed)', (() => { const row = q('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(txHash2)); return row && Number(row.order_id) === Number(ordA.id) && row.source === 'manual_confirmed' && !!row.claim_token; })());
+  check('admin confirm writes manual_confirmed ledger row (P1-2)', (() => { const p = q("SELECT * FROM payments WHERE tx_hash=? AND status='manual_confirmed'", storedTx(txHash2)); return p && Number(p.order_id) === Number(ordA.id); })());
   // 订单 B：同一 tx，管理员确认 → 已被他单人工确认消耗，拒绝
   r = await orderCall({ product_id: pTx.id, quantity: 1, pay_method: 'OKX', pay_chain: 'X Layer', customer_fields: { contact_email: 'tx-b@test.example' } });
   const ordB = q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
@@ -287,7 +292,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   r = await call('POST', '/api/admin/orders/' + ordB.id + '/confirm-payment', { reason: 'B 确认（同一 TXID 应被挡）' , manual_confirm: true }, cookie);
   check('admin confirm with already-consumed txid rejected', r.json && !r.json.ok && /已用于其他订单/.test(r.json.error || ''), JSON.stringify(r.json));
   check('order B still pending_payment after rejected confirm', q('SELECT status FROM orders WHERE id=?', ordB.id).status === 'pending_payment');
-  check('txid manual_confirmed row still belongs to A after B rejected', q("SELECT order_id FROM payments WHERE tx_hash=? AND status='manual_confirmed'", txHash2).order_id === ordA.id);
+  check('txid manual_confirmed row still belongs to A after B rejected', q("SELECT order_id FROM payments WHERE tx_hash=? AND status='manual_confirmed'", storedTx(txHash2)).order_id === ordA.id);
 }
 
 // ===== 5b. TXID 不接管：链上核验路径（/pay）认领后，其他订单经 /pay 提交同一 tx 必须 409 =====
@@ -303,7 +308,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   evmReceiptFor = { to: ordC1.pay_address, amount: ordC1.actual_amount, hash: txHash3 };
   r = await payCall(ordC1.order_no, txHash3);
   check('order C1 claims txid via /pay', r.json && r.json.ok === true, JSON.stringify(r.json));
-  check('txid claimed by order C1', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txHash3).order_id === ordC1.id);
+  check('txid claimed by order C1', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', storedTx(txHash3)).order_id === ordC1.id);
   // 订单 C2：BEP20 订单（直接插库），EVM 收据返回匹配到账（同一 tx 哈希）——认领机制应 409 拒绝
   const c2No = 'AISCONCTXID2';
   const C2_ADDR = '0x' + '55'.repeat(20);
@@ -313,7 +318,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   r = await payCall(ordC2.order_no, txHash3);
   check('pay with stolen txid -> 409, not silently accepted', r.status === 409 && r.json && /已用于其他订单/.test(r.json.error || ''), 'status=' + r.status + ' body=' + JSON.stringify(r.json));
   check('order C2 still pending_payment after stolen-tx pay', q('SELECT status FROM orders WHERE id=?', ordC2.id).status === 'pending_payment');
-  check('txid still belongs to C1 after steal attempt', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txHash3).order_id === ordC1.id);
+  check('txid still belongs to C1 after steal attempt', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', storedTx(txHash3)).order_id === ordC1.id);
   evmReceiptFor = null;
 }
 
@@ -508,7 +513,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const cp = await callOld('POST', '/api/admin/change-password', { old_password: '', new_password: 'old-db-pass-123' }, ocookie);
   check('old-db change-password ok', cp.json && cp.json.ok === true, JSON.stringify(cp.json));
   const mg = await callOld('GET', '/api/admin/migrate', null, ocookie);
-  check('old-db migrated to v20', mg.json && mg.json.ok === true && mg.json.current_version === 20, JSON.stringify(mg.json));
+  check('old-db migrated to v20', mg.json && mg.json.ok === true && mg.json.current_version === 21, JSON.stringify(mg.json));
   check('old-db: old order preserved', !!dbOld.prepare("SELECT * FROM orders WHERE order_no='AISOLD001'").get());
   check('old-db: old card preserved', !!dbOld.prepare("SELECT * FROM cards WHERE code='OLD-CARD-1'").get());
   check('old-db: old product preserved', !!dbOld.prepare("SELECT * FROM products WHERE slug='old-prod'").get());
@@ -643,7 +648,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   r = await payCall(ordA03.order_no, txNew);
   check('A-03 takeover via /pay ok', r.json && r.json.ok === true, JSON.stringify(r.json));
   check('A-03: order tx_hash still first consumed TXID (not overwritten by candidate)', q('SELECT tx_hash FROM orders WHERE id=?', ordA03.id).tx_hash === txOld);
-  check('A-03: new txid claimed', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', txNew).order_id === ordA03.id);
+  check('A-03: new txid claimed', q('SELECT order_id FROM txid_claims WHERE tx_hash=?', storedTx(txNew)).order_id === ordA03.id);
   check('A-03: old txid claim RETAINED (never auto-released)', (() => { const c = q('SELECT * FROM txid_claims WHERE tx_hash=?', txOld); return c && c.order_id === ordA03.id; })());
   check('A-03: two claims coexist for one order (two payment events)', qall('SELECT * FROM txid_claims WHERE order_id=?', ordA03.id).length === 2);
   evmReceiptFor = null;
@@ -696,7 +701,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   r = await payCall(ordA04.order_no, txA04);
   check('A-04: EVM /pay 0-confirmation deferred (auto:false)', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
   check('A-04: order still pending_payment after 0-conf', q('SELECT status FROM orders WHERE id=?', ordA04.id).status === 'pending_payment');
-  check('A-04: 0-conf TXID NOT claimed', !q('SELECT * FROM txid_claims WHERE tx_hash=?', txA04));
+  check('A-04: 0-conf TXID NOT claimed', !q('SELECT * FROM txid_claims WHERE tx_hash=?', storedTx(txA04)));
   // 14 确认（BEP20 需 15）：仍延迟，不接受
   evmLatest = 114;
   r = await payCall(ordA04.order_no, txA04);

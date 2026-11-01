@@ -60,7 +60,7 @@ assert(r.json && r.json.ok, 'change-password');
 cookie = (r.headers.get('set-cookie') || '').split(';')[0] || cookie;
 
 r = await call('GET', '/api/admin/schema-check', null, cookie);
-assert(r.json && r.json.precheck && r.json.precheck.ok === true && r.json.precheck.current_version === 20, 'schema-check ok version 20: ' + JSON.stringify(r.json && r.json.precheck && r.json.precheck.issues));
+assert(r.json && r.json.precheck && r.json.precheck.ok === true && r.json.precheck.current_version === 21, 'schema-check ok version 20: ' + JSON.stringify(r.json && r.json.precheck && r.json.precheck.issues));
 r = await call('GET', '/api/config');
 const cats = (r.json && r.json.config && r.json.config.categories) || [];
 assert(cats.some((c) => c.key === 'recharge' && c.name === '代充') && cats.some((c) => c.key === 'card'), 'public config lists builtin categories');
