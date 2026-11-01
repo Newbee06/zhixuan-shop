@@ -35,10 +35,11 @@ has('save-all button', '保存全部设置（通用 + 收款 + 首页通知）')
 has('save-all fn', 'function adminSaveAllSettings');
 has('save-all summary', '保存未全部成功');
 // 6 Hero 字号
-has('hero h1 22px mobile', '.home-h1{font-size:22px}');
-has('hero eyebrow 14px mobile', '.home-eyebrow{font-size:14px');
-has('hero sub 14px mobile', '.home-sub{font-size:14px');
-has('hero cta 14px mobile', '.home-cta{font-size:14px');
+has('hero h1 10px mobile', '.home-h1{font-size:10px}');
+has('hero eyebrow 8px mobile', '.home-eyebrow{font-size:8px');
+has('hero sub 8px mobile', '.home-sub{font-size:8px');
+has('hero cta 10px mobile', '.home-cta{font-size:10px');
+has('hero note 8px mobile', '.home-note{font-size:8px');
 // 7 loading 与防重复
 has('txid in-flight guard', 'window._txidSubmitting');
 has('txid button loading', 'setBtnLoading(_txBtn, true)');
@@ -117,9 +118,9 @@ if (!serverUp) {
         const cs = (s) => { const e = document.querySelector(s); return e ? getComputedStyle(e).fontSize : ''; };
         return { h1: cs('.home-h1'), eyebrow: cs('.home-eyebrow'), sub: cs('.home-sub'), cta: cs('.home-cta'), overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth };
       });
-      check('browser ' + width + ': hero h1 >=20px', parseFloat(hero.h1) >= 20, hero.h1);
-      check('browser ' + width + ': hero eyebrow/sub >=14px', parseFloat(hero.eyebrow) >= 14 && parseFloat(hero.sub) >= 14, hero.eyebrow + '/' + hero.sub);
-      check('browser ' + width + ': hero cta >=14px', parseFloat(hero.cta) >= 14, hero.cta);
+      check('browser ' + width + ': hero h1 10px', parseFloat(hero.h1) === 10, hero.h1);
+      check('browser ' + width + ': hero eyebrow/sub 8px', parseFloat(hero.eyebrow) === 8 && parseFloat(hero.sub) === 8, hero.eyebrow + '/' + hero.sub);
+      check('browser ' + width + ': hero cta 10px', parseFloat(hero.cta) === 10, hero.cta);
       check('browser ' + width + ': no horizontal overflow', hero.overflow <= 1, 'overflow=' + hero.overflow);
       const inputFs = await page.evaluate(() => { const e = document.querySelector('#q'); return e ? getComputedStyle(e).fontSize : ''; });
       check('browser ' + width + ': search input 16px', inputFs === '16px', inputFs);
