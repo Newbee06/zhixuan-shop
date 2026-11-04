@@ -300,7 +300,11 @@ function getCookie(req, name) {
   var parts = h.split(';');
   for (var i = 0; i < parts.length; i++) {
     var kv = parts[i].trim().split('=');
-    if (kv[0] === name) return decodeURIComponent(kv[1] || '');
+    if (kv[0] === name) {
+      // 恶意/畸形 Cookie（如含非法 % 序列）会让 decodeURIComponent 抛 URIError → 500。
+      // 解码失败时回退为原始值，绝不因一个请求头把整个 Worker 打挂。
+      try { return decodeURIComponent(kv[1] || ''); } catch (e) { return kv[1] || ''; }
+    }
   }
   return '';
 }
@@ -439,10 +443,13 @@ async function getAdminMeta(env, key) {
 async function setAdminMeta(env, key, value) {
   await env.DB.prepare('INSERT INTO admin_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind(key, value).run();
 }
+// 会话 token 不落明文：库中只存 SHA-256(token)。D1 泄露时攻击者拿到的是一堆哈希，
+// 无法直接以明文 token 冒用管理员会话（cookie 里仍是随机明文 token，仅内存态）。
+function sessionTokenHash(token) { return sha256Hex(String(token || '')); }
 async function getSession(env, req) {
   var token = getCookie(req, 'session_token');
   if (!token) return null;
-  var s = await env.DB.prepare('SELECT * FROM sessions WHERE token = ?').bind(token).first();
+  var s = await env.DB.prepare('SELECT * FROM sessions WHERE token = ?').bind(await sessionTokenHash(token)).first();
   if (!s) return null;
   if (new Date(s.expires_at.replace(' ', 'T') + 'Z') < new Date()) return null;
   return s;
@@ -3499,7 +3506,8 @@ async function handleApi(req, env, url, ctx) {
     try { await setAdminMeta(env, 'login_global_fail_count', '0'); await setAdminMeta(env, 'login_global_fail_window', String(Date.now())); } catch (e) {}
     var token = randomHex(32);
     var exp = new Date(Date.now() + SESSION_MAX_AGE * 1000).toISOString().replace('T', ' ').slice(0, 19);
-    await env.DB.prepare('INSERT INTO sessions (token, expires_at) VALUES (?, ?)').bind(token, exp).run();
+    // 库中只存 SHA-256(token)；cookie 仍下发明文随机 token（仅在客户端/传输中），DB 侧不落明文。
+    await env.DB.prepare('INSERT INTO sessions (token, expires_at) VALUES (?, ?)').bind(await sessionTokenHash(token), exp).run();
     var resp = json({ ok: true, must_change_password: mustChange });
     resp.headers.set('Set-Cookie', 'session_token=' + token + '; ' + cookieFlags(url) + '; Max-Age=' + SESSION_MAX_AGE);
     return resp;
@@ -3509,7 +3517,7 @@ async function handleApi(req, env, url, ctx) {
     var csrfErrLogout = checkCsrf(req, url);
     if (csrfErrLogout) return err(csrfErrLogout, 403);
     var tok = getCookie(req, 'session_token');
-    if (tok) await env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(tok).run();
+    if (tok) await env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(await sessionTokenHash(tok)).run();
     var r2 = json({ ok: true });
     r2.headers.set('Set-Cookie', 'session_token=; ' + cookieFlags(url) + '; Max-Age=0');
     return r2;
@@ -3548,7 +3556,7 @@ async function handleApi(req, env, url, ctx) {
     await setAdminMeta(env, 'must_change_password', '0');
     // 改密后作废除当前会话外的所有会话（防被盗会话继续使用），当前会话保留以免锁死管理员
     var curTok = getCookie(req, 'session_token');
-    if (curTok) await env.DB.prepare('DELETE FROM sessions WHERE token != ?').bind(curTok).run();
+    if (curTok) await env.DB.prepare('DELETE FROM sessions WHERE token != ?').bind(await sessionTokenHash(curTok)).run();
     return json({ ok: true });
   }
 

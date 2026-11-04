@@ -1,6 +1,7 @@
 name = "aisou-lite"
 main = "src/worker.js"
-compatibility_date = "2024-01-01"
+# 2026-01-01：升级 runtime 语义（安全修复/新能力），远早于当前日期；部署后跑全量回归。
+compatibility_date = "2026-01-01"
 
 # Cloudflare 免费版：单 Worker + 单 D1 + 2 个 cron，无付费功能。
 # 0 2 * * * = 7 天清理；*/1 * * * * = 轮询自动发货（先查 D1 有无待付款，无则零 RPC）。
@@ -32,7 +33,7 @@ crons = ["0 2 * * *", "*/1 * * * *"]
 [env.staging]
 name = "zhixuan-shop-staging"
 main = "src/worker.js"
-compatibility_date = "2024-01-01"
+compatibility_date = "2026-01-01"
 
 [[env.staging.d1_databases]]
 binding = "DB"
