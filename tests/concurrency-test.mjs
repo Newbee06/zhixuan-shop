@@ -56,6 +56,10 @@ async function mockFetch(url, opts = {}) {
     if (body.method === 'eth_chainId') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x38' }), { status: 200 });
     if (body.method === 'eth_call') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + (18).toString(16).padStart(64, '0') }), { status: 200 });
     if (body.method === 'eth_blockNumber') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + (1000).toString(16) }), { status: 200 });
+    if (body.method === 'eth_getBlockByNumber') {
+      const sec = Math.floor(Date.now() / 1000) + 30;
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { timestamp: '0x' + sec.toString(16) } }), { status: 200 });
+    }
     if (body.method === 'eth_getLogs') {
       const p0 = body.params[0] || {};
       const from = parseInt(p0.fromBlock || '0x0', 16);
@@ -510,7 +514,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const cp = await callOld('POST', '/api/admin/change-password', { old_password: '', new_password: 'old-db-pass-123' }, ocookie);
   check('old-db change-password ok', cp.json && cp.json.ok === true, JSON.stringify(cp.json));
   const mg = await callOld('GET', '/api/admin/migrate', null, ocookie);
-  check('old-db migrated to v20', mg.json && mg.json.ok === true && mg.json.current_version === 21, JSON.stringify(mg.json));
+  check('old-db migrated to v22', mg.json && mg.json.ok === true && mg.json.current_version === 22, JSON.stringify(mg.json));
   check('old-db: old order preserved', !!dbOld.prepare("SELECT * FROM orders WHERE order_no='AISOLD001'").get());
   check('old-db: old card preserved', !!dbOld.prepare("SELECT * FROM cards WHERE code='OLD-CARD-1'").get());
   check('old-db: old product preserved', !!dbOld.prepare("SELECT * FROM products WHERE slug='old-prod'").get());

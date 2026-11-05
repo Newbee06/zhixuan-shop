@@ -79,6 +79,10 @@ async function mockFetch(url, opts = {}) {
       return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: '0x' + dec.toString(16).padStart(64, '0') }), text: async () => '' };
     }
     if (body.method === 'eth_blockNumber') return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: toHex(M.latest) }), text: async () => '' };
+    if (body.method === 'eth_getBlockByNumber') {
+      const sec = Math.floor(Date.now() / 1000) + 30;
+      return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: { timestamp: '0x' + sec.toString(16) } }), text: async () => '' };
+    }
     if (body.method === 'eth_getLogs') return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: M.logs }), text: async () => '' };
     if (body.method === 'eth_getTransactionReceipt') return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: M.receipt }), text: async () => '' };
     return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: null }), text: async () => '' };

@@ -1,0 +1,9 @@
+-- v22 镜像说明。不要用 wrangler d1 migrations apply 直接执行本文件。
+-- 权威实现在 src/worker.js 的 MIGRATIONS v22 / migrateCanonicalTxHashesV22。
+-- 规范形是裸小写（与 normalizeChainTxHash 一致），与 #36-late 的 0x 规范形不同。
+-- 上线前先跑只读查重：migrations/0022_txhash_canon_dupcheck.sql
+-- cross_order 有行时迁移失败并列出冲突，不合并、不删除。
+-- 同一订单的 payments 若状态或金额不一致（例如一行 posted、另一行 verified），也不合并，迁移失败并列出这些行。
+-- 状态和金额都一致的同一订单重复行才合并。合并语句放进 D1 batch 一次执行。
+-- 合并后才把保留行 UPDATE 成裸小写，避免撞主键或 idx_payments_event_unique。
+-- 冲突清零后再建 idx_txid_claims_canon、idx_payments_canon_event（表达式用裸小写）。

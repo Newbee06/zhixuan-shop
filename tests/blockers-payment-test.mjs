@@ -48,6 +48,10 @@ async function mockFetch(url, opts = {}) {
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: id }), { status: 200 });
     }
     if (body && body.method === 'eth_blockNumber') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + (10000).toString(16) }), { status: 200 });
+    if (body && body.method === 'eth_getBlockByNumber') {
+      const sec = Math.floor(Date.now() / 1000) + 30;
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { timestamp: '0x' + sec.toString(16) } }), { status: 200 });
+    }
     if (body && body.method === 'eth_call') {
       const to = String((body.params && body.params[0] && body.params[0].to) || '').toLowerCase();
       const dec = to === USDT0_XLAYER.toLowerCase() ? 6 : 18;
@@ -201,21 +205,29 @@ const prodId = q("SELECT id FROM products WHERE slug='bp-manual'").id;
   check(r.json && !r.json.ok, 'P1b adopt with held lease rejected: ' + JSON.stringify(r.json));
   check(q('SELECT status FROM payments WHERE id=?', mis.id).status === 'mismatch', 'P1b adopt failed after conversion: row restored to mismatch (got ' + q('SELECT status FROM payments WHERE id=?', mis.id).status + ')');
 }
-// ===== P2. claimTxid 遗留收养：canonicalize 返回他单行时 /pay 应拒绝，不双认领 =====
+// ===== P2. claimTxid 遗留收养：同一规范 tx 不双认领（v22 口径） =====
+// v22 之前：canonicalize 竞态窗口里他单裸形行可插进来，复核必须拒绝本单 /pay（旧断言）。
+// v22 之后：idx_txid_claims_canon 跨形态唯一索引使“同一规范 tx 两单各一行”在库里已不可能，
+// 竞态注入（INSERT OR IGNORE）会被唯一约束静默丢弃，认领偷不走——本单 /pay 成功、他单 /pay 必 409。
+// 不变量不变（一 tx 只属一单），只是 enforcement 从代码复核升级为库约束 + 代码复核双层。
 {
   const mine = insertOrder({ product_id: prodId });
   const other = insertOrder({ product_id: prodId });
   const TX3 = 'd4'.repeat(32);
   db.prepare('INSERT INTO txid_claims (tx_hash, order_id, claimed_at, claim_token, source, order_lease_token) VALUES (?,?,?,?,?,?)').run('0x' + TX3, mine.id, '2026-01-01 00:00:00', 'tok-legacy-mine', 'chain_verified', '');
+  let raceErr = null;
+  try { db.prepare('INSERT INTO txid_claims (tx_hash, order_id, claimed_at, claim_token, source, order_lease_token) VALUES (?,?,?,?,?,?)').run(TX3, other.id, '2026-01-01 00:00:00', 'tok-race-other', 'chain_verified', ''); } catch (e) { raceErr = e; }
+  check(!!raceErr || !q('SELECT * FROM txid_claims WHERE tx_hash=?', TX3), 'P2 v22: 他单裸形认领被唯一约束挡下（插不进第二行）');
   rpcMode = 'receiptOk'; evmState = { tx: '0x' + TX3, amount: Number(mine.actual_amount), block: 9000, addr: ADDR_LOWER };
-  injectP2 = { tx: TX3, otherOrderId: other.id };
   r = await payCall(mine.order_no, TX3);
-  injectP2 = null;
-  check(r.json && !r.json.ok, 'P2 race canonicalize-to-other: /pay rejected: ' + JSON.stringify(r.json));
-  check(r.status === 409, 'P2 race canonicalize-to-other: /pay status 409 (got ' + r.status + ')');
-  check(q('SELECT status FROM orders WHERE id=?', mine.id).status === 'pending_payment', 'P2 race: mine order stays pending_payment (got ' + q('SELECT status FROM orders WHERE id=?', mine.id).status + ')');
+  check(r.json && r.json.ok, 'P2 v22: 本单 /pay 成功（认领未被偷）: ' + JSON.stringify(r.json));
   const raceClaim = q('SELECT * FROM txid_claims WHERE tx_hash=?', TX3);
-  check(raceClaim && Number(raceClaim.order_id) === Number(other.id), 'P2 race: bare claim still belongs to other order only');
+  check(raceClaim && Number(raceClaim.order_id) === Number(mine.id), 'P2 v22: 认领仍只属本单');
+  evmState = { tx: '0x' + TX3, amount: Number(other.actual_amount), block: 9000, addr: ADDR_LOWER };
+  r = await payCall(other.order_no, TX3);
+  check(r.json && !r.json.ok, 'P2 v22: 他单 /pay 同 tx 拒绝: ' + JSON.stringify(r.json));
+  check(r.status === 409, 'P2 v22: 他单 /pay 状态 409 (got ' + r.status + ')');
+  check(q('SELECT status FROM orders WHERE id=?', other.id).status === 'pending_payment', 'P2 v22: 他单仍 pending_payment (got ' + q('SELECT status FROM orders WHERE id=?', other.id).status + ')');
 }
 // ===== P3a. 过期清理：paid_at 残留 + claim_token 为空 + claimed_at 为空的订单能被取消 =====
 {
