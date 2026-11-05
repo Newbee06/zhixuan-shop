@@ -140,6 +140,7 @@ CREATE TABLE IF NOT EXISTS upstream_cache (
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
+  -- token 列存 SHA-256(会话令牌) 而非明文：cookie 下发随机明文 token，DB 只落哈希，泄露库表不泄露可用会话。
   token TEXT PRIMARY KEY,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   expires_at TEXT NOT NULL
