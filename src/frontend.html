@@ -606,7 +606,28 @@ function fmtCountdown(exp){ if (!exp) return ''; var d = parseExpiry(exp); if (i
 // 到期切 .pay-deadline-expired；无倒计时节点时停表；DOM 重新渲染后调用 startCountdown() 重建。
 var _cdTimer = null;
 function stopCountdown(){ if (_cdTimer) { clearInterval(_cdTimer); _cdTimer = null; } }
-function startCountdown(){ stopCountdown(); function tick(){ var nodes = document.querySelectorAll('[id^="countdown-"]'); var any = false; for (var i = 0; i < nodes.length; i++){ var n = nodes[i]; var exp = n.getAttribute('data-expires'); if (!exp) continue; any = true; n.textContent = fmtCountdownLine(exp); var box = n.closest ? n.closest('.pay-deadline') : null; if (box) box.classList.toggle('pay-deadline-expired', fmtCountdown(exp) === '已过期，请重新下单'); } if (!any) stopCountdown(); } tick(); _cdTimer = setInterval(tick, 1000); }
+function startCountdown(){ stopCountdown(); function tick(){ var nodes = document.querySelectorAll('[id^="countdown-"]'); var any = false; for (var i = 0; i < nodes.length; i++){ var n = nodes[i]; var exp = n.getAttribute('data-expires'); if (!exp) continue; any = true; var expired = fmtCountdown(exp) === '已过期，请重新下单'; n.textContent = fmtCountdownLine(exp); var box = n.closest ? n.closest('.pay-deadline') : null; if (box) box.classList.toggle('pay-deadline-expired', expired); if (expired) expirePayBlock(n); } if (!any) stopCountdown(); } tick(); _cdTimer = setInterval(tick, 1000); }
+// F2：某单倒计时首次变过期时，把该单付款块重渲染为过期分支（二维码/地址/复制按钮随之消失），
+// 而不是只把倒计时文字变红。登记数据来自 payBlockHTML（仅含过期分支所需字段，不含收款地址）。
+function expirePayBlock(n){
+  var uid = ''; if (n.id) uid = String(n.id).replace(/^countdown-/, '');
+  var wrap = (n.closest && uid) ? n.closest('[data-payblock]') : null;
+  if (!wrap) return;
+  if (wrap.getAttribute('data-payblock-expired')) return;
+  var data = uid ? _payBlockData[uid] : null;
+  if (data) {
+    var tmp = document.createElement('div'); tmp.innerHTML = payBlockHTML(data, uid);
+    var fresh = tmp.firstChild;
+    if (fresh) { fresh.setAttribute('data-payblock-expired', '1'); if (wrap.parentNode) wrap.parentNode.replaceChild(fresh, wrap); }
+    delete _payBlockData[uid];
+    return;
+  }
+  // 兜底（无登记数据时，至少做手术式清除；已是过期分支时不重复插提示）。
+  var rm = wrap.querySelectorAll('.pay-qr-box, .pay-addrbox, .pay-copy');
+  for (var i = 0; i < rm.length; i++){ if (rm[i].parentNode) rm[i].parentNode.removeChild(rm[i]); }
+  if (!wrap.querySelector('[data-pay-expired-tip]') && wrap.textContent.indexOf('订单已过期') === -1) { var d = document.createElement('div'); d.setAttribute('data-pay-expired-tip', '1'); d.className = 'warn-box'; d.style.margin = '10px 0'; d.innerHTML = '<b>' + ic('warn') + ' 订单已过期，请重新下单</b><p class="muted" style="margin:6px 0 0">该订单已过期，请重新下单；切勿向旧收款地址付款。</p>'; wrap.appendChild(d); }
+  wrap.setAttribute('data-payblock-expired', '1');
+}
 // 到期盒第二行整行文案：正常“剩余 MM:SS”，过期只显示过期态（不带“剩余”前缀，避免“剩余已过期”自相矛盾）。
 function fmtCountdownLine(exp){ var t = fmtCountdown(exp); return t === '已过期，请重新下单' ? t : '剩余 ' + t; }
 // 付款到期绝对时间（本地时区，如 19:41），与倒计时并排显示，买家不用心算。
@@ -653,16 +674,26 @@ function payQrLogoHTML(chain){
   return '<span class="pay-qr-logo" data-logo="usdt">USDT</span>';
 }
 // 金额大字（带复制）+ 提示与到期盒同行 + 分割线 + 商户订单行 + 二维码白底圆角框（USDT 标，ecc=H）+ 地址软底盒（右上角复制，首尾高亮）+ USDT0 警告。
+// F2 登记：uid -> 过期分支重渲染所需字段（actual/total/order_no/pay_method/pay_chain/expires_at；不存收款地址）。
+var _payBlockData = {};
 function payBlockHTML(o, uid){
   var actual = Number(o.actual_amount != null ? o.actual_amount : o.total_usdt) || 0;
   var addr = o.pay_address || o.wallet_address || '';
+  // F2：expires_at 空/非法时无可信到期口径（不拿 created_at+20 分钟猜），按已过期处理：
+  // 只显金额/订单号与重新下单提示，不渲染二维码、收款地址与任何复制按钮，也不放倒计时节点。
+  if (!o.expires_at || isNaN(parseExpiry(o.expires_at))) {
+    var mh = '<div class="pay-amount"><div class="pay-amount-usdt"><span>' + actual + '</span> USDT</div><div class="pay-amount-sub">' + fmtCNY(actual) + ' · ' + escH(o.pay_method || '') + ' · ' + escH(payTokenLabel(o.pay_chain || '')) + '</div></div>';
+    mh += '<div class="pay-row"><span class="pay-row-label">商户订单</span><span class="pay-row-value"><b>' + escH(o.order_no || '') + '</b></span></div><div class="pay-div"></div>';
+    mh += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 订单到期时间缺失或无效，请重新下单</b><p class="muted" style="margin:6px 0 0">该订单无法确认付款有效期，请重新下单；切勿向旧收款地址付款。</p></div>';
+    return '<div data-payblock="' + escH(uid) + '">' + mh + '</div>';
+  }
   // 订单已过期：只显金额/订单号/到期盒与过期文案，不渲染二维码、收款地址与任何复制按钮。
   if (o.expires_at && fmtCountdown(o.expires_at) === '已过期，请重新下单') {
     var eh = '<div class="pay-amount"><div class="pay-amount-usdt"><span>' + actual + '</span> USDT</div><div class="pay-amount-sub">' + fmtCNY(actual) + ' · ' + escH(o.pay_method || '') + ' · ' + escH(payTokenLabel(o.pay_chain || '')) + '</div></div>';
     eh += '<div class="pay-toprow"><span class="pay-exact">ⓘ 请严格按照数额进行付款</span><span class="pay-deadline pay-deadline-expired" id="deadline-' + escH(uid) + '"><span class="pay-deadline-abs">到期时间 ' + escH(fmtExpiryAbsolute(o.expires_at)) + '</span><span class="pay-deadline-left"><b id="countdown-' + escH(uid) + '" data-expires="' + escH(o.expires_at) + '">' + fmtCountdownLine(o.expires_at) + '</b></span></span></div><div class="pay-div"></div>';
     eh += '<div class="pay-row"><span class="pay-row-label">商户订单</span><span class="pay-row-value"><b>' + escH(o.order_no || '') + '</b></span></div><div class="pay-div"></div>';
     eh += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 订单已过期，请重新下单</b><p class="muted" style="margin:6px 0 0">该订单已过期，请重新下单；切勿向旧收款地址付款。</p></div>';
-    return eh;
+    return '<div data-payblock="' + escH(uid) + '">' + eh + '</div>';
   }
   var h = '<div class="pay-amount"><div class="pay-amount-usdt"><span id="payAmt-' + escH(uid) + '">' + actual + '</span> USDT <button class="pay-copy" data-copy-target="payAmt-' + escH(uid) + '" title="复制金额">⧉</button></div><div class="pay-amount-sub">' + fmtCNY(actual) + ' · ' + escH(o.pay_method || '') + ' · ' + escH(payTokenLabel(o.pay_chain || '')) + '</div></div>';
   h += '<div class="pay-toprow"><span class="pay-exact">ⓘ 请严格按照数额进行付款</span>';
@@ -670,13 +701,15 @@ function payBlockHTML(o, uid){
   h += '</div><div class="pay-div"></div>';
   h += '<div class="pay-row"><span class="pay-row-label">商户订单</span><span class="pay-row-value"><b id="ordNo-' + escH(uid) + '">' + escH(o.order_no || '') + '</b><button class="pay-copy" data-copy-target="ordNo-' + escH(uid) + '" title="复制订单号">⧉</button></span></div><div class="pay-div"></div>';
   // P3-23：无有效收款地址时不渲染地址框/二维码/复制按钮，显明确暂停付款提示；不因此允许伪造地址下单。
-  if (!isValidPayAddress(addr)) { h += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 付款已暂停：收款地址暂不可用</b><p class="muted" style="margin:6px 0 0">该订单的收款地址缺失或无效，请联系客服提供收款地址，切勿向其他地址付款。</p></div>'; return h; }
+  if (!isValidPayAddress(addr)) { h += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' 付款已暂停：收款地址暂不可用</b><p class="muted" style="margin:6px 0 0">该订单的收款地址缺失或无效，请联系客服提供收款地址，切勿向其他地址付款。</p></div>'; return '<div data-payblock="' + escH(uid) + '">' + h + '</div>'; }
   var qrPayload = payQrEncodePayload(addr); var qrUrl = payQrDataUrl(qrPayload);
   if (qrUrl) { h += '<div class="pay-qr-box"><div class="pay-qr"><img src="' + qrUrl + '" width="180" height="180" alt="收款二维码" data-pay-qr="ok">' + payQrLogoHTML(o.pay_chain || '') + '</div></div>'; }
   else { h += '<div class="pay-qr-box"><div class="pay-qr"><div class="pay-qr-err" data-pay-qr="err">二维码生成失败，请核对下方明文收款地址后再付款</div></div></div>'; }
   h += '<div class="pay-addrbox"><div class="pay-addr-head"><span>收款地址</span><button class="pay-copy" data-copy-target="addrBox-' + escH(uid) + '" title="复制地址">⧉</button></div><div class="pay-addr" id="addrBox-' + escH(uid) + '" data-full-addr="' + escH(String(addr).trim()) + '">' + payAddrHighlighted(String(addr).trim()) + '</div></div>';
   if (o.pay_chain === 'X Layer') h += '<div class="warn-box" style="margin:10px 0"><b>' + ic('warn') + ' X Layer 收款为 USDT0</b><p class="muted" style="margin:6px 0 0">请从欧易提币时选择 USDT0（X Layer 网络）转入上方地址。旧版 X Layer USDT 与 USDT0 是不同资产，转入旧版代币不会到账、无法自动发货。</p></div>';
-  return h;
+  // F2：仅登记过期分支所需字段；收款地址不进登记，过期重渲染时自然不再出现。
+  _payBlockData[uid] = { actual_amount: o.actual_amount, total_usdt: o.total_usdt, order_no: o.order_no, pay_method: o.pay_method, pay_chain: o.pay_chain, expires_at: o.expires_at };
+  return '<div data-payblock="' + escH(uid) + '">' + h + '</div>';
 }
 function cnyRate(){ var r = CFG && CFG.cny_rate ? Number(CFG.cny_rate) : 7.2; return (isFinite(r) && r > 0) ? r : 7.2; }
 function fmtCNY(usdt){ return '¥' + (Number(usdt || 0) * cnyRate()).toFixed(2); }
@@ -692,7 +725,7 @@ async function load(){ var r = await api('/api/config'); window._configLoadFaile
 // scope：'order'（下单）| 'pay-<订单号>'（TXID）。每个 scope 独立 widget + token。
 // fail-closed：turnstile_enabled=1 但 Site Key 缺失 → 显明确提示并拦截提交，绝不伪装 SVG 已满足。
 // Secret 绝不进前端：前端只用公开 Site Key，校验由后端用环境变量密钥完成。
-var TS = { tokens: {}, widgets: {}, loading: false, loaded: false, failed: false, poll: 0 };
+var TS = { tokens: {}, widgets: {}, widgetEls: {}, loading: false, loaded: false, failed: false, poll: 0 };
 function tsEnabled(){ return !!(CFG && CFG.turnstile_enabled); }
 function tsConfigured(){ return tsEnabled() && !!CFG.turnstile_site_key; }
 function tsFailClosed(){ return tsEnabled() && !CFG.turnstile_site_key; }
@@ -704,11 +737,14 @@ function markTurnstileLoadFailed(){ TS.failed = true; var slots = document.query
 // 渲染占位槽：fail-closed 显警告；未开启返回 ''（调用方用 SVG）；开启且配置有效返回 slot，renderTurnstileWidgets() 显式 render。
 function turnstileBoxHTML(scope){ if (tsFailClosed()) return '<div class="warn-box" data-ts-failclosed="' + escH(scope) + '"><b>' + ic('warn') + ' 反机器人验证未配置（Site Key 缺失），提交已暂停</b><p class="muted" style="margin:6px 0 0">请联系管理员配置 Turnstile 后再试。</p></div>'; if (!tsEnabled()) return ''; return '<div class="turnstile-slot" data-ts-scope="' + escH(scope) + '" data-ts-sitekey="' + escH(CFG.turnstile_site_key) + '"></div><div class="muted" style="margin-top:4px">请完成验证后继续</div>'; }
 // 显式 turnstile.render()；脚本未加载/加载中时轮询等待（最多约 10 秒）或动态加载脚本后 render。
-function renderTurnstileWidgets(){ var slots = document.querySelectorAll('.turnstile-slot[data-ts-scope]'); var pending = false; for (var i = 0; i < slots.length; i++){ var slot = slots[i]; var scope = slot.getAttribute('data-ts-scope'); if (TS.widgets[scope]) continue; if (window.turnstile && typeof window.turnstile.render === 'function') { try { (function(sc, el){ TS.widgets[sc] = window.turnstile.render(el, { sitekey: el.getAttribute('data-ts-sitekey'), callback: function(tok){ TS.tokens[sc] = tok || ''; }, 'expired-callback': function(){ TS.tokens[sc] = ''; }, 'error-callback': function(){ TS.tokens[sc] = ''; } }); })(scope, slot); } catch (e) {} } else pending = true; } if (pending) { if (TS.failed) { markTurnstileLoadFailed(); } else { ensureTurnstileScript(); if (TS.poll < 20) { TS.poll++; setTimeout(function(){ if (document.querySelector('.turnstile-slot')) renderTurnstileWidgets(); }, 500); } else { markTurnstileLoadFailed(); } } } }
+// F1：以渲染时的 slot 元素身份为准——同一元素才复用（去重不变）；slot 被 innerHTML 重建后，
+// 旧 widget 已随旧 DOM 销毁，旧引用必须删掉并对新 slot 重新 render，否则新 slot 永远是空槽、TXID 交不出去。
+// widgetEls 未记录时保持旧的 continue 行为，避免误删外部手动登记的 widget。
+function renderTurnstileWidgets(){ var slots = document.querySelectorAll('.turnstile-slot[data-ts-scope]'); var pending = false; for (var i = 0; i < slots.length; i++){ var slot = slots[i]; var scope = slot.getAttribute('data-ts-scope'); if (TS.widgets[scope]) { if (TS.widgetEls[scope] && TS.widgetEls[scope] !== slot) { delete TS.widgets[scope]; delete TS.tokens[scope]; delete TS.widgetEls[scope]; } else continue; } if (window.turnstile && typeof window.turnstile.render === 'function') { try { (function(sc, el){ var wid = window.turnstile.render(el, { sitekey: el.getAttribute('data-ts-sitekey'), callback: function(tok){ TS.tokens[sc] = tok || ''; }, 'expired-callback': function(){ TS.tokens[sc] = ''; }, 'error-callback': function(){ TS.tokens[sc] = ''; } }); TS.widgets[sc] = wid; TS.widgetEls[sc] = el; })(scope, slot); } catch (e) {} } else pending = true; } if (pending) { if (TS.failed) { markTurnstileLoadFailed(); } else { ensureTurnstileScript(); if (TS.poll < 20) { TS.poll++; setTimeout(function(){ if (document.querySelector('.turnstile-slot')) renderTurnstileWidgets(); }, 500); } else { markTurnstileLoadFailed(); } } } }
 // P2-9：清旧 Token 并让 Widget 回到可重验证态；不无条件新建多个 Widget（复用已有 widgetId）。
 function resetTurnstile(scope){ TS.tokens[scope] = ''; if (window.turnstile && typeof window.turnstile.reset === 'function' && TS.widgets[scope] != null) { try { window.turnstile.reset(TS.widgets[scope]); } catch (e) {} } }
 // 路由切换时丢弃旧 DOM 的 widget 引用（旧 widget 已随 DOM 移除），下次渲染重建。
-function clearTurnstileWidgets(){ TS.widgets = {}; TS.tokens = {}; TS.poll = 0; }
+function clearTurnstileWidgets(){ TS.widgets = {}; TS.tokens = {}; TS.widgetEls = {}; TS.poll = 0; }
 // 兼容旧全局回调（历史 .cf-turnstile 声明式用法已移除，保留空壳防旧内联回调报错）。
 function onTurnstileDone(token){ TS.tokens['order'] = token || ''; }
 function rawPath(){
@@ -1461,6 +1497,9 @@ async function doQueryList(btnEl){
     }
     h += '</div>';
   }
+  // F1：#qres 整体重建，旧 Turnstile widget 已随旧 DOM 销毁；先清登记，否则 renderTurnstileWidgets 会因旧引用跳过新 slot。
+  // （renderTurnstileWidgets 的元素身份校验是第二道防线；此处整区重建，清全部是安全的。）
+  clearTurnstileWidgets();
   el('qres').innerHTML = h;
   if (!tsEnabled()) { for (var qi = 0; qi < list.length; qi++){ if (list[qi].status === 'pending_payment') loadPayCaptchaFor(list[qi].order_no); } }
   startCountdown();
@@ -1505,6 +1544,9 @@ async function doQueryLegacy(no, tkInputId, capInputId, btnEl){
   setBtnLoading(btnEl, false);
   var box = el('qsec-' + no);
   if (!r.ok){ if (box) box.innerHTML = '<div class="muted">' + escH(r.error) + '</div>'; else toast(r.error, 'error'); return; }
+  // F1：仅清本单 scope（不 blanket clear）：qsec 只换本单，列表里其他单的 slot 还在 DOM 里，整清会导致它们被重复 render。
+  // renderTurnstileWidgets 的元素身份校验同样会处理本单旧引用；此处先清本单是显式防线。
+  if (box) { var _legScope = 'pay-' + no; delete TS.widgets[_legScope]; delete TS.tokens[_legScope]; if (TS.widgetEls) delete TS.widgetEls[_legScope]; }
   if (box) box.innerHTML = renderQueryOrderDetail(r.order, !!r.legacy);
   if (r.order && r.order.status === 'pending_payment') { startCountdown(); if (tsEnabled()) renderTurnstileWidgets(); else loadPayCaptchaFor(no); }
 }
