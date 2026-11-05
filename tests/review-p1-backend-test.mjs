@@ -166,10 +166,12 @@ function setup() {
   }
   async function payCall(orderNo, txid) {
     const cid = mkCaptcha('AB12');
-    return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12' });
+    // 2026-10-30 新口径：/pay 未核验候选写入须带查询密码（与订单下单密码一致）。
+    return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12', query_password: 'TestPass123' });
   }
-  async function payCallWithCaptcha(orderNo, txid, capId, capCode) {
-    return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: capId, captcha_code: capCode });
+  async function payCallWithCaptcha(orderNo, txid, capId, capCode, extra) {
+    // 2026-10-30 新口径：同上；extra 用于固定 IP（双维限流用例须同单同 IP 才触顶）。
+    return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: capId, captcha_code: capCode, query_password: 'TestPass123' }, undefined, extra);
   }
   async function scheduled() {
     const ctx = makeCtx();
@@ -439,8 +441,9 @@ check('P1-3: settings enable persisted', t.q("SELECT value FROM settings WHERE k
   const o2 = t.insertOrder({ product_id: pM.id, pay_method: 'OKX', pay_chain: 'X Layer', pay_address: addr, actual_amount: 6.0066, status: 'pending_payment', contact: freshContact(), customer_fields: JSON.stringify({ contact_email: freshContact() }) });
   const txS = 'e2'.repeat(32);
   t.db.prepare("INSERT INTO payments (order_id, chain, asset, pay_address, tx_hash, event_key, amount, amount_unit, block_number, confirmations, first_seen_at, status, reconcile_status, reconcile_note, created_at, updated_at) VALUES (?, ?, 'USDT', ?, ?, '', ?, 'USDT', NULL, 0, ?, 'submitted', '', '', ?, ?)").run(o2.id, 'X Layer', addr, txS, 6.0066, nowStr(), nowStr(), nowStr());
-  t.db.prepare('INSERT INTO scan_cursors (chain, last_block, updated_at) VALUES (?, ?, ?) ON CONFLICT(chain) DO UPDATE SET last_block=excluded.last_block').run('X Layer|' + addr, 8900, nowStr());
-  M.logs = [t.evmLogFor(o2, txS, 9000, '0x3')];
+  // 审计修复后逐单回溯 2000 区块：日志块 7500 在逐单窗口 [8000, ...] 之外、仅扫描命中（游标 7000），避免逐单抢先建第二行
+  t.db.prepare('INSERT INTO scan_cursors (chain, last_block, updated_at) VALUES (?, ?, ?) ON CONFLICT(chain) DO UPDATE SET last_block=excluded.last_block').run('X Layer|' + addr, 7000, nowStr());
+  M.logs = [t.evmLogFor(o2, txS, 7500, '0x3')];
   await t.scheduled();
   const rowsS = t.qa('SELECT * FROM payments WHERE tx_hash=?', txS);
   check('P2-1: empty event_key backfill keeps single row', rowsS.length === 1, JSON.stringify(rowsS));
@@ -674,13 +677,15 @@ await t.call('POST', '/api/admin/products', { title: '手动商品-P2-2', catego
   let r = await t.orderCall({ product_id: pM.id, quantity: 1 });
   const ordR1 = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);
   M.receipt = null;
+  // 2026-10-30 新口径（双维限流）：限流触顶须同单同 IP——本 harness 默认每调用轮换 IP，
+  // 故此处固定同一 IP，否则 5 次分属 5 个 IP、总量未满 20，不会 429（这正是双维要修的“路人刷满”反面：分布式不再锁单）。
   for (let i = 0; i < 5; i++) {
     const cid = t.mkCaptcha('AB12');
-    const rr = await t.payCallWithCaptcha(ordR1.order_no, 'a1'.repeat(32), cid, 'ZZZZ');
+    const rr = await t.payCallWithCaptcha(ordR1.order_no, 'a1'.repeat(32), cid, 'ZZZZ', { 'CF-Connecting-IP': '10.77.5.5' });
     check('P3-5: /pay wrong captcha #' + (i + 1) + ' -> captcha error (rate slot consumed)', rr.json && !rr.json.ok && /验证码/.test(rr.json.error || ''), JSON.stringify(rr.json));
   }
   const capKeep = t.mkCaptcha('AB12');
-  r = await t.payCallWithCaptcha(ordR1.order_no, 'a1'.repeat(32), capKeep, 'AB12');
+  r = await t.payCallWithCaptcha(ordR1.order_no, 'a1'.repeat(32), capKeep, 'AB12', { 'CF-Connecting-IP': '10.77.5.5' });
   check('P3-5: /pay rate-limited before captcha consumed', r.status === 429 && r.json && !r.json.ok, JSON.stringify(r.json));
   r = await t.orderCall({ product_id: pM.id, quantity: 1 });
   const ordR2 = t.q('SELECT * FROM orders WHERE order_no=?', r.json.order.order_no);

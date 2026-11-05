@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { createHash, pbkdf2Sync } from 'node:crypto';
 const dir = path.dirname(fileURLToPath(import.meta.url)) + '/..';
 const db = new DatabaseSync(':memory:');
 // schema.sql 自 v15 起不再建 schema_migrations 表（仅 INSERT 预置版本），与 Worker runMigrations 一致：先建表再执行 schema.sql。
@@ -65,7 +65,8 @@ async function mockFetch(url, opts = {}) {
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: logs }), { status: 200 });
     }
     if (body.method === 'eth_getTransactionReceipt') {
-      if (!evmReceiptFor || evmReceiptFor.hash !== body.params[0]) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }), { status: 200 });
+      // 审计修复后 RPC 统一发 0x 形：mock 按归一化裸形比对（真实节点同样接受 0x 形），不按提交原形严格比对。
+      if (!evmReceiptFor || String(evmReceiptFor.hash).toLowerCase().replace(/^0x/, '') !== String(body.params[0]).toLowerCase().replace(/^0x/, '')) return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }), { status: 200 });
       const raw = (() => { const parts = String(evmReceiptFor.amount).split('.'); const frac = ((parts[1] || '') + '0'.repeat(18)).slice(0, 18); return BigInt(parts[0] + frac); })();
       const log = { address: '0x55d398326f99059fF775485246999027B3197955', blockNumber: '0x' + (1000 - 20).toString(16), transactionHash: evmReceiptFor.hash, logIndex: '0x0',
         topics: ['0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef', '0x' + '0'.repeat(24) + '33'.repeat(20), '0x' + '0'.repeat(24) + String(evmReceiptFor.to).slice(2).toLowerCase()],
@@ -112,7 +113,8 @@ async function orderCall(body) {
 // /pay 自 P3-4 起须带图形验证码（captcha_id + captcha_code）：每次提交用新验证码。
 async function payCall(orderNo, txid) {
   const cid = mkCaptcha('AB12');
-  return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12' });
+  // 2026-10-30 新口径：/pay 未核验候选写入须带查询密码（与订单下单密码一致）。
+  return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12', query_password: 'conc-test-pw' });
 }
 let pass = 0, fail = 0;
 function check(name, cond, extra = '') { if (cond) { pass++; console.log('PASS:', name); } else { fail++; console.log('FAIL:', name, extra); } }
@@ -508,7 +510,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   const cp = await callOld('POST', '/api/admin/change-password', { old_password: '', new_password: 'old-db-pass-123' }, ocookie);
   check('old-db change-password ok', cp.json && cp.json.ok === true, JSON.stringify(cp.json));
   const mg = await callOld('GET', '/api/admin/migrate', null, ocookie);
-  check('old-db migrated to v20', mg.json && mg.json.ok === true && mg.json.current_version === 20, JSON.stringify(mg.json));
+  check('old-db migrated to v20', mg.json && mg.json.ok === true && mg.json.current_version === 21, JSON.stringify(mg.json));
   check('old-db: old order preserved', !!dbOld.prepare("SELECT * FROM orders WHERE order_no='AISOLD001'").get());
   check('old-db: old card preserved', !!dbOld.prepare("SELECT * FROM cards WHERE code='OLD-CARD-1'").get());
   check('old-db: old product preserved', !!dbOld.prepare("SELECT * FROM products WHERE slug='old-prod'").get());
@@ -543,12 +545,14 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   await ctx.drain();
   const txt = await res.text();
   let j = null; try { j = JSON.parse(txt); } catch {}
-  check('migration failure -> 500 sanitized (generic + request_id, no DB leak)', res.status === 500 && /服务器内部错误/.test((j && j.error) || txt) && /关联 ID/.test((j && j.error) || txt) && !/数据库迁移失败/.test((j && j.error) || txt) && !/no such table/.test((j && j.error) || txt), 'status=' + res.status + ' body=' + txt.slice(0, 300));
+  check('migration failure -> 503 migration_failed (structured, no DB leak)', res.status === 503 && j && j.code === 'migration_failed' && /schema-check/.test(j.error || '') && !/no such table/.test((j && j.error) || txt), 'status=' + res.status + ' body=' + txt.slice(0, 300));
   check('migration failure: version not marked', dbBad.prepare('SELECT COUNT(*) AS c FROM schema_migrations WHERE version=1').get().c === 0);
 }
 
 // ===== 11. 审计写入失败不静默成功，也不伪装失败（P3-20）=====
-// 删除 admin_audit 表 → 关键操作（取消）仍返回成功（副作用已提交），但附带 audit_failed: true + warning 警告，
+// 审计写入失败不静默成功：注意自愈（2026-10-30 数据线）会重建被删的表，因此不能再用 DROP TABLE 注入
+// 失败——改用 DROP COLUMN note：表存在（自愈不重建），但 logAudit 的 INSERT 缺列必失败，仍能验证
+// 关键操作（取消）仍返回成功（副作用已提交），但附带 audit_failed: true + warning 警告，
 // 操作员不会误以为操作未生效而重复操作。
 {
   const dbNoAudit = new DatabaseSync(':memory:');
@@ -556,7 +560,7 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   // 注意：schema.sql 缺 CREATE TABLE schema_migrations 是代码侧缺陷（已在最终汇报中精确报告），测试侧按运行时行为先建表，不改 schema.sql。
     dbNoAudit.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))" );
   dbNoAudit.exec(fs.readFileSync(path.join(dir, 'schema.sql'), 'utf8'));
-  dbNoAudit.exec('DROP TABLE admin_audit');
+  dbNoAudit.exec('ALTER TABLE admin_audit DROP COLUMN note');
   // 审计测试的订单走 OKX|X Layer，需有效收款地址（schema 种子为占位符，会拒单）
   dbNoAudit.prepare("UPDATE settings SET value=? WHERE key='usdt_addresses'").run(JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111' }));
   const envNoAudit = { ZHIXUAN_SETUP_TOKEN: 'test-setup-token', DB: { prepare: (sql) => { let params = []; const api = { bind(...a) { params = a; return api; }, async first() { try { const st = dbNoAudit.prepare(sql); const rr = st.get(...params); return rr === undefined ? null : rr; } catch (e) { throw e; } }, async all() { const st = dbNoAudit.prepare(sql); return { results: st.all(...params) }; }, async run() { const st = dbNoAudit.prepare(sql); const info = st.run(...params); return { meta: { changes: info.changes, last_row_id: info.lastInsertRowid } }; } }; return api; }, async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; } }, PRODSELLER_API_KEY: 'test-key', PRODSELLER_BASE_URL: 'https://prodseller.com/v1' };
@@ -665,6 +669,8 @@ const pUp = q("SELECT * FROM products WHERE title='并发上游商品'");
   // BEP20 订单（直接插库）；测的是 /pay 按各链确认策略（BEP20 需 15 确认）
   const a04No = 'AISCONCA04';
   db.prepare("INSERT INTO orders (order_no, query_password, query_token_hash, product_id, product_snapshot, quantity, price_usdt, total_usdt, actual_amount, pay_address, expires_at, customer_fields, contact, pay_method, pay_chain, wallet_address, status, created_at) VALUES (?, '', '', ?, '{}', 1, 4, 4, 4.0055, '0x3333333333333333333333333333333333333333', datetime('now','+30 minutes'), ?, 'a04@test.example', 'Binance', 'BEP20', '0x3333333333333333333333333333333333333333', 'pending_payment', datetime('now'))").run(a04No, pTxA04.id, JSON.stringify({ contact_email: 'a04@test.example' }));
+  // 2026-10-30 新口径：直接插库的订单也须有 salted 查询密码，否则 /pay 未核验分支按新门拒绝（与 API 下单订单一致）。
+  { const a04Salt = Buffer.from('conc-a04-salt-1234'); db.prepare('UPDATE orders SET query_password_hash=?, query_password_salt=? WHERE order_no=?').run(pbkdf2Sync('conc-test-pw', a04Salt, 100000, 32, 'sha256').toString('base64'), a04Salt.toString('base64'), a04No); }
   const ordA04 = q('SELECT * FROM orders WHERE order_no=?', a04No);
   const toTopic = '0x' + '000000000000000000000000' + String(ordA04.pay_address).slice(2).toLowerCase();
   const amtHex = '0x' + (() => { const parts = String(ordA04.actual_amount).split('.'); const frac = ((parts[1] || '') + '0'.repeat(18)).slice(0, 18); return BigInt(parts[0] + frac); })().toString(16).padStart(64, '0');

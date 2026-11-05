@@ -25,6 +25,19 @@ function seedCaptcha(code = 'AB12') {
   return { id, code };
 }
 
+// 浏览器验收自身是重流量：多视口反复进页，每进一次表单就拉一次图形验证码，
+// 单 IP 10 分钟 30 次的验证码限流（P3-14，API 层已由 review-fixes-test 单独覆盖
+// “第 31 次 429”）会在流程后段被流程自身撞满，控制台留下预期外的 429（CI 三连挂同款，
+// 本地复现已确认 429 URL 就是 /api/captcha 本身）。每大段开始前清一次本 IP 的
+// 验证码计数（与 seedCaptcha 同款 D1 直写），只清测试流量的累计，不动应用限流
+// 逻辑、不改限流阈值；各段内仍真实走 /api/captcha。
+function resetCaptchaQuota() {
+  const wrangler = 'node_modules/.bin/wrangler';
+  const fs = require('node:fs');
+  const cmd = (fs.existsSync(wrangler) ? wrangler : 'npx wrangler') + ' d1 execute aisou-lite-db --local --command=\"DELETE FROM pay_rate WHERE key LIKE \'captcha:%\';\"';
+  execSync(cmd, { stdio: 'pipe' });
+}
+
 const BASE = process.env.BASE || 'http://127.0.0.1:8791';
 let pass = 0, fail = 0;
 const failures = [];
@@ -476,6 +489,7 @@ check('dark mode: no horizontal overflow',
 await page.evaluate(() => { if (window.toggleTheme) window.toggleTheme(); });
 await page.waitForTimeout(300);
 
+resetCaptchaQuota();
 // ===== 8. 移动端视口 =====
 for (const [w, h, label] of [[390, 844, '390'], [360, 740, '360']]) {
   await page.setViewportSize({ width: w, height: h });
@@ -533,6 +547,7 @@ for (const [w, h, label] of [[390, 844, '390'], [360, 740, '360']]) {
   check(`mobile ${label} shop: buy button light green bg`, btnBg === 'rgb(214, 245, 224)', btnBg);
 }
 
+resetCaptchaQuota();
 // ===== 8b. P2-12：浏览器计算样式真实断言（深色售罄/Hero/合集标题/倒计时/App 图标/付款块/对齐/TXID+Turnstile/必填无请求）=====
 await page.setViewportSize({ width: 1440, height: 900 });
 await page.goto(BASE + '/', { waitUntil: 'networkidle' });
@@ -753,6 +768,7 @@ for (const w of [390, 360]) {
   await page.unrouteAll({ behavior: 'wait' });
 }
 
+resetCaptchaQuota();
 // ===== 8c. 交付提示：页脚声明已删除；商品 / 付款 / 查单顶部静态单行，不挡住付款控件 =====
 {
   const NOTICE_TEXT = '虚拟商品一经交付不退换，下单前请仔细阅读商品说明。';

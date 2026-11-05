@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { createHash } from 'node:crypto';
+import { createHash, pbkdf2Sync } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
@@ -156,7 +156,15 @@ async function orderCall(body, ip) {
 }
 async function payCall(orderNo, txid, ip) {
   const cid = mkCaptcha('AB12');
-  return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12' }, null, ip ? { 'CF-Connecting-IP': ip } : undefined);
+  // 2026-10-30 新口径：/pay 未核验候选写入须带查询密码（与订单下单密码一致）。
+  return call('POST', '/api/orders/' + orderNo + '/pay', { txid, captcha_id: cid, captcha_code: 'AB12', query_password: 'rf-test-pw' }, null, ip ? { 'CF-Connecting-IP': ip } : undefined);
+}
+// 2026-10-30 新口径：直接插库的订单补一个 salted 查询密码（PBKDF2，与服务端 hashPassword 同参数），
+// 否则 /pay 未核验分支按新门拒绝；断言本身不改。
+function givePayPassword(orderId, pw) {
+  const saltBuf = Buffer.from('rf-pay-salt-123456');
+  const hash = pbkdf2Sync(pw || 'rf-test-pw', saltBuf, 100000, 32, 'sha256').toString('base64');
+  db.prepare('UPDATE orders SET query_password_hash=?, query_password_salt=? WHERE id=?').run(hash, saltBuf.toString('base64'), orderId);
 }
 function setSetting(key, value) { db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value); }
 function setGate(v) { setSetting('prodseller_enabled', String(v)); }
@@ -708,7 +716,7 @@ for (const termStatus of ['cancelled', 'failed']) {
 
 // P3-3：/pay 核验失败不建账本行（但订单 txid 仍暂存）。
 {
-  const o = insertOrder({ status: 'pending_payment', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 9.0011 });
+  const o = insertOrder({ status: 'pending_payment', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 9.0011 }); givePayPassword(o.id);
   evm.receipt = null;
   r = await payCall(o.order_no, 'c'.repeat(64));
   check('P3-3: /pay unverified returns ok + auto:false', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
@@ -718,7 +726,7 @@ for (const termStatus of ['cancelled', 'failed']) {
 
 // P3-4：/pay 必须带验证码；前端两处 /pay UI 均有验证码输入。
 {
-  const o = insertOrder({ status: 'pending_payment', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 9.0022 });
+  const o = insertOrder({ status: 'pending_payment', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 9.0022 }); givePayPassword(o.id);
   r = await call('POST', '/api/orders/' + o.order_no + '/pay', { txid: 'd'.repeat(64) });
   check('P3-4: /pay without captcha rejected, error mentions 验证码', r.json && !r.json.ok && /验证码/.test(r.json.error || ''), JSON.stringify(r.json));
   r = await payCall(o.order_no, 'd'.repeat(64));
@@ -735,12 +743,21 @@ for (const termStatus of ['cancelled', 'failed']) {
   const okQ = results.filter((x) => x.status !== 429).length;
   const badQ = results.filter((x) => x.status === 429).length;
   check('P3-5: 40 concurrent /query same IP -> exactly 30 OK + 10 429', okQ === 30 && badQ === 10, 'ok=' + okQ + ' 429=' + badQ);
-  const o = insertOrder({ status: 'pending_payment', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 9.0033 });
+  const o = insertOrder({ status: 'pending_payment', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 9.0033 }); givePayPassword(o.id);
   const payCaps = Array.from({ length: 10 }, () => mkCaptcha('AB12'));
-  const payResults = await Promise.all(payCaps.map((cid, i) => call('POST', '/api/orders/' + o.order_no + '/pay', { txid: 'e'.repeat(60) + String(i), captcha_id: cid, captcha_code: 'AB12' })));
+  // 2026-10-30 新口径（双维限流）：原子记数断言须同单同 IP——本 harness 默认每调用轮换 IP，
+  // 故固定同一 IP，否则 10 次分属 10 个 IP、总量未满 20，全过才是新语义下的正确结果。
+  const payResults = await Promise.all(payCaps.map((cid, i) => call('POST', '/api/orders/' + o.order_no + '/pay', { txid: 'e'.repeat(60) + String(i), captcha_id: cid, captcha_code: 'AB12', query_password: 'rf-test-pw' }, null, { 'CF-Connecting-IP': ip })));
   const okP = payResults.filter((x) => x.status === 200).length;
   const badP = payResults.filter((x) => x.status === 429).length;
   check('P3-5: 10 concurrent /pay same order -> exactly 5 OK + 5 429', okP === 5 && badP === 5, 'ok=' + okP + ' 429=' + badP);
+  // 双维总量维：25 并发异 IP 同单 → 总量 20 封顶，恰好 20 OK + 5 429（原子记数在总量维同样不超发）。
+  const oAgg = insertOrder({ status: 'pending_payment', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 9.0034 }); givePayPassword(oAgg.id);
+  const aggCaps = Array.from({ length: 25 }, () => mkCaptcha('AB12'));
+  const aggResults = await Promise.all(aggCaps.map((cid, i) => call('POST', '/api/orders/' + oAgg.order_no + '/pay', { txid: 'f'.repeat(60) + String(i).padStart(2, '0'), captcha_id: cid, captcha_code: 'AB12', query_password: 'rf-test-pw' }, null, { 'CF-Connecting-IP': '10.99.5.' + (100 + i) })));
+  const okA = aggResults.filter((x) => x.status === 200).length;
+  const badA = aggResults.filter((x) => x.status === 429).length;
+  check('P3-5: 25 concurrent /pay distinct IPs same order -> exactly 20 OK + 5 429 (aggregate cap)', okA === 20 && badA === 5, 'ok=' + okA + ' 429=' + badA);
 }
 
 // P3-6：reset-query-password 清空明文并记审计；新密码可经 /secret 查单。
@@ -826,17 +843,21 @@ for (const termStatus of ['cancelled', 'failed']) {
 
 // P3-15：大额分级确认数（X Layer）+ BEP20 保持 15 + 设置校验。
 {
-  // 小额 X Layer：amount 5，默认 1 确认 → latest 100 暂存，101 接受
-  const oSmall = insertOrder({ status: 'pending_payment', pay_method: 'OKX', pay_chain: 'X Layer', pay_address: '0x1111111111111111111111111111111111111111', actual_amount: 5 });
+  // 小额 X Layer：amount 5，审计修复后默认 12 确认（原默认 1 已上调，与大额默认对齐）→ latest 100 暂存，
+  // 101（1 确认）仍暂存，112（12 确认）接受
+  const oSmall = insertOrder({ status: 'pending_payment', pay_method: 'OKX', pay_chain: 'X Layer', pay_address: '0x1111111111111111111111111111111111111111', actual_amount: 5 }); givePayPassword(oSmall.id);
   evm.receipt = evmReceiptFor(oSmall, 'f0'.repeat(32), 100);
   evm.latest = 100;
   r = await payCall(oSmall.order_no, 'f0'.repeat(32));
   check('P3-15: X Layer small order 0 confirmations deferred (auto:false)', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
   evm.latest = 101;
   r = await payCall(oSmall.order_no, 'f0'.repeat(32));
-  check('P3-15: X Layer small order 1 confirmation accepted', r.json && r.json.ok === true && (r.json.auto === true || q('SELECT status FROM orders WHERE id=?', oSmall.id).status === 'completed'), JSON.stringify(r.json));
+  check('P3-15: X Layer small order 1 confirmation deferred (new default 12)', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
+  evm.latest = 112;
+  r = await payCall(oSmall.order_no, 'f0'.repeat(32));
+  check('P3-15: X Layer small order 12 confirmations accepted', r.json && r.json.ok === true && (r.json.auto === true || q('SELECT status FROM orders WHERE id=?', oSmall.id).status === 'completed'), JSON.stringify(r.json));
   // 大额 X Layer：amount 150 >= 100 → 默认 12 确认 → latest 111 暂存，112 接受
-  const oLarge = insertOrder({ status: 'pending_payment', pay_method: 'OKX', pay_chain: 'X Layer', pay_address: '0x1111111111111111111111111111111111111111', actual_amount: 150 });
+  const oLarge = insertOrder({ status: 'pending_payment', pay_method: 'OKX', pay_chain: 'X Layer', pay_address: '0x1111111111111111111111111111111111111111', actual_amount: 150 }); givePayPassword(oLarge.id);
   evm.receipt = evmReceiptFor(oLarge, 'a2'.repeat(32), 100);
   evm.latest = 111;
   r = await payCall(oLarge.order_no, 'a2'.repeat(32));
@@ -847,7 +868,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   // 自定义设置：large_order_usdt=50, large_order_confirmations=5 → amount 60 需 5 确认
   setSetting('large_order_usdt', '50');
   setSetting('large_order_confirmations', '5');
-  const oCustom = insertOrder({ status: 'pending_payment', pay_method: 'OKX', pay_chain: 'X Layer', pay_address: '0x1111111111111111111111111111111111111111', actual_amount: 60 });
+  const oCustom = insertOrder({ status: 'pending_payment', pay_method: 'OKX', pay_chain: 'X Layer', pay_address: '0x1111111111111111111111111111111111111111', actual_amount: 60 }); givePayPassword(oCustom.id);
   evm.receipt = evmReceiptFor(oCustom, 'b2'.repeat(32), 100);
   evm.latest = 104;
   r = await payCall(oCustom.order_no, 'b2'.repeat(32));
@@ -856,7 +877,7 @@ for (const termStatus of ['cancelled', 'failed']) {
   r = await payCall(oCustom.order_no, 'b2'.repeat(32));
   check('P3-15: custom large order 5 confirmations accepted', r.json && r.json.ok === true && r.json.auto === true && q('SELECT status FROM orders WHERE id=?', oCustom.id).status === 'pending_fulfill', JSON.stringify(r.json));
   // BEP20 大额仍需 15 确认：latest 112 暂存，115 接受
-  const oBep = insertOrder({ status: 'pending_payment', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 150 });
+  const oBep = insertOrder({ status: 'pending_payment', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 150 }); givePayPassword(oBep.id);
   evm.receipt = evmReceiptFor(oBep, 'c2'.repeat(32), 100);
   evm.latest = 112;
   r = await payCall(oBep.order_no, 'c2'.repeat(32));
@@ -893,7 +914,7 @@ for (const termStatus of ['cancelled', 'failed']) {
 
 // P3-21：/pay txid UPDATE 加状态守卫 — 订单已有 txid 时，第二次 /pay 不覆盖原 txid。
 {
-  const o = insertOrder({ status: 'pending_payment', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 9.0044, txid: '0'.repeat(64) });
+  const o = insertOrder({ status: 'pending_payment', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 9.0044, txid: '0'.repeat(64) }); givePayPassword(o.id);
   evm.receipt = null;
   r = await payCall(o.order_no, '1'.repeat(64));
   check('P3-21: /pay with existing txid returns ok + auto:false', r.json && r.json.ok === true && r.json.auto === false, JSON.stringify(r.json));
@@ -969,7 +990,7 @@ for (const termStatus of ['cancelled', 'failed']) {
 
 // P3-26：先认领 TXID、后认领订单 — 订单认领失败时，刚写入的 TXID 认领行被回滚删除。
 {
-  const o = insertOrder({ status: 'pending_payment', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 9.0055, claim_token: 'FRESH-326', claimed_at: "datetime('now')" });
+  const o = insertOrder({ status: 'pending_payment', pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 9.0055, claim_token: 'FRESH-326', claimed_at: "datetime('now')" }); givePayPassword(o.id);
   evm.receipt = evmReceiptFor(o, '2'.repeat(64), 100);
   evm.latest = 115; // BEP20 需 15 确认：latest 100 时 0 确认，/pay 不会走到履约
   r = await payCall(o.order_no, '2'.repeat(64));
@@ -985,17 +1006,17 @@ for (const termStatus of ['cancelled', 'failed']) {
 {
   // 卡密商品订单（扫描履约后真正 completed，便于断言）
   const pC27 = q("SELECT * FROM products WHERE title='卡密商品-P1-8'");
-  const o = insertOrder({ status: 'pending_payment', product_id: pC27.id, pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 9.0066, claim_token: 'FRESH-327', claimed_at: "datetime('now')" });
+  const o = insertOrder({ status: 'pending_payment', product_id: pC27.id, pay_method: 'Binance', pay_chain: 'BEP20', pay_address: '0x2222222222222222222222222222222222222222', actual_amount: 9.0066, claim_token: 'FRESH-327', claimed_at: "datetime('now')" }); givePayPassword(o.id);
   db.prepare('INSERT INTO cards (product_id, code) VALUES (?, ?)').run(pC27.id, 'P327-CARD');
   evm.receipt = evmReceiptFor(o, '3'.repeat(64), 100);
   evm.latest = 115; // BEP20 需 15 确认
   r = await payCall(o.order_no, '3'.repeat(64));
   check('P3-27: /pay blocked by live lease writes no ledger (claim-before-ledger)', r.json && !r.json.ok && qa('SELECT * FROM payments WHERE tx_hash=?', '3'.repeat(64)).length === 0, JSON.stringify(r.json));
-  // 解除认领 + 种子“账本已写、履约前崩溃”的 event_key='' 行；预置扫描游标到 9700（早于逐单路径的 latest-200=9800），日志块 9750 仅扫描命中
+  // 解除认领 + 种子“账本已写、履约前崩溃”的 event_key='' 行；预置扫描游标到 7000（日志块 7500 早于逐单路径的 latest-2000=8000，仅扫描命中）
   db.prepare("UPDATE orders SET claim_token='', claimed_at=NULL WHERE id=?").run(o.id);
   db.prepare("INSERT INTO payments (order_id, chain, pay_address, tx_hash, event_key, amount, status) VALUES (?, 'BEP20', '0x2222222222222222222222222222222222222222', ?, '', 9.0066, 'verified')").run(o.id, '3'.repeat(64));
-  db.prepare("INSERT OR REPLACE INTO scan_cursors (chain, last_block) VALUES (?, ?)").run('BEP20|0x2222222222222222222222222222222222222222', 9700);
-  const log = evmLogFor(o, '3'.repeat(64), 9750, '0x7');
+  db.prepare("INSERT OR REPLACE INTO scan_cursors (chain, last_block) VALUES (?, ?)").run('BEP20|0x2222222222222222222222222222222222222222', 7000);
+  const log = evmLogFor(o, '3'.repeat(64), 7500, '0x7');
   evm.logs = [log];
   evm.receipt = null; // 清空收据：逐单路径不再命中，迫使扫描路径回填 event_key
   evm.latest = 10000;
@@ -1051,10 +1072,12 @@ for (const termStatus of ['cancelled', 'failed']) {
 
 // ================= 独立库测试 =================
 // P3-20：审计失败不再返回 500 — 全部审计点返回成功 + audit_failed: true + warning，副作用照常提交。
+// 注入方式注意（2026-10-30 数据线自愈）：自愈会重建被删的表，DROP TABLE 已不能注入失败，
+// 改用 DROP COLUMN note（表存在、自愈不重建，logAudit INSERT 缺列必失败），断言的性质不变。
 {
   const { db: dbA, env: envA, worker: workerA } = makeEnv();
   const qA = (sql, ...p) => dbA.prepare(sql).get(...p);
-  dbA.exec('DROP TABLE admin_audit');
+  dbA.exec('ALTER TABLE admin_audit DROP COLUMN note');
   async function callA(method, p, body, cookieA, extra) {
     const ctx = makeCtx();
     const headers = { 'content-type': 'application/json', 'X-Admin-API': '1', 'CF-Connecting-IP': nextIp() };
@@ -1225,7 +1248,7 @@ check('P1-18: RUNBOOK rollback mentions v8 unique-index caveat + new-table list'
 check('P2-19: RELEASE_READINESS starts with history-snapshot banner', releaseReadiness.includes('§一–§八为第四轮历史快照'));
 
 // P2-20：d1-local-test.sh 口径（v18、真实下单 + /secret、精确 COUNT、查询密码术语）。
-check('P2-20: d1-local-test.sh comments say v20', d1LocalSh.includes('版本=20') && d1LocalSh.includes('迁移到 v20'));
+check('P2-20: d1-local-test.sh comments say v21', d1LocalSh.includes('版本=21') && d1LocalSh.includes('迁移到 v21'));
 check('P2-20: d1-local-test.sh has real fresh-DB order + /secret assertions', d1LocalSh.includes('/api/orders/$FRESH_NO/secret') && d1LocalSh.includes('FRESH-DB SECRET OK'));
 check('P2-20: d1-local-test.sh dedup uses precise COUNT parse, no grep -o \'1\'', !d1LocalSh.includes("grep -o '1'") && d1LocalSh.includes('DEDUP_COUNT'));
 check('P2-20: d1-local-test.sh uses 查询密码 terminology, no 查单凭证', d1LocalSh.includes('查询密码') && !d1LocalSh.includes('查单凭证'));
@@ -1336,7 +1359,7 @@ check('P2-5: genCaptchaSVG still renders <text>', workerCode.includes('genCaptch
   // 商品卡按钮背景色（用户要求，手机端 + PC 端都改）：立即购买 微亮绿色、售罄 微亮红色；深色模式各配半透明版，售罄需单独写 :disabled（深色 .pcard-btn 特异性高于基础 :disabled，否则售罄会变绿）。
   check('shop: card button colors', frontendHtml.includes('background:#d6f5e0;color:#1a8f4a') && frontendHtml.includes('.pcard-btn:disabled{background:#ffe0e1;color:#d92b2b') && frontendHtml.includes('rgba(48,209,88,.28);color:#7be3a8') && frontendHtml.includes('rgba(255,69,58,.28);color:#ff9d97'));
   check('shop: mobile card title/desc sizes + shrink', frontendHtml.includes('.pcard-title{font-size:12px') && frontendHtml.includes('.pcard-desc{font-size:9px') && frontendHtml.includes('.pcard{padding:8px}') && frontendHtml.includes('.pcard-price{font-size:20px}') && frontendHtml.includes('.pcard-btn{font-size:12px') && frontendHtml.includes('.pcard-arrow{font-size:14px}') && frontendHtml.includes('.pcard-img{margin-bottom:6px;aspect-ratio:4/2.7}') && frontendHtml.includes('.shop-grid{gap:10px}') && frontendHtml.includes('relHtml += productCard(rel[ri])'));
-  check('home: mobile hero is row layout', frontendHtml.includes('.home-hero{flex-direction:row;gap:12px;padding:16px;align-items:flex-start}') && frontendHtml.includes('.home-visual{flex:0 0 156px;height:119px;min-width:0}') && frontendHtml.includes('.home-visual-scale{width:420px;height:320px;transform:scale(0.37)') && frontendHtml.includes('<div class="home-visual"><div class="home-visual-scale">') && frontendHtml.includes('.home-h1{font-size:10px}') && frontendHtml.includes('.home-cta{font-size:10px;padding:6px 12px}') && frontendHtml.includes('.home-sub{font-size:8px') && frontendHtml.includes('.home-eyebrow{font-size:8px') && frontendHtml.includes('.home-note{font-size:8px') && !frontendHtml.includes('.home-visual-ring{display:none}') && !frontendHtml.includes('.home-pcard{width:calc(100% - 8px)') && !frontendHtml.includes('.home-visual-cap{display:none}'));
+  check('home: mobile hero is row layout', frontendHtml.includes('.home-hero{flex-direction:row;gap:12px;padding:16px;align-items:flex-start}') && frontendHtml.includes('.home-visual{flex:0 0 156px;height:119px;min-width:0}') && frontendHtml.includes('.home-visual-scale{width:420px;height:320px;transform:scale(0.37)') && frontendHtml.includes('<div class="home-visual"><div class="home-visual-scale">') && frontendHtml.includes('.home-h1{font-size:10px}') && frontendHtml.includes('.home-cta{font-size:10px') && frontendHtml.includes('.home-sub{font-size:8px') && frontendHtml.includes('.home-eyebrow{font-size:8px') && frontendHtml.includes('.home-note{font-size:8px') && !frontendHtml.includes('.home-visual-ring{display:none}') && !frontendHtml.includes('.home-pcard{width:calc(100% - 8px)') && !frontendHtml.includes('.home-visual-cap{display:none}'));
   // 查单：订单号或下单邮箱双查（用户 2026-10-17 明确要求，取代 v15“邮箱查询禁用”）；卡密仍走 /secret + 查询密码。
   check('query: order no or email', workerCode.includes('LOWER(contact) = ?') && frontendHtml.includes('订单号或下单邮箱') && frontendHtml.includes('输入订单号或下单邮箱查询订单'));
   check('home: mobile section title fits one line', frontendHtml.includes('.home-section-title{font-size:20px}') && frontendHtml.includes('.home-section-star{font-size:22px}'));
