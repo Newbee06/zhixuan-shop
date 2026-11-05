@@ -70,6 +70,10 @@ async function mockFetch(url, opts = {}) {
       return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: '0x' + dec.toString(16).padStart(64, '0') }), text: async () => '' };
     }
     if (body.method === 'eth_blockNumber') return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: toHex(evm.latest) }), text: async () => '' };
+    if (body.method === 'eth_getBlockByNumber') {
+      const sec = Math.floor(Date.now() / 1000) + 30;
+      return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: body.id, result: { timestamp: '0x' + sec.toString(16) } }), text: async () => '' };
+    }
     if (body.method === 'eth_getLogs') {
       if (evm.truncate) {
         const dummies = Array.from({ length: 10000 }, (_, i) => ({ address: '0x0000000000000000000000000000000000000000', blockNumber: toHex(9900), transactionHash: '0x' + '0'.repeat(64), logIndex: toHex(i), topics: [TOPIC0], data: '0x0' }));

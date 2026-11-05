@@ -88,7 +88,7 @@ function insertOrder(db, orderNo, opts) {
 {
   const { M, call } = fresh();
   const cookie = await adminSetup(call);
-  check(q(M.db, 'SELECT MAX(version) AS v FROM schema_migrations').v === 21, 'M1 前置：版本已到 21');
+  check(q(M.db, 'SELECT MAX(version) AS v FROM schema_migrations').v === 22, 'M1 前置：版本已到 22');
   // 删掉金额索引 + 2 笔 BinanceUID 同金额待付款单（v8 旧定义会误判冲突，v9 终态定义排除 BinanceUID）
   M.db.exec('DROP INDEX IF EXISTS idx_orders_amount_claim');
   check(!idxExists(M.db, 'idx_orders_amount_claim'), 'M1 前置：idx_orders_amount_claim 已删除');

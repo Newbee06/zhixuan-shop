@@ -25,6 +25,10 @@ async function mockFetch(url, opts = {}) {
     const m = body && body.method;
     if (m === 'eth_chainId') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: u.includes('mock-bsc') ? '0x38' : '0xc4' }), { status: 200 });
     if (m === 'eth_blockNumber') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x10000' }), { status: 200 });
+    if (m === 'eth_getBlockByNumber') {
+      const sec = Math.floor(Date.now() / 1000) + 30;
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { timestamp: '0x' + sec.toString(16) } }), { status: 200 });
+    }
     if (m === 'eth_call') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + (6).toString(16).padStart(64, '0') }), { status: 200 });
     if (m === 'eth_getTransactionReceipt') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: null }), { status: 200 });
     if (m === 'eth_getLogs') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: [] }), { status: 200 });
@@ -118,10 +122,10 @@ const worker = loadWorker(M.env);
 const call = makeCaller(worker, M.env);
 const cookie = await adminLogin(call);
 
-// ---- 2. 干跑在迁移之前 + v21 版本 + v14 计数为 0 + 外键探针 ----
+// ---- 2. 干跑在迁移之前 + v22 版本 + v14 计数为 0 + 外键探针 ----
 let r = await call('GET', '/api/admin/schema-check', null, cookie);
 assert(r.status === 200 && r.json && r.json.dry_run === true && r.json.migrated === false, 'schema-check 是干跑（dry_run=true, migrated=false）: ' + JSON.stringify(r.json && { dry_run: r.json.dry_run, migrated: r.json.migrated }));
-assert(r.json.precheck && r.json.precheck.current_version === 21 && r.json.precheck.latest_version === 21 && r.json.precheck.ok === true, 'schema-check 版本 21 且 ok: ' + JSON.stringify(r.json.precheck && { current_version: r.json.precheck.current_version, issues: r.json.precheck.issues }));
+assert(r.json.precheck && r.json.precheck.current_version === 22 && r.json.precheck.latest_version === 22 && r.json.precheck.ok === true, 'schema-check 版本 22 且 ok: ' + JSON.stringify(r.json.precheck && { current_version: r.json.precheck.current_version, issues: r.json.precheck.issues }));
 assert(r.json.precheck.v14_legacy_no_salt_orders === 0, 'v14 无 salt 计数为 0（字段存在）');
 assert(typeof r.json.precheck.checks.foreign_keys === 'number', '外键探针返回数值: ' + JSON.stringify(r.json.precheck.checks.foreign_keys));
 r = await call('GET', '/api/admin/schema-check', null, null);
@@ -237,7 +241,7 @@ const wranglerToml = fs.readFileSync(path.join(dir, 'wrangler.toml'), 'utf8');
 assert(wranglerToml.includes('已废弃') && wranglerToml.includes('RESEND_API_KEY'), 'wrangler.toml RESEND 注释已改成已废弃口径');
 assert(!/printf '%s' "\$VAL" \| npx wrangler secret put RESEND_API_KEY/.test(wranglerToml), 'wrangler.toml 不再 instruct 配置 RESEND_API_KEY');
 
-// ================= 旧库 v10 -> v21 升级 =================
+// ================= 旧库 v10 -> v22 升级 =================
 {
   const O = makeDb();
   O.db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))");
@@ -257,12 +261,14 @@ assert(!/printf '%s' "\$VAL" \| npx wrangler secret put RESEND_API_KEY/.test(wra
   const call2 = makeCaller(w2, O.env);
   const r2 = await call2('GET', '/api/config');
   assert(r2.json && r2.json.ok, 'v10 库首次请求触发迁移: ' + JSON.stringify(r2.json));
-  assert(q(O.db, 'SELECT MAX(version) AS v FROM schema_migrations').v === 21, 'v10 库升级到 v21');
+  assert(q(O.db, 'SELECT MAX(version) AS v FROM schema_migrations').v === 22, 'v10 库升级到 v22');
   assert(q(O.db, "SELECT COUNT(*) AS c FROM categories WHERE cat_key IN ('recharge','account','card')").c === 3, 'v10 升级后内置分类 3 个');
   assert(q(O.db, "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='pricing_templates'").c === 1, 'v10 升级后 pricing_templates 存在');
   assert(q(O.db, "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name='lookup_attempts'").c === 1, 'v10 升级后 lookup_attempts 存在');
   assert(q(O.db, "SELECT COUNT(*) AS c FROM pragma_table_info('txid_claims') WHERE name='claim_token'").c === 1, 'v10 升级后 txid_claims 有 claim_token 列');
   assert(q(O.db, "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='index' AND name='idx_txid_claims_order'").c === 1, 'v10 升级后 v21 索引存在');
+  assert(q(O.db, "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='index' AND name='idx_txid_claims_canon'").c === 1, 'v10 升级后 v22 canon 索引存在');
+  assert(q(O.db, "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='index' AND name='idx_payments_canon_event'").c === 1, 'v10 升级后 v22 payments canon 索引存在');
   assert(!!q(O.db, "SELECT * FROM orders WHERE order_no='OLD-V10-001'"), 'v10 旧订单升级后保留');
   assert(q(O.db, "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='index' AND name='idx_orders_no'").c === 1, 'v10 升级后 v16 索引补齐');
 }
@@ -314,7 +320,7 @@ assert(!/printf '%s' "\$VAL" \| npx wrangler secret put RESEND_API_KEY/.test(wra
   // 真正空库首次请求：建基表 + 迁移到 21，settings 仍为空（无 poll_enabled 行）
   const rE = await call4('GET', '/api/config');
   assert(rE.json && rE.json.ok, '空库首次请求建库成功');
-  assert(q(E.db, 'SELECT MAX(version) AS v FROM schema_migrations').v === 21, '空库建库后版本 21');
+  assert(q(E.db, 'SELECT MAX(version) AS v FROM schema_migrations').v === 22, '空库建库后版本 22');
   assert(!q(E.db, "SELECT * FROM settings WHERE key='poll_enabled'"), 'BASE_TABLES 建库后 settings 无 poll_enabled 行');
   // 链上配置齐全（除 poll_enabled 外），一笔未过期待付款订单
   setSetting(E.db, 'usdt_addresses', JSON.stringify({ 'OKX|X Layer': '0x1111111111111111111111111111111111111111', 'Binance|BEP20': '0x2222222222222222222222222222222222222222' }));

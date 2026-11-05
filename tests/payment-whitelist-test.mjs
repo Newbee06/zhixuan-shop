@@ -116,6 +116,10 @@ async function mockFetch(url, opts = {}) {
     if (!u.includes('mock-slow') || !evmState.hang) evmState.calls.push({ url: u, method: body.method, hung: false });
     if (body.method === 'eth_chainId') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + Number(chainIdForUrl(u)).toString(16) }), { status: 200 });
     if (body.method === 'eth_blockNumber') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x' + evmState.latestBlock.toString(16) }), { status: 200 });
+    if (body.method === 'eth_getBlockByNumber') {
+      const sec = Math.floor(Date.now() / 1000) + 30;
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { timestamp: '0x' + sec.toString(16) } }), { status: 200 });
+    }
     if (body.method === 'eth_call') {
       const to = String((body.params && body.params[0] && body.params[0].to) || '').toLowerCase();
       const dec = evmState.decimals[to];

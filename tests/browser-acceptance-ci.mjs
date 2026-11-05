@@ -310,12 +310,20 @@ await page.click('button[data-tab="orders"]');
 await page.waitForTimeout(800);
 await page.fill('#ordQ', adminSetup.orderNo);
 await page.click('button:has-text("搜索")');
-await page.waitForTimeout(1000);
+// 固定等待曾导致竞态：搜索列表渲染慢于 1000ms 时详情按钮还没出现，
+// evaluate 里的 if (btn) 静默跳过，抽屉读到空内容、两个按钮断言误报失败，
+// 而后续步骤重进抽屉时按钮其实存在且可用（#41 首轮 CI 即此模式：
+// 异常弹窗与退款流程后续检查全过，只挂这两个按钮断言）。
+// 改为等详情按钮出现再点、等抽屉渲染到操作区再读。
+await page.waitForSelector('button[onclick*="adminOrderDetail"]', { timeout: 15000 });
 await page.evaluate(() => {
   const btn = document.querySelector('button[onclick*="adminOrderDetail"]');
   if (btn) btn.click();
 });
-await page.waitForTimeout(1000);
+await page.waitForFunction(() => {
+  const d = document.getElementById('drawerPanel');
+  return d && d.innerHTML.includes('操作');
+}, { timeout: 15000 });
 // 取消按钮检查必须限定在订单详情抽屉（#drawerPanel）内：订单列表里未付款订单本就有取消按钮，全页检查会误报。
 const drawerHtml = await page.evaluate(() => (document.getElementById('drawerPanel') || {}).innerHTML || '');
 check('admin order detail: no ordinary cancel button for paid order',

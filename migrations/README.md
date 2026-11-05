@@ -81,6 +81,7 @@ Worker 每次 API 请求 / 定时任务先做轻量版本检查（`SELECT MAX(ve
 > v19 / v20 核对：`pricing_templates`、`categories` 及唯一索引 `idx_categories_key` 已写入 `schema.sql` 与 `expectedTables`。预置版本仍为 10，不得改到 21（否则 v11 图标种子会被跳过）。旧库首次请求由 Worker 升到 v21。
 >
 > v21 核对（与 `src/worker.js` MIGRATIONS v21 + `migrations/0021_txid_claims_order_index.sql` 一致）：仅 `CREATE INDEX IF NOT EXISTS idx_txid_claims_order ON txid_claims(order_id)`，不加列、不改行；`GET /api/admin/schema-check` 按 `expectedIndexes` 校验该索引存在。
+> v22 核对（与 `src/worker.js` MIGRATIONS v22 + `migrations/0022_txhash_canon_bare.sql` 一致，#36-late 重做）：TXID 规范化成裸小写（与 `normalizeChainTxHash` 一致，不用 #36-late 的 0x 规范形）；跨订单冲突或同订单状态/金额不一致时迁移失败且不改任何行，同订单一致行合并为裸小写后建跨形态唯一索引 `idx_txid_claims_canon`、`idx_payments_canon_event`；`GET /api/admin/schema-check` 按 `expectedIndexes` 校验两索引存在且唯一。
 
 ## 管理员首次建站（B-P0）
 

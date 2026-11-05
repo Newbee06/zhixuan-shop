@@ -43,6 +43,10 @@ async function mockFetch(url, opts = {}) {
       return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: id }), { status: 200 });
     }
     if (body && body.method === 'eth_blockNumber') return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: '0x10000' }), { status: 200 });
+    if (body && body.method === 'eth_getBlockByNumber') {
+      const sec = Math.floor(Date.now() / 1000) + 30;
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { timestamp: '0x' + sec.toString(16) } }), { status: 200 });
+    }
     if (body && body.method === 'eth_call') {
       const to = String((body.params && body.params[0] && body.params[0].to) || '').toLowerCase();
       const dec = to === USDT0_XLAYER.toLowerCase() ? 6 : 18;

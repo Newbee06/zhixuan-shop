@@ -93,6 +93,11 @@ check_v20() {
   c=$(d1_json_value "SELECT COUNT(*) AS c FROM categories WHERE cat_key IN ('recharge','account','card');" "c")
   [ "$c" = "3" ] || { echo "FAIL: [$ctx] builtin categories count != 3 (got '$c')"; exit 1; }
   echo "V20 OK [$ctx]: pricing_templates + categories + 3 builtins"
+  c=$(d1_json_value "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='index' AND name='idx_txid_claims_canon';" "c")
+  [ "$c" = "1" ] || { echo "FAIL: [$ctx] idx_txid_claims_canon missing"; exit 1; }
+  c=$(d1_json_value "SELECT COUNT(*) AS c FROM sqlite_master WHERE type='index' AND name='idx_payments_canon_event';" "c")
+  [ "$c" = "1" ] || { echo "FAIL: [$ctx] idx_payments_canon_event missing"; exit 1; }
+  echo "V22 OK [$ctx]: canonical tx unique indexes (bare lowercase)"
 }
 # 断言 txid_claims 有 v17 三列（claim_token / source / order_lease_token），各恰好 1 列。
 # 用法：check_v17_claim_columns "old-db"；任一列缺失/重复即失败退出。
@@ -178,7 +183,7 @@ curl -s -b "$COOKIE_JAR_FILE" -X POST "$BASE/api/admin/change-password" -H 'cont
 echo "--- old-db /api/admin/migrate ---"
 MIG=$(curl -s -b "$COOKIE_JAR_FILE" "$BASE/api/admin/migrate")
 echo "$MIG"
-check_migrate_version "$MIG" 21 "old-db migrate"
+check_migrate_version "$MIG" 22 "old-db migrate"
 echo "OLD-DB MIGRATION OK: version 21"
 # 旧数据保留（经 D1 直接查）
 $WR d1 execute aisou-lite-db --local --command="SELECT order_no, status FROM orders WHERE order_no='AISOLDD1001';" 2>&1 | grep -q "AISOLDD1001" || { echo "FAIL: old order lost"; exit 1; }
@@ -205,7 +210,7 @@ check_v20 "old-db"
 for i in 1 2; do
   MIGX=$(curl -s -b "$COOKIE_JAR_FILE" -X POST "$BASE/api/admin/migrate" -H 'X-Admin-API: 1')
   echo "re-migrate $i: $MIGX"
-  check_migrate_version "$MIGX" 21 "re-migrate $i"
+  check_migrate_version "$MIGX" 22 "re-migrate $i"
   echo "$MIGX" | grep -q '"ok":true' || { echo "FAIL: re-migrate $i not ok"; exit 1; }
 done
 echo "IDEMPOTENT MIGRATION OK"
@@ -221,7 +226,7 @@ echo "OLD-DB LOOKUP OK"
 # v17 遗留兼容：模拟 v17 前认领行（仅 3 列写入，三列默认）→ 重复迁移 no-op 后行仍在且三列为默认值（不清空/不重建）
 $WR d1 execute aisou-lite-db --local --command="INSERT INTO txid_claims (tx_hash, order_id, claimed_at) VALUES ('legacy-v17-check-tx', (SELECT id FROM orders WHERE order_no='AISOLDD1001'), datetime('now'));" > /dev/null 2>&1
 MIGL=$(curl -s -b "$COOKIE_JAR_FILE" -X POST "$BASE/api/admin/migrate" -H 'X-Admin-API: 1')
-check_migrate_version "$MIGL" 21 "legacy-claim re-migrate"
+check_migrate_version "$MIGL" 22 "legacy-claim re-migrate"
 LEGACY_ROW=$($WR d1 execute aisou-lite-db --local --command="SELECT claim_token, source, order_lease_token FROM txid_claims WHERE tx_hash='legacy-v17-check-tx';" 2>&1)
 echo "$LEGACY_ROW" | grep -q "chain_verified" || { echo "FAIL: legacy claim row lost or source default wrong"; echo "$LEGACY_ROW"; exit 1; }
 echo "V17 LEGACY CLAIM ROW OK: pre-v17-style row preserved with defaults"
@@ -257,7 +262,7 @@ FIX_BODY=$(curl -s "$BASE/api/config")
 echo "fix body: $(echo "$FIX_BODY" | head -c 300)"
 echo "$FIX_BODY" | grep -q '"ok":true' || { echo "FAIL: migration did not recover after fix"; exit 1; }
 FIX_VER=$(d1_json_value "SELECT MAX(version) AS v FROM schema_migrations;" "v")
-[ "$FIX_VER" = "21" ] || { echo "FAIL: version != 21 after fix (got '$FIX_VER')"; exit 1; }
+[ "$FIX_VER" = "22" ] || { echo "FAIL: version != 22 after fix (got '$FIX_VER')"; exit 1; }
 echo "FAILURE RECOVERY OK: fixed db migrated to v21"
 kill $DEV_PID 2>/dev/null; trap - EXIT; wait $DEV_PID 2>/dev/null || true
 
@@ -274,7 +279,7 @@ EMPTY_CFG=$(curl -s "$BASE/api/config")
 echo "$EMPTY_CFG" | grep -q '"ok":true' || { echo "FAIL: empty db /api/config not ok (base tables missing?)"; echo "$EMPTY_CFG" | head -c 300; exit 1; }
 echo "EMPTY-DB CONFIG OK: first request migrated empty db"
 EMPTY_VER=$(d1_json_value "SELECT MAX(version) AS v FROM schema_migrations;" "v")
-[ "$EMPTY_VER" = "21" ] || { echo "FAIL: empty db version != 21 after migration (got '$EMPTY_VER')"; exit 1; }
+[ "$EMPTY_VER" = "22" ] || { echo "FAIL: empty db version != 22 after migration (got '$EMPTY_VER')"; exit 1; }
 echo "EMPTY-DB MIGRATION OK: version 21"
 # 空库迁移后 6 个 v16 索引必须存在
 check_v16_indexes "empty-db"
